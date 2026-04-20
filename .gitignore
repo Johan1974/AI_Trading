@@ -1,0 +1,6 @@
+# Bestand: .gitignore
+# Relatief pad: ./.gitignore
+# Functie: Sluit gegenereerde lokale bestanden uit van versiebeheer.
+
+__pycache__/
+*.py[cod]
