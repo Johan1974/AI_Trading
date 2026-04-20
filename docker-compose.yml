@@ -1,0 +1,11 @@
+services:
+  ai-trading-bot:
+    build: .
+    container_name: ai-trading-bot
+    ports:
+      - "8000:8000"
+    environment:
+      NEWS_API_KEY: ${NEWS_API_KEY:-}
+      NEWS_QUERY: ${NEWS_QUERY:-stock market OR economy OR inflation}
+      DEFAULT_TICKER: ${DEFAULT_TICKER:-AAPL}
+      LOOKBACK_DAYS: ${LOOKBACK_DAYS:-400}
