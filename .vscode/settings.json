@@ -1,0 +1,7 @@
+{
+  // Bestand: .vscode/settings.json
+  // Relatief pad: ./.vscode/settings.json
+  // Functie: Projectspecifieke Cursor/VSCode instellingen zoals autosave.
+    "files.autoSave": "afterDelay",
+    "files.autoSaveDelay": 1000
+  }

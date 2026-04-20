@@ -1,3 +1,6 @@
+# Bestand: docker-compose.yml
+# Relatief pad: ./docker-compose.yml
+# Functie: Definieert de bot-service, buildconfig, poortmapping en runtime omgevingsvariabelen.
 services:
   ai-trading-bot:
     build: .

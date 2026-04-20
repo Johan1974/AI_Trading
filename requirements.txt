@@ -1,3 +1,6 @@
+# Bestand: requirements.txt
+# Relatief pad: ./requirements.txt
+# Functie: Python dependencies voor de API, data-analyse, ML en webportal rendering.
 fastapi
 uvicorn[standard]
 pandas

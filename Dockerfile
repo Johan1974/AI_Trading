@@ -1,3 +1,6 @@
+# Bestand: Dockerfile
+# Relatief pad: ./Dockerfile
+# Functie: Bouwt de API-container voor de AI trading bot en start de FastAPI-server.
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1
