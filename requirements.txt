@@ -8,5 +8,13 @@ numpy
 scikit-learn
 yfinance
 requests
+pytz
 python-dotenv
 jinja2
+transformers
+torch
+stable-baselines3
+gymnasium
+pyarrow
+feedparser
+psutil

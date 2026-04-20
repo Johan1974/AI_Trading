@@ -1,0 +1,695 @@
+/*
+  Bestand: app/static/css/style.css
+  Relatief pad: ./app/static/css/style.css
+  Functie: Emergency high-contrast overrides voor terminal leesbaarheid.
+*/
+
+:root {
+  --text: #ffffff;
+  --muted: #ffffff;
+}
+
+body,
+label,
+input,
+select,
+button,
+p,
+span,
+td,
+th,
+pre {
+  color: #ffffff !important;
+  font-weight: 700;
+}
+
+body {
+  background: #000000 !important;
+}
+
+.top-tabs {
+  display: flex;
+  gap: 10px;
+  padding: 10px 12px 0 12px;
+}
+
+.tab-btn {
+  background: #000000 !important;
+  border: 1px solid #222222 !important;
+  color: #ffffff !important;
+  font-weight: 700;
+  padding: 10px 14px !important;
+}
+
+.tab-btn.active {
+  background: #0a0a0a !important;
+  border: 2px solid #ffffff !important;
+  box-shadow: 0 0 0 1px #000000, 0 0 14px rgba(255, 255, 255, 0.12);
+}
+
+.hidden {
+  display: none !important;
+}
+
+h1,
+h2,
+h3 {
+  font-weight: 700;
+  text-shadow: none;
+}
+
+h1,
+h2,
+h3 {
+  color: #ffffff !important;
+}
+
+.panel {
+  background: #000000 !important;
+  border: 1px solid #222222 !important;
+}
+
+.muted {
+  color: var(--muted) !important;
+  opacity: 1;
+}
+
+.positive {
+  color: #39ff14 !important;
+}
+
+.negative {
+  color: #ff3131 !important;
+}
+
+.impact-positive {
+  background: #39ff14 !important;
+  color: #000000 !important;
+  border-color: #39ff14 !important;
+}
+
+.impact-negative {
+  background: #ff3131 !important;
+  color: #ffffff !important;
+  border-color: #ff3131 !important;
+}
+
+.impact-neutral {
+  background: #6b6b6b !important;
+  color: #ffffff !important;
+  border: 1px solid #8b8b8b !important;
+  border-radius: 6px;
+  padding: 2px 8px;
+}
+
+.impact-neon-positive {
+  box-shadow: 0 0 12px rgba(0, 255, 120, 0.85), 0 0 24px rgba(0, 255, 120, 0.45);
+}
+
+.impact-neon-negative {
+  box-shadow: 0 0 12px rgba(255, 60, 85, 0.85), 0 0 24px rgba(255, 60, 85, 0.45);
+}
+
+.news-item-urgent {
+  border: 1px solid #ff4d4d !important;
+  box-shadow: 0 0 12px rgba(255, 77, 77, 0.35);
+}
+
+.urgent-chip {
+  margin-left: 8px;
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 900;
+  color: #1f0d00;
+  background: #ffb347;
+  border: 1px solid #ffd091;
+  border-radius: 10px;
+  padding: 1px 7px;
+}
+
+.btn-predict {
+  background: #00ff66 !important;
+  color: #041d10 !important;
+  border: 1px solid #00ff99 !important;
+  font-weight: 800;
+  font-size: 1.05rem;
+  padding: 12px 16px !important;
+  box-shadow: 0 0 16px rgba(0, 255, 102, 0.45);
+}
+
+.btn-paper {
+  background: #ff8a00 !important;
+  color: #271100 !important;
+  border: 1px solid #ffad4d !important;
+  font-weight: 800;
+  font-size: 1.05rem;
+  padding: 12px 16px !important;
+  box-shadow: 0 0 16px rgba(255, 138, 0, 0.45);
+}
+
+.btn-pause {
+  background: #ffe600 !important;
+  color: #251f00 !important;
+  border: 1px solid #fff26a !important;
+  font-weight: 800;
+  font-size: 1.05rem;
+  padding: 12px 16px !important;
+  box-shadow: 0 0 16px rgba(255, 230, 0, 0.35);
+}
+
+.btn-panic {
+  background: #b00000 !important;
+  color: #ffffff !important;
+  border: 2px solid #ff6b6b !important;
+  font-weight: 900;
+  font-size: 1.05rem;
+  padding: 12px 16px !important;
+  box-shadow: 0 0 18px rgba(176, 0, 0, 0.6);
+}
+
+button:hover {
+  filter: brightness(1.15);
+  box-shadow: 0 0 12px rgba(255, 255, 255, 0.25);
+}
+
+.trade-table th,
+.trade-table td {
+  color: #ffffff !important;
+  font-weight: 500;
+}
+
+.trade-table thead th {
+  background: #262626 !important;
+  border-bottom: 1px solid #444 !important;
+}
+
+.trade-table tbody tr:nth-child(odd) {
+  background: #1a1a1a;
+}
+
+.trade-table tbody tr:nth-child(even) {
+  background: #242424;
+}
+
+.status-connected {
+  color: #39ff14 !important;
+  font-weight: 800;
+}
+
+.status-disconnected {
+  color: #ff3131 !important;
+  font-weight: 800;
+}
+
+.ticker-item.positive {
+  color: #39ff14 !important;
+  background: transparent !important;
+  border: 0 !important;
+  padding: 0 !important;
+}
+
+.ticker-item.negative {
+  color: #ff3131 !important;
+  background: transparent !important;
+  border: 0 !important;
+  padding: 0 !important;
+}
+
+.brain-tab {
+  padding: 0;
+  overflow-x: hidden;
+  overflow-y: hidden;
+  box-sizing: border-box;
+}
+
+/* Tooltips via #brainHintPortal (fixed); inline bubbels verborgen in alle tabs */
+#brainTab .hint-wrap > .hint-bubble,
+#terminalTab .hint-wrap > .hint-bubble,
+#hardwareTab .hint-wrap > .hint-bubble {
+  display: none !important;
+}
+
+#brainHintPortal .hint-bubble--portal {
+  z-index: 2147483000 !important;
+  background: rgba(0, 0, 0, 0.55) !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(255, 255, 255, 0.2) !important;
+  border-radius: 4px !important;
+  backdrop-filter: blur(5px) !important;
+  -webkit-backdrop-filter: blur(5px) !important;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45) !important;
+  font-size: 14px !important;
+}
+
+/* AI Brain Lab: force hoog-contrast tekst; uitzonderingen voor winst/verlies en RL-accenten */
+#brainTab,
+#brainTab * {
+  color: #ffffff !important;
+}
+
+#brainTab .positive,
+#brainTab .positive * {
+  color: #39ff14 !important;
+}
+
+#brainTab .negative,
+#brainTab .negative * {
+  color: #ff3131 !important;
+}
+
+#brainTab .brain-stat-card strong,
+#brainTab .brain-state-card strong {
+  color: #ffffff !important;
+}
+
+.brain-stat-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+}
+
+.brain-stat-card--with-hint strong {
+  margin-top: 4px;
+}
+
+.brain-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.brain-stat-card {
+  background: #000000;
+  border: 1px solid #222222;
+  border-radius: 8px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow: visible;
+  min-width: 0;
+}
+
+.brain-stat-card span {
+  color: #ffffff;
+  font-size: 0.85rem;
+}
+
+.brain-stat-card strong {
+  color: #39ff14;
+  font-size: 1.05rem;
+}
+
+.brain-grid {
+  display: grid;
+  grid-template-columns: 1.2fr 1.5fr 1.5fr 1fr;
+  gap: 15px;
+  align-items: stretch;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: visible;
+}
+
+.brain-col {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  min-height: 0;
+  overflow: visible;
+}
+
+.brain-col > .brain-card:not(.brain-card--fill) {
+  flex: 0 0 auto;
+}
+
+.brain-col .brain-card {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.brain-card {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: visible;
+  min-width: 0;
+}
+
+.brain-card--fill {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.brain-card--training {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.brain-training-charts {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-right: 2px;
+}
+
+.brain-chart-row-title {
+  margin: 4px 0 0 0;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #ffffff !important;
+}
+
+.brain-card--trades {
+  min-height: 0;
+}
+
+.brain-trades-scroll {
+  flex: 1 1 auto;
+  min-height: 120px;
+  max-height: none;
+  overflow: auto;
+}
+
+.brain-trades-waiting-row .brain-trades-waiting {
+  color: #ffffff !important;
+  text-align: center !important;
+  font-weight: 700 !important;
+  font-size: 0.95rem !important;
+  vertical-align: middle !important;
+  padding: 24px 12px !important;
+}
+
+.brain-trades-scroll .brain-trades-waiting-row {
+  height: 100%;
+}
+
+.brain-trades-scroll tbody:has(.brain-trades-waiting-row) {
+  display: table-row-group;
+}
+
+.brain-trades-waiting {
+  color: #ffffff !important;
+}
+
+#brainTab .panel.brain-card {
+  overflow: visible;
+  min-width: 0;
+}
+
+.brain-state-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  width: 100%;
+  font-size: 0.85rem;
+}
+
+.brain-state-card--row-hint {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+
+.brain-state-card--row-hint .brain-state-label span:first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+.card-title-with-hint {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.hint-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: help;
+  outline: none;
+  z-index: 2;
+}
+
+.hint-icon {
+  font-size: 0.78rem;
+  line-height: 1;
+  color: #ffffff;
+  opacity: 0.5;
+  transition: opacity 0.18s ease, color 0.18s ease;
+}
+
+.hint-wrap:hover .hint-icon,
+.hint-wrap:focus .hint-icon,
+.hint-wrap:focus-within .hint-icon {
+  opacity: 1;
+  color: #ffffff;
+}
+
+.brain-reasoning {
+  flex: 1 1 auto;
+  min-height: 120px;
+  max-height: min(38vh, 380px);
+  overflow: auto;
+  background: #111;
+  border: 1px solid #333;
+  border-radius: 8px;
+  padding: 10px;
+  white-space: pre-wrap;
+  line-height: 1.45;
+  font-size: 0.95rem;
+  overflow-wrap: anywhere;
+  color: #ffffff !important;
+}
+
+.brain-state-overview {
+  margin-top: 10px;
+  padding: 8px;
+  border: 1px solid #333;
+  border-radius: 8px;
+  background: #121212;
+}
+
+.brain-state-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.brain-state-card {
+  background: #1a1a1a;
+  border: 1px solid #2f2f2f;
+  border-radius: 6px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.brain-tab .mini-chart {
+  width: 100%;
+  overflow: hidden;
+  flex-shrink: 0;
+  border-radius: 6px;
+}
+
+.brain-tab .mini-chart--feature {
+  min-height: 140px;
+  height: clamp(140px, 16vh, 220px);
+}
+
+.brain-tab .mini-chart--corr {
+  min-height: 110px;
+  height: clamp(110px, 12vh, 160px);
+}
+
+.brain-tab .mini-chart--bench {
+  min-height: 100px;
+  height: clamp(100px, 11vh, 150px);
+}
+
+.brain-tab .mini-chart--train {
+  min-height: 72px;
+  height: clamp(72px, 9vh, 110px);
+}
+
+.brain-training-charts .mini-chart--train {
+  margin-top: 0;
+}
+
+.brain-tab .mini-chart canvas {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+/* Chart.js tooltips boven alle dashboardlagen */
+body > div[id^="chartjs-tooltip"],
+.chartjs-tooltip,
+div.chartjs-tooltip {
+  z-index: 99999 !important;
+}
+
+.brain-tab .recharts-responsive-container {
+  min-height: 180px !important;
+  height: clamp(180px, 24vw, 300px) !important;
+}
+
+@media (max-width: 1400px) {
+  .brain-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 900px) {
+  .brain-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .hint-bubble {
+    right: auto;
+    left: 0;
+    width: min(320px, 82vw);
+  }
+}
+
+.brain-state-card strong {
+  color: #ffffff;
+}
+
+.brain-state-card span,
+.brain-state-overview,
+#brainStateWeights {
+  font-size: 1rem;
+}
+
+.brain-trades-table {
+  margin-top: 0;
+  font-size: 0.76rem;
+}
+
+.storage-health {
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid #333;
+  border-radius: 8px;
+  background: #151515;
+}
+
+.storage-health p {
+  margin: 8px 0 0 0;
+  color: #ffffff;
+}
+
+.storage-bar {
+  background: linear-gradient(90deg, #00ff88, #4ea1ff) !important;
+}
+
+.storage-warning {
+  background: linear-gradient(90deg, #ffd24d, #ff9800) !important;
+}
+
+.storage-critical {
+  background: linear-gradient(90deg, #ff4d4d, #b00000) !important;
+}
+
+.system-log-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+  gap: 10px;
+}
+
+.system-log-actions {
+  display: inline-flex;
+  gap: 8px;
+}
+
+.system-log-toggle {
+  color: #ffffff;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-system-pause {
+  background: #ffcc00 !important;
+  color: #2d2200 !important;
+  border: 1px solid #ffe066 !important;
+  font-weight: 800;
+  box-shadow: 0 0 10px rgba(255, 204, 0, 0.45);
+}
+
+.btn-system-pause.active {
+  background: #ff9f00 !important;
+  color: #2a1200 !important;
+  border-color: #ffb74a !important;
+  box-shadow: 0 0 12px rgba(255, 159, 0, 0.6);
+}
+
+.btn-system-clear {
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: #ffffff !important;
+  border: 1px solid #7a7a7a !important;
+  font-weight: 700;
+}
+
+.system-log-console {
+  background: #000000;
+  border: 1px solid #333;
+  border-radius: 8px;
+  min-height: 420px;
+  max-height: 70vh;
+  overflow-y: auto;
+  padding: 10px;
+  font-family: Consolas, "Courier New", monospace;
+  color: #ffffff;
+  line-height: 1.4;
+}
+
+.system-log-line {
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #ffffff;
+}
+
+.log-info {
+  color: #ffffff;
+}
+
+.log-success {
+  color: #6dff9b;
+}
+
+.log-warning {
+  color: #ffad33;
+}
+
+.log-error {
+  color: #ff4d4d;
+}
+
+.log-rl-brain {
+  color: #8f9bff;
+}
+
+.log-whale-sync {
+  color: #ffffff !important;
+  font-weight: 700;
+}

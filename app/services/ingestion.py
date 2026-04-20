@@ -5,10 +5,79 @@ Functie: Haalt OHLCV-marktdata en nieuwsdata op met minimale validatie.
 """
 
 from typing import Any
+from datetime import datetime, timedelta
+
+from app.datetime_util import UTC
+import email.utils
+import xml.etree.ElementTree as ET
 
 import pandas as pd
 import requests
 import yfinance as yf
+
+
+RSS_FEEDS = [
+    "https://www.coindesk.com/arc/outboundfeeds/rss/",
+    "https://cointelegraph.com/rss",
+]
+
+
+def _safe_parse_datetime(text: str | None) -> datetime | None:
+    if not text:
+        return None
+    raw = str(text).strip()
+    try:
+        if raw.endswith("Z"):
+            return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(UTC)
+        return datetime.fromisoformat(raw).astimezone(UTC)
+    except Exception:
+        pass
+    try:
+        dt = email.utils.parsedate_to_datetime(raw)
+        if dt is None:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        return dt.astimezone(UTC)
+    except Exception:
+        return None
+
+
+def _fetch_rss_news_articles(max_items: int = 60) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for feed_url in RSS_FEEDS:
+        try:
+            resp = requests.get(feed_url, timeout=15)
+            if resp.status_code != 200 or not resp.text:
+                continue
+            root = ET.fromstring(resp.text)
+            for item in root.findall(".//item"):
+                title = (item.findtext("title") or "").strip()
+                link = (item.findtext("link") or "").strip()
+                description = (item.findtext("description") or "").strip()
+                pub = (item.findtext("pubDate") or "").strip()
+                key = f"{title}|{link}"
+                if not title or key in seen:
+                    continue
+                seen.add(key)
+                dt = _safe_parse_datetime(pub)
+                items.append(
+                    {
+                        "title": title,
+                        "description": description,
+                        "url": link,
+                        "publishedAt": (dt.isoformat().replace("+00:00", "Z") if dt else None),
+                        "source": {"name": feed_url.split("/")[2]},
+                    }
+                )
+        except Exception:
+            continue
+    items.sort(
+        key=lambda x: _safe_parse_datetime(x.get("publishedAt")) or datetime(1970, 1, 1, tzinfo=UTC),
+        reverse=True,
+    )
+    return items[:max_items]
 
 
 def fetch_market_data(ticker: str, lookback_days: int) -> pd.DataFrame:
@@ -19,18 +88,128 @@ def fetch_market_data(ticker: str, lookback_days: int) -> pd.DataFrame:
 
 
 def fetch_news_articles(news_query: str, news_api_key: str | None) -> list[dict[str, Any]]:
-    if not news_api_key:
-        return []
+    cryptocompare_key = str(news_api_key or "").strip()
+    if cryptocompare_key:
+        try:
+            resp = requests.get(
+                "https://min-api.cryptocompare.com/data/v2/news/",
+                params={"lang": "EN"},
+                headers={"authorization": f"Apikey {cryptocompare_key}"},
+                timeout=15,
+            )
+            if resp.status_code == 200:
+                payload = resp.json()
+                rows = payload.get("Data", []) if isinstance(payload, dict) else []
+                if isinstance(rows, list) and rows:
+                    converted: list[dict[str, Any]] = []
+                    for row in rows[:60]:
+                        if not isinstance(row, dict):
+                            continue
+                        title = str(row.get("title") or "").strip()
+                        if not title:
+                            continue
+                        ts = row.get("published_on")
+                        published = None
+                        try:
+                            if ts is not None:
+                                published = datetime.fromtimestamp(int(ts), tz=UTC).isoformat().replace("+00:00", "Z")
+                        except Exception:
+                            published = None
+                        converted.append(
+                            {
+                                "title": title,
+                                "description": str(row.get("body") or ""),
+                                "url": row.get("url"),
+                                "publishedAt": published,
+                                "source": {
+                                    "name": str((row.get("source_info") or {}).get("name") or "CryptoCompare")
+                                },
+                            }
+                        )
+                    if converted:
+                        return converted
+        except Exception:
+            pass
 
-    url = "https://newsapi.org/v2/everything"
-    params = {
-        "q": news_query,
-        "language": "en",
-        "sortBy": "publishedAt",
-        "pageSize": 25,
-        "apiKey": news_api_key,
-    }
-    resp = requests.get(url, params=params, timeout=20)
-    if resp.status_code != 200:
-        return []
-    return resp.json().get("articles", [])
+    rss_items = _fetch_rss_news_articles(max_items=40)
+    now = datetime.now(UTC)
+    recent_rss = [
+        x
+        for x in rss_items
+        if (_safe_parse_datetime(x.get("publishedAt")) or datetime(1970, 1, 1, tzinfo=UTC))
+        >= (now - timedelta(hours=36))
+    ]
+
+    if not news_api_key:
+        return recent_rss
+
+    everything_url = "https://newsapi.org/v2/everything"
+    windows = [timedelta(hours=6), timedelta(hours=24), timedelta(days=3)]
+    api_items: list[dict[str, Any]] = []
+    for window in windows:
+        params = {
+            "q": news_query,
+            "language": "en",
+            "sortBy": "publishedAt",
+            "pageSize": 50,
+            "from": (now - window).isoformat(),
+            "apiKey": news_api_key,
+        }
+        try:
+            resp = requests.get(everything_url, params=params, timeout=20)
+            if resp.status_code == 200:
+                articles = resp.json().get("articles", [])
+                if articles:
+                    api_items = articles
+                    break
+        except Exception:
+            continue
+
+    # Fallback to top-headlines for fresher stream when everything-query is stale.
+    try:
+        top_headlines_url = "https://newsapi.org/v2/top-headlines"
+        top_params = {
+            "q": "crypto",
+            "language": "en",
+            "pageSize": 50,
+            "apiKey": news_api_key,
+        }
+        resp = requests.get(top_headlines_url, params=top_params, timeout=20)
+        if resp.status_code == 200:
+            articles = resp.json().get("articles", [])
+            if articles:
+                api_items = articles
+    except Exception:
+        pass
+
+    # Final fallback: best-effort recent feed without explicit from-window.
+    if not api_items:
+        try:
+            params = {
+                "q": news_query,
+                "language": "en",
+                "sortBy": "publishedAt",
+                "pageSize": 50,
+                "apiKey": news_api_key,
+            }
+            resp = requests.get(everything_url, params=params, timeout=20)
+            if resp.status_code == 200:
+                api_items = resp.json().get("articles", [])
+        except Exception:
+            pass
+
+    merged: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
+    for source_items in (api_items, recent_rss):
+        for article in source_items:
+            key = f"{article.get('title','')}|{article.get('url','')}"
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            merged.append(article)
+
+    merged.sort(
+        key=lambda x: _safe_parse_datetime(x.get("publishedAt")) or datetime(1970, 1, 1, tzinfo=UTC),
+        reverse=True,
+    )
+    return merged[:60]

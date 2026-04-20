@@ -1,0 +1,643 @@
+/*
+  Bestand: app/static/css/electric-quant.css
+  Functie: Electric Quant — uniform thema (Matrix) voor alle portal-tabs.
+*/
+
+:root {
+  --eq-bg: #000000;
+  --eq-text: #ffffff;
+  --eq-border: rgba(255, 255, 255, 0.1);
+  --eq-radius: 4px;
+  --eq-neon-blue: #00d1ff;
+  --eq-neon-green: #39ff14;
+  --eq-neon-red: #ff3131;
+  --eq-neon-orange: #ff7a00;
+}
+
+/* Risk profile (kolom 4): neon oranje waarden op zwart */
+.risk-profile-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 0.78rem;
+}
+.risk-profile-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  padding: 4px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.risk-profile-row:last-child {
+  border-bottom: none;
+}
+.risk-profile-label {
+  color: rgba(255, 255, 255, 0.65);
+  letter-spacing: 0.04em;
+}
+.risk-profile-val {
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: var(--eq-neon-orange);
+  text-shadow: 0 0 10px rgba(255, 122, 0, 0.55), 0 0 22px rgba(255, 90, 0, 0.35);
+}
+
+/* --- Kaarten: transparant + dunne witte rand --- */
+.eq-card,
+#terminalTab .genesis-card,
+#brainTab .eq-card,
+#hardwareTab .panel {
+  background: transparent !important;
+  border: 1px solid var(--eq-border) !important;
+  border-radius: var(--eq-radius) !important;
+}
+
+.panel:not(#terminalTab .genesis-card):not(#brainTab .eq-card) {
+  border-radius: var(--eq-radius) !important;
+}
+
+/* --- 4-koloms grid (Terminal + Brain): één dashboard, gelijke rijhoogte --- */
+.eq-grid.eq-grid--four {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  grid-auto-rows: 1fr;
+  gap: 20px;
+  align-items: stretch;
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+}
+
+#terminalTab .eq-grid--four {
+  padding: 0 15px 15px;
+}
+
+#brainTab .eq-grid--four {
+  padding: 0 15px 0;
+}
+
+.eq-col {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+
+/* Kolom 4: verticale stack (RL benchmark → risk → balance → trades) */
+.eq-action-stack {
+  gap: 20px;
+}
+
+.eq-action-stack > .genesis-card--trades,
+.eq-action-stack > .panel.genesis-card--trades {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+#brainTab .eq-col--action .mini-chart--bench,
+#terminalTab .eq-col--action .mini-chart--bench {
+  min-height: 88px;
+  height: 88px;
+  max-height: 88px;
+}
+
+.genesis-subtitle {
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--eq-text);
+  margin: 10px 0 6px;
+  opacity: 0.85;
+}
+
+.brain-corr-embed {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--eq-border);
+  min-height: 0;
+}
+
+.mini-chart--corr-inline {
+  height: 72px;
+  min-height: 72px;
+  max-height: 72px;
+  margin-bottom: 6px;
+}
+
+.ring-meters-row--quad {
+  flex-wrap: nowrap;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.ring-meters-row--quad .ring-meter {
+  flex: 0 0 auto;
+}
+
+.trade-table--compact {
+  font-size: 0.72rem;
+}
+
+.trade-table--compact th,
+.trade-table--compact td {
+  padding: 4px 6px;
+}
+
+/* Geen zichtbare scrollbars binnen dashboardkaarten (Terminal + Brain) */
+#terminalTab .genesis-card,
+#terminalTab .panel.genesis-card,
+#brainTab .eq-card,
+#brainTab .panel.brain-card {
+  overflow: hidden;
+}
+
+#terminalTab .genesis-card::-webkit-scrollbar,
+#brainTab .eq-card::-webkit-scrollbar,
+#terminalTab .trade-history-list::-webkit-scrollbar,
+#brainTab .trade-history-list::-webkit-scrollbar,
+#terminalTab .terminal-news-stream::-webkit-scrollbar,
+#brainTab .terminal-news-stream::-webkit-scrollbar,
+#terminalTab .brain-reasoning::-webkit-scrollbar,
+#brainTab .brain-reasoning::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+#terminalTab .trade-history-list,
+#brainTab .trade-history-list,
+#terminalTab .terminal-news-stream,
+#brainTab .terminal-news-stream,
+#terminalTab .brain-reasoning,
+#brainTab .brain-reasoning {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  overflow: hidden !important;
+}
+
+.eq-col > .genesis-card,
+.eq-col > .panel.genesis-card,
+.eq-col > .panel.brain-card {
+  min-height: 0;
+}
+
+.eq-card--fill {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.eq-card--shrink {
+  flex: 0 0 auto;
+}
+
+.eq-card--fill-none {
+  flex: 1;
+  min-height: 100px;
+  display: flex;
+  flex-direction: column;
+}
+
+.eq-col--monitor .genesis-card--chart,
+.eq-col--visual .terminal-learning-panel,
+.eq-col--signals .eq-card--fill {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+#terminalTab .terminal-col--learning .terminal-learning-panel {
+  flex: 2;
+  min-height: 0;
+}
+
+#terminalTab .terminal-col--learning .terminal-feature-panel {
+  flex: 1;
+  min-height: 140px;
+}
+
+#brainTab .eq-col--monitor > .brain-card:first-child {
+  flex: 0 0 auto;
+}
+
+#brainTab .eq-col--monitor > .brain-card:last-child {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+#brainTab .eq-col--visual > .brain-card--training {
+  flex: 2;
+  min-height: 160px;
+}
+
+#brainTab .eq-col--visual > .brain-card.eq-card--fill-none {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+#brainTab .eq-col--visual > .brain-benchmark-card {
+  flex: 0 0 auto;
+}
+
+/* Kolom 4: trades | risk + balance */
+.terminal-action-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1.12fr) minmax(200px, 0.4fr);
+  gap: 15px;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  width: 100%;
+}
+
+.terminal-action-split > .panel {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.terminal-action-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+  min-height: 0;
+  min-width: 0;
+}
+
+.terminal-action-stack > .risk-profile-card {
+  flex: 0 0 auto;
+}
+
+.terminal-action-stack > .panel:not(.risk-profile-card) {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Terminal learning: grotere grafiekroosters */
+.terminal-training-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  flex: 1;
+  min-height: 0;
+}
+
+.terminal-training-grid .mini-chart {
+  min-height: 96px;
+  flex: 1;
+  min-width: 0;
+}
+
+#terminalTab .terminal-training-grid .mini-chart--train {
+  min-height: 88px;
+  height: clamp(88px, 11vh, 130px);
+}
+
+.terminal-feature-panel .mini-chart {
+  flex: 1;
+  min-height: 140px;
+}
+
+/* Card-header strip (#111) — sectiescheiding */
+#terminalTab .genesis-card > .genesis-card-title:first-child,
+#terminalTab .genesis-card > .genesis-card-title.card-title-with-hint:first-child,
+#terminalTab .genesis-card > .eq-card-title:first-child,
+#brainTab .brain-card > .eq-card-title:first-child,
+#brainTab .brain-card > .card-title-with-hint:first-child,
+#brainTab .brain-card > h2.genesis-card-title:first-child {
+  background: #111111;
+  margin: -10px -12px 10px -12px;
+  padding: 8px 12px;
+  border-radius: var(--eq-radius) var(--eq-radius) 0 0;
+}
+
+#brainTab .brain-card > h3.card-title-with-hint {
+  background: #111111;
+  margin: 10px -12px 8px -12px;
+  padding: 6px 12px;
+  border-radius: var(--eq-radius);
+}
+
+#terminalTab .brain-reasoning--terminal {
+  flex: 1;
+  min-height: 72px;
+  max-height: 22vh;
+  overflow: hidden;
+}
+
+#terminalTab .brain-state-grid--terminal {
+  margin-top: 6px;
+}
+
+.eq-card-title,
+#terminalTab .genesis-card-title {
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--eq-text) !important;
+  margin: 0 0 8px 0;
+}
+
+#brainTab .card-title-with-hint {
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--eq-text) !important;
+  margin: 0 0 8px 0;
+}
+
+/* --- CPU/RAM/GPU gauges: neon blauw --- */
+#terminalTab .ring-meter__arc,
+#brainTab .ring-meter__arc,
+#hardwareTab .ring-meter__arc {
+  background: conic-gradient(
+    var(--eq-neon-blue) calc(var(--pct) * 1%),
+    rgba(255, 255, 255, 0.08) 0
+  ) !important;
+}
+
+#terminalTab .ring-meter--gpu.ring-meter--gpu-idle .ring-meter__arc--gpu,
+#brainTab .ring-meter--gpu.ring-meter--gpu-idle .ring-meter__arc--gpu,
+#hardwareTab .ring-meter--gpu.ring-meter--gpu-idle .ring-meter__arc--gpu {
+  background: conic-gradient(
+    rgba(255, 255, 255, 0.06) 0%,
+    rgba(255, 255, 255, 0.06) 100%
+  ) !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12) !important;
+}
+
+#terminalTab .ring-meter--gpu.ring-meter--gpu-active .ring-meter__arc--gpu,
+#brainTab .ring-meter--gpu.ring-meter--gpu-active .ring-meter__arc--gpu,
+#hardwareTab .ring-meter--gpu.ring-meter--gpu-active .ring-meter__arc--gpu {
+  background: conic-gradient(
+    var(--eq-neon-blue) calc(var(--pct) * 1%),
+    rgba(255, 255, 255, 0.08) 0
+  ) !important;
+  box-shadow:
+    0 0 18px rgba(0, 209, 255, 0.55),
+    0 0 36px rgba(0, 209, 255, 0.2) !important;
+}
+
+#terminalTab .ring-meter__core,
+#brainTab .ring-meter__core,
+#hardwareTab .ring-meter__core {
+  background: transparent !important;
+  border: 1px solid var(--eq-border) !important;
+}
+
+/* --- Trade history: verticale glow-lijst --- */
+.trade-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+  padding: 2px 0;
+}
+
+.trade-list-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--eq-border);
+  border-radius: var(--eq-radius);
+  background: transparent;
+}
+
+.trade-list-dot {
+  flex: 0 0 auto;
+  width: 10px;
+  height: 10px;
+  margin-top: 4px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.trade-list-row--buy .trade-list-dot {
+  background: var(--eq-neon-green);
+  box-shadow: 0 0 10px rgba(57, 255, 20, 0.85), 0 0 20px rgba(57, 255, 20, 0.35);
+}
+
+.trade-list-row--sell .trade-list-dot {
+  background: var(--eq-neon-red);
+  box-shadow: 0 0 10px rgba(255, 49, 49, 0.85), 0 0 20px rgba(255, 49, 49, 0.35);
+}
+
+.trade-list-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.trade-list-line1 {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--eq-text);
+}
+
+.trade-list-line2 {
+  font-size: 0.72rem;
+  color: var(--eq-text);
+  opacity: 0.92;
+  margin-top: 2px;
+}
+
+.trade-list-empty {
+  font-size: 0.85rem;
+  color: var(--eq-text);
+  padding: 12px 4px;
+}
+
+/* --- Pause / Panic: subtiele neon-glow --- */
+.btn-pause {
+  box-shadow:
+    0 0 12px rgba(255, 230, 0, 0.35),
+    0 0 24px rgba(255, 230, 0, 0.12) !important;
+}
+
+.btn-panic {
+  box-shadow:
+    0 0 14px rgba(255, 49, 49, 0.45),
+    0 0 28px rgba(255, 49, 49, 0.2) !important;
+}
+
+#brainTab .btn-pause,
+#brainTab .btn-panic {
+  box-shadow:
+    0 0 12px rgba(255, 230, 0, 0.3),
+    0 0 22px rgba(255, 230, 0, 0.1) !important;
+}
+
+#brainTab .btn-panic {
+  box-shadow:
+    0 0 14px rgba(255, 49, 49, 0.45),
+    0 0 26px rgba(255, 49, 49, 0.18) !important;
+}
+
+/* --- Brain: inner layout --- */
+#brainTab .eq-tab-inner {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  padding: 6px 10px 10px;
+  box-sizing: border-box;
+}
+
+#brainTab.brain-tab {
+  background: var(--eq-bg);
+  overflow: hidden;
+}
+
+#brainTab .ring-meters-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+#brainTab .ring-meter {
+  position: relative;
+  width: 82px;
+  height: 82px;
+  flex-shrink: 0;
+  --pct: 0;
+}
+
+#brainTab .ring-meters-row--quad .ring-meter {
+  width: 70px;
+  height: 70px;
+}
+
+#brainTab .ring-meters-row--quad .ring-meter__core {
+  inset: 8px;
+}
+
+#brainTab .ring-meters-row--quad .ring-meter__val {
+  font-size: 0.8rem;
+}
+
+#brainTab .ring-meter__arc {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  z-index: 0;
+  transition: background 0.4s ease, box-shadow 0.35s ease;
+}
+
+#brainTab .ring-meter__core {
+  position: absolute;
+  inset: 9px;
+  border-radius: 50%;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+#brainTab .ring-meter__lbl {
+  font-size: 0.55rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  color: var(--eq-text);
+}
+
+#brainTab .ring-meter__val {
+  font-size: 0.88rem;
+  font-weight: 800;
+  color: var(--eq-text);
+  margin-top: 2px;
+}
+
+.brain-monitor-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin: 8px 0 10px;
+  font-size: 0.72rem;
+}
+
+.brain-monitor-stats div {
+  border: 1px solid var(--eq-border);
+  border-radius: var(--eq-radius);
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.brain-monitor-stats span {
+  opacity: 0.85;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 700;
+}
+
+.brain-monitor-stats strong {
+  font-size: 0.85rem;
+  font-weight: 800;
+}
+
+.eq-signals-sentiment {
+  margin-bottom: 8px;
+}
+
+#terminalTab #terminalNewsStream.terminal-news-stream {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.panel {
+  background: transparent !important;
+  border: 1px solid var(--eq-border) !important;
+  border-radius: var(--eq-radius) !important;
+}
+
+/* --- Mini charts / reasoning: transparante shell --- */
+#brainTab .brain-reasoning {
+  background: transparent !important;
+  border: 1px solid var(--eq-border) !important;
+  border-radius: var(--eq-radius) !important;
+}
+
+#brainTab .brain-state-card {
+  background: transparent !important;
+  border: 1px solid var(--eq-border) !important;
+  border-radius: var(--eq-radius) !important;
+}
+
+#brainTab .mini-chart {
+  border: 1px solid var(--eq-border);
+  border-radius: var(--eq-radius);
+  background: transparent;
+}
+
+#brainTab .trade-table {
+  border: 1px solid var(--eq-border);
+  border-radius: var(--eq-radius);
+  background: transparent;
+}
+
+#brainTab .trade-table th,
+#brainTab .trade-table td {
+  border-color: var(--eq-border) !important;
+}

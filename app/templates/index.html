@@ -1,144 +1,346 @@
 <!doctype html>
 <!--
   Bestand: app/templates/index.html
-  Relatief pad: ./app/templates/index.html
-  Functie: Webportal UI voor voorspellingen en overzicht van bot-activiteiten.
+  Functie: Geïntegreerde trading cockpit (Bitvavo-style): header + 75/25 chart/AI + full-width ledger.
 -->
-<html lang="en">
+<html lang="nl">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>AI Trading Bot Portal</title>
-    <style>
-      body {
-        font-family: Arial, sans-serif;
-        margin: 0;
-        background: #0d1117;
-        color: #e6edf3;
-      }
-      .container {
-        max-width: 1000px;
-        margin: 30px auto;
-        padding: 0 16px;
-      }
-      .card {
-        background: #161b22;
-        border: 1px solid #30363d;
-        border-radius: 10px;
-        padding: 16px;
-        margin-bottom: 16px;
-      }
-      input, button {
-        padding: 10px;
-        border-radius: 8px;
-        border: 1px solid #30363d;
-        background: #0d1117;
-        color: #e6edf3;
-      }
-      button {
-        background: #238636;
-        cursor: pointer;
-      }
-      .signal-buy { color: #3fb950; font-weight: bold; }
-      .signal-sell { color: #f85149; font-weight: bold; }
-      .signal-hold { color: #d29922; font-weight: bold; }
-      table {
-        width: 100%;
-        border-collapse: collapse;
-      }
-      th, td {
-        border-bottom: 1px solid #30363d;
-        padding: 8px;
-        text-align: left;
-      }
-      .small {
-        opacity: 0.8;
-        font-size: 0.9rem;
-      }
-    </style>
+    <title>AI Trading Cockpit</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@500;600;700&family=JetBrains+Mono:wght@400;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/static/css/terminal.css" />
+    <link rel="stylesheet" href="/static/css/style.css" />
+    <link rel="stylesheet" href="/static/css/electric-quant.css" />
+    <link rel="stylesheet" href="/static/css/genesis-noir.css" />
+    <link rel="stylesheet" href="/static/css/cockpit.css" />
+    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   </head>
-  <body>
-    <div class="container">
-      <div class="card">
-        <h1>AI Trading Bot Portal</h1>
-        <p class="small">Voorspellingen op basis van marktgeschiedenis + wereldnieuws sentiment.</p>
+  <body class="cockpit-body">
+    <header class="cockpit-header" role="banner">
+      <div class="cockpit-header-lead">
+        <div class="cockpit-brand">
+          <span class="cockpit-logo" aria-hidden="true">◆</span>
+          <span>AI TRADING</span>
+        </div>
+        <nav class="cockpit-nav-tabs" aria-label="Hoofdnavigatie">
+          <button type="button" id="tabTerminalBtn" class="cockpit-tab active">Terminal</button>
+          <button type="button" id="tabBrainBtn" class="cockpit-tab">AI Brain</button>
+          <button type="button" id="tabLedgerBtn" class="cockpit-tab">Ledger</button>
+          <button type="button" id="tabHardwareBtn" class="cockpit-tab">Hardware</button>
+        </nav>
+      </div>
+      <div class="cockpit-header-center">
+        <span id="headerPairDisplay" class="genesis-mono-strong" aria-live="polite">BTC-EUR</span>
+        <select id="marketSelect" class="cockpit-select" aria-label="Bitvavo-markt"></select>
+        <button type="button" id="refreshMarketsBtn" class="btn-outline btn-outline--icon" aria-label="Markten verversen">↻</button>
+        <span id="livePrice" class="cockpit-btc-price" aria-live="polite">BTC —</span>
+        <span id="headerEquity" hidden>-</span>
+        <span class="cockpit-bal"
+          >Balans: <strong id="headerBalanceEuro">€—</strong>
+          <span class="hint-wrap" tabindex="0" style="margin-left: 6px">
+            <span class="hint-icon">(i)</span>
+            <span class="hint-bubble">Paper-equity uit de vault-portefeuille; live Bitvavo-markt via dropdown.</span>
+          </span></span
+        >
+        <span class="genesis-mono-strong" style="font-size: 14px">Cash <span id="headerCash">—</span></span>
+      </div>
+      <div class="cockpit-hw" aria-label="Hardware-snapshot">
+        <span class="hint-wrap" tabindex="0">
+          <span class="hint-icon">(i)</span>
+          <span class="hint-bubble">Live CPU, RAM, GPU (nvidia-smi) en schijf; vernieuwt via WebSocket.</span>
+        </span>
+        <span id="headerStatCpu">CPU —%</span>
+        <span id="headerStatRam">RAM —%</span>
+        <span id="headerStatGpu" class="cockpit-gpu-neon">GPU —%</span>
+        <span id="headerStatDisk">DISK —%</span>
+      </div>
+      <div class="cockpit-actions">
+        <button type="button" id="paperBtn" class="btn-outline" title="Paper-run op geselecteerde markt">Paper</button>
+        <button type="button" id="pauseBtn" class="btn-outline btn-outline--warn">Pause</button>
+        <button type="button" id="resumeBtn" class="btn-outline">Resume</button>
+        <button type="button" id="panicBtn" class="btn-outline btn-outline--danger">Panic</button>
+        <span id="modeBanner" class="cockpit-mode mode-toggle" title="Modus">…</span>
+      </div>
+    </header>
+
+    <div id="terminalTab" class="cockpit-shell">
+      <div class="cockpit-mid">
+        <section class="cockpit-chart-panel panel-noir">
+          <div class="cockpit-chart-stack">
+            <div class="cockpit-chart-top">
+              <h2 class="cockpit-card-title card-title-with-hint">
+                Prijsgrafiek
+                <span class="hint-wrap" tabindex="0">
+                  <span class="hint-icon">(i)</span>
+                  <span class="hint-bubble">Candlesticks afgeleid van Bitvavo-historie; assen puur wit. Markers tonen RL-signaal.</span>
+                </span>
+              </h2>
+              <div class="cockpit-chart-host chart-wrap--genesis">
+                <div id="priceChart"></div>
+              </div>
+              <pre id="prediction" class="cockpit-chart-meta">Laden…</pre>
+            </div>
+            <div class="cockpit-intelligence-ticker" aria-label="Marktintelligence">
+              <div class="cockpit-ticker-head">
+                <span class="cockpit-ticker-title">Intelligence ticker</span>
+                <div class="cockpit-ticker-metrics" aria-live="polite">
+                  <span class="cockpit-ticker-chip">Fear &amp; Greed: <strong id="tickerMetricFg">—</strong></span>
+                  <span class="cockpit-ticker-chip">BTC Dom: <strong id="tickerMetricBtcDom">—</strong></span>
+                  <span class="cockpit-ticker-chip">Whale: <strong id="tickerMetricWhale">—</strong></span>
+                </div>
+              </div>
+              <div class="cockpit-ticker-marquee" id="intelligenceTickerMarquee" aria-label="Marktintelligence nieuws ticker">
+                <div id="intelligenceTickerNews" class="cockpit-ticker-marquee-track" aria-live="polite"></div>
+              </div>
+            </div>
+          </div>
+          <div class="cockpit-sr-only">
+            <span id="terminalFearGreed">-</span><span id="terminalFearGreedSub"></span>
+          </div>
+        </section>
+
+        <aside class="cockpit-ai-panel">
+          <div class="panel-noir">
+            <h2 class="cockpit-card-title card-title-with-hint">
+              Decision reasoning
+              <span class="hint-wrap" tabindex="0">
+                <span class="hint-icon">(i)</span>
+                <span class="hint-bubble">Wat de RL-agent nu doet en waarom (laatste paper-besluit).</span>
+              </span>
+            </h2>
+            <div id="brainReasoningBox" class="brain-reasoning cockpit-reasoning-primary">Nog geen RL-besluit beschikbaar.</div>
+          </div>
+          <div class="panel-noir">
+            <h2 class="cockpit-card-title card-title-with-hint">
+              Signal mix
+              <span class="hint-wrap" tabindex="0">
+                <span class="hint-icon">(i)</span>
+                <span class="hint-bubble">Correlatie sentiment/prijs en gewichten nieuws vs prijs.</span>
+              </span>
+            </h2>
+            <div class="mini-chart mini-chart--corr-inline"><canvas id="brainCorrelationChart"></canvas></div>
+            <table class="trade-table trade-table--compact cockpit-signal-mix-table" style="margin-top: 8px">
+              <thead>
+                <tr>
+                  <th>Metric</th>
+                  <th class="cockpit-metric-value">Waarde</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Correlation</td>
+                  <td id="brainCorrValue" class="cockpit-metric-value">-</td>
+                </tr>
+                <tr>
+                  <td>News weight</td>
+                  <td id="brainNewsWeight" class="cockpit-metric-value">-</td>
+                </tr>
+                <tr>
+                  <td>Price weight</td>
+                  <td id="brainPriceWeight" class="cockpit-metric-value">-</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </aside>
       </div>
 
-      <div class="card">
-        <label for="ticker">Ticker:</label>
-        <input id="ticker" value="{{ default_ticker }}" />
-        <button id="predictBtn">Genereer voorspelling</button>
-      </div>
+      <section class="cockpit-ledger-panel panel-noir">
+        <h2 class="cockpit-card-title card-title-with-hint">
+          Live trade ledger
+          <span class="hint-wrap" tabindex="0">
+            <span class="hint-icon">(i)</span>
+            <span class="hint-bubble">Alle recente paper-trades over volle breedte; vernieuwt elke paar seconden.</span>
+          </span>
+        </h2>
+        <div class="cockpit-ledger-status" id="cockpitLedgerStatus" aria-live="polite">
+          <span class="cockpit-ledger-status-dot" aria-hidden="true"></span>
+          <span class="cockpit-ledger-status-text">Status: Scanning market…</span>
+          <span class="cockpit-ledger-live">LIVE</span>
+        </div>
+        <div class="cockpit-ledger-scroll">
+          <table class="trade-table" id="cockpitLedgerTable">
+            <thead>
+              <tr>
+                <th>Tijd</th>
+                <th>Pair</th>
+                <th>Action</th>
+                <th>Price</th>
+                <th>Qty</th>
+                <th>Sentiment</th>
+                <th>PnL €</th>
+              </tr>
+            </thead>
+            <tbody id="cockpitLedgerBody"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
 
-      <div class="card">
-        <h2>Laatste voorspelling</h2>
-        <pre id="prediction">Nog geen voorspelling uitgevoerd.</pre>
-      </div>
+    <section id="brainTab" class="brain-tab hidden" aria-hidden="true">
+      <div class="eq-tab-inner"></div>
+    </section>
 
-      <div class="card">
-        <h2>Activiteiten</h2>
-        <table>
-          <thead>
-            <tr>
-              <th>Tijd</th>
-              <th>Ticker</th>
-              <th>Signaal</th>
-              <th>Expected Return %</th>
-            </tr>
-          </thead>
-          <tbody id="eventsBody"></tbody>
-        </table>
+    <section id="ledgerTab" class="brain-tab hidden" aria-hidden="true">
+      <div class="genesis-tab-inner ledger-charts-host">
+        <div class="mini-chart mini-chart--equity"><canvas id="equityCurveChart"></canvas></div>
+        <div class="mini-chart mini-chart--donut"><canvas id="winLossChart"></canvas></div>
+        <div class="mini-chart mini-chart--sentout"><canvas id="sentimentOutcomeChart"></canvas></div>
+      </div>
+    </section>
+
+    <section id="hardwareTab" class="brain-tab hardware-tab hidden" aria-hidden="true">
+      <div class="genesis-tab-inner system-resources-inner">
+        <div class="panel genesis-card eq-card system-meters-card">
+          <div class="ring-meters-row ring-meters-row--quad" aria-label="CPU RAM GPU DISK">
+            <div class="ring-meter" id="ringMeterCpu" style="--pct: 0">
+              <div class="ring-meter__arc ring-meter__arc--cpu"></div>
+              <div class="ring-meter__core">
+                <span class="ring-meter__lbl">CPU</span>
+                <strong class="ring-meter__val" id="ringCpuVal">--</strong>
+              </div>
+            </div>
+            <div class="ring-meter" id="ringMeterRam" style="--pct: 0">
+              <div class="ring-meter__arc ring-meter__arc--ram"></div>
+              <div class="ring-meter__core">
+                <span class="ring-meter__lbl">RAM</span>
+                <strong class="ring-meter__val" id="ringRamVal">--</strong>
+              </div>
+            </div>
+            <div class="ring-meter ring-meter--gpu" id="ringMeterGpu" style="--pct: 0">
+              <div class="ring-meter__arc ring-meter__arc--gpu" id="ringGpuArc"></div>
+              <div class="ring-meter__core">
+                <span class="ring-meter__lbl">GPU</span>
+                <strong class="ring-meter__val" id="ringGpuVal">--</strong>
+              </div>
+            </div>
+            <div class="ring-meter" id="ringMeterDisk" style="--pct: 0">
+              <div class="ring-meter__arc ring-meter__arc--disk"></div>
+              <div class="ring-meter__core">
+                <span class="ring-meter__lbl">DISK</span>
+                <strong class="ring-meter__val" id="ringDiskVal">--</strong>
+              </div>
+            </div>
+          </div>
+          <p class="genesis-meta" id="ringGpuMeta"></p>
+        </div>
+        <div class="eq-grid eq-grid--four system-logs-grid">
+          <aside class="eq-col system-logs-meta">
+            <div class="panel genesis-card eq-card">
+              <p class="genesis-line">System logs (verborgen tab — gebruik Hardware-knop in dev)</p>
+            </div>
+          </aside>
+          <div class="panel genesis-card eq-card system-logs-span">
+            <div id="systemLogConsole" class="system-log-console"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div id="cockpitOffscreenMetrics" class="cockpit-offscreen" aria-hidden="true">
+      <div id="terminalReasoningBox" class="brain-reasoning"></div>
+      <div class="terminal-training-grid">
+        <div class="mini-chart mini-chart--train"><canvas id="terminalRewardChart"></canvas></div>
+        <div class="mini-chart mini-chart--train"><canvas id="terminalNewsLagChart"></canvas></div>
+        <div class="mini-chart mini-chart--train"><canvas id="terminalEpisodeChart"></canvas></div>
+        <div class="mini-chart mini-chart--train"><canvas id="terminalEntropyChart"></canvas></div>
+        <div class="mini-chart mini-chart--train"><canvas id="terminalLossChart"></canvas></div>
+      </div>
+      <div class="mini-chart mini-chart--feature"><canvas id="terminalFeatureChart"></canvas></div>
+      <div class="mini-chart mini-chart--bench"><canvas id="terminalBenchmarkChart"></canvas></div>
+      <table><tbody id="terminalBenchmarkBody"></tbody></table>
+      <div class="brain-monitor-stats brain-monitor-stats--terminal">
+        <div><span>LR</span><strong id="terminalLearningRate">-</strong></div>
+        <div><span>Steps</span><strong id="terminalStepCount">-</strong></div>
+        <div><span>Explore</span><strong id="terminalExplorationRate">-</strong></div>
+      </div>
+      <canvas id="terminalCorrelationChart"></canvas>
+      <span id="terminalCorrValue"></span><span id="terminalNewsWeight"></span><span id="terminalPriceWeight"></span>
+      <span id="terminalStateFearGreed"></span>
+      <span id="terminalStateBtc"></span>
+      <span id="terminalStateWhale"></span>
+      <span id="terminalStateMacro"></span>
+      <span id="terminalStateRsi"></span>
+      <span id="terminalStateMacd"></span>
+      <span id="terminalStateWeights"></span>
+      <p id="brainStateWeights" hidden aria-hidden="true">Focus —</p>
+      <div class="portfolio-big neon-equity" id="portfolioEquity">-</div>
+      <div class="portfolio-big neon-cash" id="portfolioCash">-</div>
+      <p id="portfolioStatsRest"></p>
+      <p id="activeOrders"></p>
+      <span id="sentimentValue"></span>
+      <div id="sentimentBar" class="progress-bar"></div>
+      <span id="sentimentConfidence"></span>
+      <p id="botStatus"></p>
+      <p id="balanceCheck"></p>
+      <ul class="risk-profile-list">
+        <li><span id="riskProfileBase"></span></li>
+        <li><span id="riskProfileMax"></span></li>
+        <li><span id="riskProfileSl"></span></li>
+      </ul>
+      <div class="neon-equity" id="brainPortfolioEquity">-</div>
+      <div class="neon-cash" id="brainPortfolioCash">-</div>
+      <p id="brainPortfolioMeta">—</p>
+      <span id="brainRiskProfileBase"></span>
+      <span id="brainRiskProfileMax"></span>
+      <span id="brainRiskProfileSl"></span>
+      <div id="terminalNewsStream"></div>
+      <div class="ticker-track" id="tickerTrack"></div>
+      <span id="storageUsagePct">-</span>
+      <div id="storageUsageBar" class="progress-bar storage-bar"></div>
+      <p id="storageOptimizationStats"></p>
+      <p id="storageDataHealth"></p>
+      <p id="liveUpdatedAt"></p>
+      <ul class="risk-profile-list" style="display: none" aria-hidden="true">
+        <li class="risk-profile-row">
+          <span class="risk-profile-label">Base</span>
+          <span class="risk-profile-val" id="riskProfileBase">€100</span>
+        </li>
+        <li class="risk-profile-row">
+          <span class="risk-profile-label">Max</span>
+          <span class="risk-profile-val" id="riskProfileMax">10%</span>
+        </li>
+        <li class="risk-profile-row">
+          <span class="risk-profile-label">SL</span>
+          <span class="risk-profile-val" id="riskProfileSl">2.5%</span>
+        </li>
+      </ul>
+    </div>
+
+    <div id="brainHintPortal" aria-hidden="true"></div>
+
+    <div id="headerTradingActions" class="hidden"></div>
+    <div id="headerSystemActions" class="hidden">
+      <button type="button" id="systemLogPauseBtn" class="btn-outline">Pause</button>
+      <button type="button" id="systemLogClearBtn" class="btn-outline">Clear</button>
+      <button type="button" id="systemLogMuteBtn" class="btn-outline">Mute</button>
+      <label class="genesis-header-check">
+        <input id="systemLogAutoRefresh" type="checkbox" checked />
+        Auto 5s
+      </label>
+      <span id="systemLogStatus" class="status-disconnected genesis-mono-strong">Disconnected</span>
+    </div>
+
+    <div id="newsModal" class="news-modal hidden">
+      <div class="news-modal-card">
+        <button id="newsModalClose" class="news-modal-close">x</button>
+        <h3 id="newsModalTitle">Nieuwsdetail</h3>
+        <p id="newsModalMeta" class="muted">-</p>
+        <p id="newsModalSummary" class="news-detail-summary">-</p>
+        <p id="newsModalTickers" class="news-detail-tickers">Affected tickers: -</p>
+        <p id="newsModalAi" class="news-detail-ai">-</p>
+        <a id="newsModalLink" href="#" target="_blank" rel="noopener noreferrer">Read Original Article</a>
       </div>
     </div>
 
-    <script>
-      function signalClass(signal) {
-        const s = (signal || "").toLowerCase();
-        if (s === "buy") return "signal-buy";
-        if (s === "sell") return "signal-sell";
-        return "signal-hold";
-      }
-
-      async function runPrediction() {
-        const ticker = document.getElementById("ticker").value || "AAPL";
-        const res = await fetch(`/predict?ticker=${encodeURIComponent(ticker)}`);
-        const data = await res.json();
-
-        if (!res.ok) {
-          document.getElementById("prediction").textContent = JSON.stringify(data, null, 2);
-          return;
-        }
-
-        document.getElementById("prediction").innerHTML =
-          `Ticker: ${data.ticker}\n` +
-          `Latest Close: ${data.latest_close}\n` +
-          `Predicted Next Close: ${data.predicted_next_close}\n` +
-          `Expected Return %: ${data.expected_return_pct}\n` +
-          `Signal: <span class="${signalClass(data.signal)}">${data.signal}</span>\n` +
-          `News Sentiment: ${data.news_sentiment}\n` +
-          `Generated At: ${data.generated_at}`;
-
-        await refreshActivity();
-      }
-
-      async function refreshActivity() {
-        const res = await fetch("/activity");
-        const data = await res.json();
-        const body = document.getElementById("eventsBody");
-        body.innerHTML = "";
-        for (const event of data.events || []) {
-          const tr = document.createElement("tr");
-          tr.innerHTML =
-            `<td>${event.ts}</td>` +
-            `<td>${event.ticker || "-"}</td>` +
-            `<td class="${signalClass(event.signal)}">${event.signal || "-"}</td>` +
-            `<td>${event.expected_return_pct ?? "-"}</td>`;
-          body.appendChild(tr);
-        }
-      }
-
-      document.getElementById("predictBtn").addEventListener("click", runPrediction);
-      refreshActivity();
-    </script>
+    <script src="/static/js/terminal.js"></script>
   </body>
-  </html>
+</html>

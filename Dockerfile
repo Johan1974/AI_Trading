@@ -1,18 +1,37 @@
 # Bestand: Dockerfile
 # Relatief pad: ./Dockerfile
-# Functie: Bouwt de API-container voor de AI trading bot en start de FastAPI-server.
-FROM python:3.11-slim
+# Functie: Bouwt de API-container met CUDA-runtime (nvidia-smi) voor GPU-monitoring en RL-stack.
+# CUDA 12.4 runtime (host-driver) + PyTorch cu124-wheels (eigen CUDA-runtime in wheel).
+FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
+
+# Standaard NVIDIA-entrypoint verbergt torch als versie < 2.4 → transformers crasht; wij starten rechtstreeks.
+ENTRYPOINT []
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        python3 \
+        python3-pip \
+        python3-venv \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/python3 /usr/local/bin/python \
+    && ln -sf /usr/bin/pip3 /usr/local/bin/pip
 
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Torch: cu124 + v2.6+ vereist door transformers 5.x (CVE-2025-32434 / torch.load); matcht CUDA 12.4-runtime.
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir --force-reinstall \
+        "torch==2.6.0+cu124" \
+        --index-url https://download.pytorch.org/whl/cu124
 
 COPY . .
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

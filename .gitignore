@@ -4,3 +4,7 @@
 
 __pycache__/
 *.py[cod]
+bot.log
+logs/*.log
+.env
+storage/

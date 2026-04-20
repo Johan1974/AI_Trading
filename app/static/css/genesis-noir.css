@@ -1,0 +1,416 @@
+/*
+  Genesis Modern Noir — unified grid, typography, header, hints, system tab.
+*/
+
+:root {
+  --genesis-header-h: 44px;
+  --genesis-tabs-h: 40px;
+  --genesis-font: "Inter", system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  --genesis-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  --genesis-neon-line: 4px;
+  --genesis-neon-blue: #00d1ff;
+}
+
+html {
+  font-size: 14px;
+}
+
+body {
+  font-family: var(--genesis-font) !important;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.genesis-mono-strong,
+.genesis-header-select,
+.genesis-header-input,
+#systemLogConsole,
+.trade-table,
+.ring-meter__val {
+  font-family: var(--genesis-mono) !important;
+}
+
+.genesis-app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: nowrap;
+  min-height: var(--genesis-header-h);
+  padding: 6px 12px;
+  background: #000000;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  box-sizing: border-box;
+}
+
+.genesis-app-header__mode {
+  flex: 0 0 auto;
+  max-width: min(220px, 28vw);
+}
+
+.genesis-app-header__mode #modeBanner {
+  font-size: 0.72rem;
+  padding: 5px 10px;
+  border-radius: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.genesis-app-header__data {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  min-width: 0;
+  font-size: 14px;
+  color: #ffffff;
+}
+
+.genesis-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: #ffffff !important;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.genesis-header-sep {
+  width: 1px;
+  height: 18px;
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.genesis-header-select,
+.genesis-header-input {
+  font-family: var(--genesis-mono);
+  font-size: 14px;
+  font-weight: 700;
+  color: #ffffff !important;
+  background: #0a0a0a !important;
+  border: 1px solid rgba(255, 255, 255, 0.35) !important;
+  border-radius: 4px;
+  padding: 4px 8px;
+  min-height: 28px;
+}
+
+.genesis-header-input {
+  width: 5.5rem;
+}
+
+.genesis-mono-strong {
+  font-family: var(--genesis-mono) !important;
+  font-weight: 700;
+  font-size: 14px;
+  color: #ffffff !important;
+  font-variant-numeric: tabular-nums;
+}
+
+.genesis-header-price {
+  max-width: 42vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.genesis-app-header__actions {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.genesis-app-header__actions.hidden {
+  display: none !important;
+}
+
+.genesis-header-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #ffffff !important;
+}
+
+.btn-outline {
+  font-family: var(--genesis-font);
+  font-size: 14px;
+  font-weight: 600;
+  padding: 4px 12px !important;
+  min-height: 30px;
+  border-radius: 6px;
+  background: transparent !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(255, 255, 255, 0.35) !important;
+  cursor: pointer;
+  box-shadow: none !important;
+}
+
+.btn-outline:hover {
+  border-color: #ffffff !important;
+  background: rgba(255, 255, 255, 0.06) !important;
+  filter: none;
+}
+
+.btn-outline--warn {
+  border-color: rgba(255, 220, 80, 0.85) !important;
+  color: #fff8c2 !important;
+}
+
+.btn-outline--danger {
+  border-color: rgba(255, 80, 100, 0.95) !important;
+  color: #ffb3bd !important;
+}
+
+.btn-outline--icon {
+  padding: 5px 8px !important;
+  min-width: 32px;
+}
+
+.top-tabs {
+  min-height: var(--genesis-tabs-h);
+  align-items: center;
+}
+
+.tab-btn {
+  padding: 6px 12px !important;
+  font-size: 14px !important;
+  font-weight: 600 !important;
+}
+
+/* Uniform 4-column grid — gelijke kolombreedtes */
+.eq-grid.eq-grid--four {
+  grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+  grid-auto-rows: minmax(0, 1fr);
+  gap: 14px !important;
+  align-items: stretch;
+}
+
+.system-logs-grid {
+  flex: 1;
+  min-height: 0;
+  padding: 0 15px 15px;
+  box-sizing: border-box;
+}
+
+.system-logs-span {
+  grid-column: 2 / -1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.system-logs-meta .eq-card {
+  height: 100%;
+}
+
+#terminalTab,
+#brainTab.brain-tab,
+#ledgerTab.brain-tab,
+#hardwareTab.hardware-tab {
+  height: calc(100vh - var(--genesis-header-h) - var(--genesis-tabs-h)) !important;
+}
+
+#ledgerTab.brain-tab {
+  background: #000000;
+  color: #ffffff;
+  overflow: hidden;
+}
+
+#ledgerTab .genesis-tab-inner {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+}
+
+.ledger-tab-grid {
+  flex: 1;
+  min-height: 0;
+  align-content: start;
+}
+
+.ledger-tab-grid .ledger-span-full {
+  grid-column: 1 / -1;
+}
+
+.history-table-scroll,
+.ledger-table-scroll {
+  max-height: min(46vh, 400px);
+  overflow: auto;
+  min-height: 0;
+}
+
+.system-resources-inner {
+  gap: 12px;
+  padding-bottom: 12px;
+}
+
+.system-meters-card {
+  flex: 0 0 auto;
+  margin: 0 15px;
+}
+
+#hardwareTab.hardware-tab {
+  display: flex;
+  flex-direction: column;
+  background: #000000;
+  color: #ffffff;
+  overflow: hidden;
+  padding: 0;
+}
+
+#hardwareTab .genesis-tab-inner {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+#hardwareTab #systemLogConsole {
+  flex: 1;
+  min-height: 0;
+  max-height: none !important;
+  overflow-y: auto !important;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  font-family: var(--genesis-font);
+  font-size: 13px;
+}
+
+#hardwareTab #systemLogConsole::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+/* Chart area: no bleed outside column */
+.chart-wrap--genesis {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden !important;
+  position: relative;
+  contain: layout style;
+}
+
+#priceChart {
+  max-width: 100%;
+  overflow: hidden;
+}
+
+/* State overview: larger indicator labels */
+.brain-state-grid--terminal .brain-state-card > span:first-child,
+#brainTab .brain-state-card > span:first-child,
+.brain-state-label {
+  font-size: 15px !important;
+  font-weight: 700 !important;
+  color: #ffffff !important;
+}
+
+.brain-state-card strong,
+.brain-state-grid--terminal .brain-state-card strong {
+  font-size: 15px !important;
+  font-weight: 700 !important;
+}
+
+/* Numeric emphasis */
+.portfolio-big,
+.ring-meter__val,
+.trade-table td:last-child,
+.genesis-line strong,
+.risk-profile-val {
+  font-weight: 700 !important;
+}
+
+.sentiment-row span:last-child {
+  font-weight: 700 !important;
+}
+
+.hint-icon {
+  font-size: 12px !important;
+  font-weight: 700 !important;
+  color: #ffffff !important;
+  opacity: 0.75 !important;
+}
+
+#brainHintPortal .hint-bubble--portal {
+  z-index: 99999 !important;
+  font-size: 14px !important;
+  font-weight: 600 !important;
+}
+
+/* GPU-meter: neon blauw wanneer CUDA actief (conic-gradient zoals Electric Quant) */
+#hardwareTab .ring-meter--gpu.ring-meter--gpu-active .ring-meter__arc--gpu {
+  background: conic-gradient(
+    var(--genesis-neon-blue) calc(var(--pct) * 1%),
+    rgba(255, 255, 255, 0.08) 0
+  ) !important;
+  filter: drop-shadow(0 0 10px rgba(0, 209, 255, 0.65));
+}
+
+.genesis-card-title,
+.card-title-with-hint,
+.risk-profile-label,
+.portfolio-metric-label,
+.brain-state-card > span:first-child {
+  font-size: 14px !important;
+  font-weight: 600 !important;
+}
+
+#terminalTab .terminal-col--exec .genesis-card--trades,
+#brainTab .eq-col--action .genesis-card--trades,
+#brainTab .eq-col--action .brain-card.genesis-card--trades {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+}
+
+.risk-profile-label {
+  color: #ffffff !important;
+  opacity: 1 !important;
+}
+
+.trade-table th,
+.trade-table td {
+  font-size: 14px !important;
+}
+
+/* News: fewer rows = less overflow */
+.terminal-news-stream {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  justify-content: flex-start;
+}
+
+/* Reasoning: clip, no scrollbar */
+#terminalTab .brain-reasoning--terminal,
+#brainTab .brain-reasoning {
+  overflow: hidden !important;
+  max-height: none;
+  flex: 1 1 auto;
+  min-height: 0;
+  font-size: 13px;
+}
+
+#brainTab .brain-training-charts {
+  overflow: hidden !important;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+
+#brainTab .brain-training-charts .mini-chart--train-solo {
+  flex: 1 1 auto;
+  min-height: 140px;
+}
+
+#brainTab .eq-col--visual > .brain-card--training {
+  flex: 2 !important;
+}

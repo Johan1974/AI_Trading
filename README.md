@@ -15,7 +15,9 @@ De bot combineert prijsdata (OHLCV) met nieuws-sentiment en past basis risk cont
 ### 1) Data Ingestion
 - `app/services/ingestion.py`
   - Haalt OHLCV op via `yfinance`.
-  - Haalt nieuws op via NewsAPI.
+  - Haalt nieuws op via CryptoCompare API met RSS-backup.
+- `app/services/data_aggregator.py`
+  - Combineert Bitvavo candles + Fear & Greed + nieuwscontext tot één genormaliseerd DataFrame.
 
 ### 2) Analysis / Feature Layer
 - `app/services/features.py`
@@ -25,15 +27,35 @@ De bot combineert prijsdata (OHLCV) met nieuws-sentiment en past basis risk cont
 ### 3) Signal Model
 - `app/services/model.py`
   - Baseline lineaire regressie op recente slotkoersen.
+- `app/ai/base.py`
+  - BaseClasses: `TechnicalAnalyzer`, `SentimentAnalyzer`, `Judge`.
+- `app/ai/technical/sklearn_technical.py`
+  - Scikit-learn technical scoring model.
+- `app/ai/sentiment/finbert_sentiment.py`
+  - HuggingFace FinBERT sentiment scoring.
+- `app/ai/judge/weighted_judge.py`
+  - Combineert technical + sentiment via gewogen judge-score.
+- `app/services/signal_engine.py`
+  - Orkestreert beide modellen en levert unified judge-uitkomst.
 
 ### 4) Risk Engine
 - `app/services/risk.py`
   - Signaal mapping (`BUY/SELL/HOLD`).
   - Risk controls: stop-loss, take-profit, position size fraction.
+  - `RiskManager` gates:
+    - max `3%` budget per trade,
+    - volatility filter (skip bij te hoge spread in bps),
+    - emergency exit bij sentiment-shock (`<= -0.8`).
 
 ### 5) Execution (Paper)
 - `app/services/execution.py`
   - Simuleert orderuitvoering inclusief fee-inschatting.
+- `app/services/paper.py`
+  - Houdt paper portfolio (cash/positie/equity/PnL history) bij per cycle.
+- `app/exchanges/base.py`
+  - Abstracte exchange interface voor execution.
+- `app/exchanges/bitvavo.py`
+  - Bitvavo signed client voor balance en market orders.
 
 ### 6) State & Monitoring
 - `app/services/state.py`
@@ -45,8 +67,121 @@ De bot combineert prijsdata (OHLCV) met nieuws-sentiment en past basis risk cont
 
 - `GET /health` - service health.
 - `GET /predict?ticker=AAPL` - genereert prediction + risk + paper order.
+- `POST /paper/run?ticker=AAPL` - draait volledige paper-trading cycle en update portfolio/PnL.
+- `GET /dry-run/pnl/daily?date_utc=YYYY-MM-DD` - berekent fictieve dag-PnL uit `trades_log.csv`.
 - `GET /activity` - actuele runtime status en events.
 - `GET /` - webportal.
+
+## Dry Run Decorator
+
+Trades worden via een decorator gelogd in `trades_log.csv` zonder echte Bitvavo API call wanneer:
+
+- `DRY_RUN=true` (default)
+
+Gedrag:
+- alle trade-attempts loggen met timestamp, market, side, prijs, amount en status;
+- fake fee-rate: `0.15%` (`0.0015`);
+- live call wordt gesimuleerd in dry-run mode.
+
+Dagelijkse fictieve PnL:
+- endpoint: `GET /dry-run/pnl/daily`
+- rekent:
+  - realized PnL,
+  - unrealized PnL (open positie op laatste dagprijs),
+  - net PnL,
+  - totale betaalde fees.
+
+## Data Aggregator (multi-source features)
+
+De `DataAggregator` normaliseert drie bronnen op één tijdas (`timestamp`) zodat het model patronen tussen nieuws-pieken en prijsvolatiliteit kan leren:
+
+1. Bitvavo candles (`open/high/low/close/volume`)
+2. Crypto Fear & Greed (`fng_value`, `fng_classification`)
+3. CryptoCompare/RSS nieuwsstream (`news_count`, `news_sentiment_raw`)
+
+Extra afgeleide features:
+- `returns`
+- `volatility`
+- `news_peak_zscore`
+- `price_volatility_interaction`
+
+Voorbeeldgebruik:
+
+```python
+import os
+from app.services.data_aggregator import AggregatorConfig, DataAggregator
+
+config = AggregatorConfig(
+    market="BTC-EUR",
+    interval="1h",
+    candle_limit=240,
+    news_query="crypto",
+    news_api_key=os.getenv("CRYPTOCOMPARE_KEY"),
+)
+df = DataAggregator(config).build_normalized_frame()
+print(df.tail(3))
+```
+
+## Reinforcement Learning (Stable Baselines3)
+
+Voor RL-simulatie op Bitvavo-data is de volgende module toegevoegd:
+
+- `app/rl/data.py`
+  - Historische candles 2024-2025 ophalen vanaf Bitvavo.
+  - Feature engineering inclusief event-flags voor grote nieuws-events (o.a. Bitcoin Halving).
+- `app/rl/events.py`
+  - Eventkalender met impact scores.
+- `app/rl/env.py`
+  - `BitvavoTradingEnv` met:
+    - **Reward**: via `core/reward_function.py` (PnL-%, drawdown, friction, consistency, SL-shock; env sync met risk SL%).
+    - max aantal gesimuleerde trades.
+- `app/rl/train.py`
+  - PPO training + evaluatie helpers.
+- `train_rl_bot.py`
+  - CLI startscript voor 10.000 tradesimulaties.
+
+Start RL training:
+
+```bash
+cd "$HOME/AI_Trading"
+python3 train_rl_bot.py
+```
+
+Default settings:
+- Periode: 2024-01-01 t/m 2025-12-31
+- Market: `BTC-EUR`
+- Interval: `1h`
+- Simulatie cap: `10.000` trades
+- Algorithm: `PPO` (Stable Baselines3)
+
+## Beslisflow (Judge voor execution)
+
+1. `SklearnTechnicalAnalyzer` berekent technische score en verwachte return.
+2. `FinBertSentimentAnalyzer` berekent sentimentscore op nieuws-headlines.
+3. `WeightedJudge` combineert beide signalen naar één composite score.
+4. Alleen dit judge-signaal gaat door naar risk/execution logic (Bitvavo-pad).
+
+Formule:
+
+`composite = technical_score * 0.65 + sentiment_score * 0.35`
+
+Default thresholds:
+- `composite > 0.20` -> `BUY`
+- `composite < -0.20` -> `SELL`
+- anders -> `HOLD`
+
+## RiskManager beleid
+
+Actieve riskregels vóór execution:
+
+1. **Budget cap per trade**  
+   `adjusted_size_fraction <= 0.03`
+
+2. **Volatility filter op spread proxy**  
+   Als `spread_bps > 45` -> signaal wordt `HOLD` (geen trade).
+
+3. **Emergency Exit**  
+   Als `news_sentiment <= -0.8` -> geforceerd `SELL` signaal.
 
 ## Security & Secrets Policy
 
@@ -57,21 +192,82 @@ De bot combineert prijsdata (OHLCV) met nieuws-sentiment en past basis risk cont
 Voorbeeld vault:
 
 ```bash
-export NEWS_API_KEY=jouw_key_hier
-export NEWS_QUERY=stock market OR economy OR inflation
+export CRYPTOCOMPARE_KEY=jouw_key_hier
 export DEFAULT_TICKER=AAPL
 export LOOKBACK_DAYS=400
+export LIVE_MODE=false
+export BITVAVO_KEY_READ=...
+export BITVAVO_SECRET_READ=...
+export BITVAVO_KEY_TRADE=...
+export BITVAVO_SECRET_TRADE=...
 ```
 
-## Starten
+Nieuwsbronnen notitie:
+- Primair: CryptoCompare via `CRYPTOCOMPARE_KEY`.
+- Backup: keyless RSS feeds (Cointelegraph, CoinDesk, Decrypt).
+
+Mode-regel:
+- `LIVE_MODE` ontbreekt in de vault -> app draait standaard in paper mode.
+- `LIVE_MODE=true` -> `BITVAVO_KEY_TRADE` en `BITVAVO_SECRET_TRADE` zijn verplicht (fail-fast bij startup).
+
+## Starten (container altijd via `run_bot.sh`)
+
+Gebruik **`./run_bot.sh`** als vaste manier om de container te bouwen en te starten. Zo wordt
+`~/.trading_vault` geëxporteerd, draaien er korte API health-checks vóór `docker compose`, en wordt
+altijd het compose-bestand in deze repo aangesproken (`-f …/docker-compose.yml`).  
+Handmatig `docker compose up` kan, maar is dan **niet** hetzelfde pad (geen vault uit dit script, ander cwd-risico).
 
 ```bash
 cd "$HOME/AI_Trading"
 ./run_bot.sh
 ```
 
+Standaard start dit de container **op de achtergrond** (`-d`). Voor logs in de terminal: `./run_bot.sh -f`.  
+Stoppen bijvoorbeeld: `docker compose -f "$HOME/AI_Trading/docker-compose.yml" stop` (of opnieuw `./run_bot.sh` na een eerdere `down` — het script ruimt eerst oude containers op).
+
+**Flags (efficiency / troubleshooting):** `--skip-optimize` (sla host `optimize_data.py` over), `--no-cache` (forceer Docker image rebuild zonder cache), `--clean` (compose `down` met `--volumes` en `--rmi local`, traag — alleen bij hardnekkige image-problemen).
+
 Open daarna:
 - `http://localhost:8000`
+
+## Bitvavo advies (praktisch)
+
+Bitvavo is een prima keuze voor een NL/EU crypto-flow, maar ik adviseer een gefaseerde inzet:
+
+1. Start met paper-trading op dezelfde symbols/timeframes als je straks live wilt gebruiken.
+2. Bouw daarna een `bitvavo` execution adapter met alleen:
+   - market data pull,
+   - order place/cancel,
+   - position/balance sync.
+3. Zet live trading pas aan na stabiele walk-forward en latency tests.
+
+Belangrijkste live risico's bij Bitvavo (en elke CEX):
+- onverwachte spread/slippage bij volatiele candles,
+- API rate limits / tijdelijke timeouts,
+- order partial fills en reconnect edge cases.
+
+Mitigatie:
+- strakke retry/backoff,
+- idempotente order IDs,
+- max order notional cap + daily kill switch.
+
+## Bitvavo Rate Limit Aware client
+
+`app/exchanges/bitvavo.py` bevat nu een rate-limit aware wrapper met:
+
+- **Weight tracking**
+  - Houdt lokaal request-weight bij per endpoint.
+  - Verwerkt Bitvavo headers:
+    - `bitvavo-ratelimit-limit`
+    - `bitvavo-ratelimit-remaining`
+    - `bitvavo-ratelimit-resetat`
+- **Auto-throttle**
+  - Pauzeert automatisch zodra usage >= 80% van het minuutlimiet tot reset-at.
+- **429 exponential backoff**
+  - Vangt HTTP 429 op.
+  - Gebruikt `resetat` indien aanwezig, anders exponentiële wachttijd (`0.5s, 1s, 2s...`).
+- **Idempotentie**
+  - Ondersteunt `clientOrderId` op market orders.
 
 ## Risk Assessment (kritische valkuilen)
 

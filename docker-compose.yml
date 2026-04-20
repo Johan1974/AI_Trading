@@ -1,14 +1,51 @@
 # Bestand: docker-compose.yml
 # Relatief pad: ./docker-compose.yml
 # Functie: Definieert de bot-service, buildconfig, poortmapping en runtime omgevingsvariabelen.
+#
+# Start/stop voor dagelijks gebruik: altijd ./run_bot.sh (root van deze repo).
+# Dat laadt ~/.trading_vault, draait API health-checks en roept compose met het juiste -f pad aan.
+# Alleen `docker compose up` is mogelijk maar dan mis je vault-export en het vaste compose-pad.
 services:
   ai-trading-bot:
     build: .
     container_name: ai-trading-bot
+    gpus: all
+    restart: always
     ports:
       - "8000:8000"
+    volumes:
+      - ./storage:/app/storage
+      - ./logs:/app/logs
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     environment:
-      NEWS_API_KEY: ${NEWS_API_KEY:-}
-      NEWS_QUERY: ${NEWS_QUERY:-stock market OR economy OR inflation}
-      DEFAULT_TICKER: ${DEFAULT_TICKER:-AAPL}
+      TZ: Europe/Amsterdam
+      CRYPTOCOMPARE_KEY: ${CRYPTOCOMPARE_KEY:-}
+      COINMARKETCAP_KEY: ${COINMARKETCAP_KEY:-${CMC_API_KEY:-}}
+      PAPER_START_BALANCE_EUR: ${PAPER_START_BALANCE_EUR:-10000}
+      ENGINE_LOOP_MINUTES: ${ENGINE_LOOP_MINUTES:-1}
+      RL_EPISODE_HOURS: ${RL_EPISODE_HOURS:-24}
+      RL_EPISODE_TRAIN_STEPS: ${RL_EPISODE_TRAIN_STEPS:-3000}
+      DEFAULT_TICKER: ${DEFAULT_TICKER:-BTC-EUR}
       LOOKBACK_DAYS: ${LOOKBACK_DAYS:-400}
+      BITVAVO_KEY_READ: ${BITVAVO_KEY_READ:-}
+      BITVAVO_SECRET_READ: ${BITVAVO_SECRET_READ:-}
+      MIN_24H_VOLUME_EUR: ${MIN_24H_VOLUME_EUR:-500000}
+      PAIR_MIN_QUOTE_BALANCE: ${PAIR_MIN_QUOTE_BALANCE:-50}
+      PAIR_MIN_BASE_BALANCE: ${PAIR_MIN_BASE_BALANCE:-0.00001}
+      # Risk engine (core/risk_manager.py): sizing, max position, harde SL/TP
+      RISK_SIZING_MODE: ${RISK_SIZING_MODE:-fixed_eur}
+      RISK_BASE_TRADE_EUR: ${RISK_BASE_TRADE_EUR:-100}
+      RISK_MAX_TRADE_EQUITY_PCT: ${RISK_MAX_TRADE_EQUITY_PCT:-10}
+      RISK_MAX_POSITION_EQUITY_PCT: ${RISK_MAX_POSITION_EQUITY_PCT:-40}
+      RISK_STOP_LOSS_PCT: ${RISK_STOP_LOSS_PCT:-2.5}
+      RISK_TAKE_PROFIT_PCT: ${RISK_TAKE_PROFIT_PCT:-5.0}
+      # Telegram: zet in ~/.trading_vault of export vóór `docker compose` (of .env naast compose)
+      TELEGRAM_TOKEN: ${TELEGRAM_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      # GPU: in container standaard verplicht (/.dockerenv); zet op 0 voor CPU-only test.
+      GENESIS_REQUIRE_GPU: ${GENESIS_REQUIRE_GPU:-1}
+      # Heal-script: zet op 1 als je op CPU-log OK wilt (default 0 = alleen cuda:0).
+      GENESIS_HEAL_ALLOW_CPU_LOG: ${GENESIS_HEAL_ALLOW_CPU_LOG:-0}
+      # FinBERT op GPU zodra CUDA beschikbaar is (torch cu121 in Dockerfile).
+      FINBERT_USE_CUDA: ${FINBERT_USE_CUDA:-1}
