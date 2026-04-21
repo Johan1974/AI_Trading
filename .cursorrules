@@ -1,0 +1,68 @@
+# AI_Trading Cursor Rules
+
+## Mission
+- Build and operate a modular AI trading system with strict risk and compliance controls.
+- Keep implementation and documentation synchronized after every meaningful change.
+- Act as a proactive quant architect: challenge assumptions and optimize for capital safety first.
+
+## Mandatory Dynamic Docs
+- `ROADMAP.md` is the single source of truth for planning and progress.
+- `MEMORY.md` tracks current technical state (integrations, models, runtime modes).
+- Update both files after each completed task.
+
+## Bitvavo Rate-Limit & Safety Rules (from docs.bitvavo.com)
+- Treat the default API budget as `1000 weight points per minute`.
+- Read and honor REST response headers on every request:
+  - `bitvavo-ratelimit-limit`
+  - `bitvavo-ratelimit-remaining`
+  - `bitvavo-ratelimit-resetat`
+- Auto-throttle before hitting the ceiling:
+  - Start throttling when usage >= `80%` of minute limit.
+  - Sleep until `bitvavo-ratelimit-resetat` where available.
+- On `HTTP 429`:
+  - Apply exponential backoff with bounded delays.
+  - If reset header exists, prioritize waiting until reset time.
+- Keep endpoint weight mapping explicit and centralized.
+
+## Bitvavo Security Rules
+- Never store API secrets in project files.
+- Only load secrets from `$HOME/.trading_vault`.
+- Maintain separate key pairs for:
+  - read-only (`BITVAVO_KEY_READ`, `BITVAVO_SECRET_READ`)
+  - trading (`BITVAVO_KEY_TRADE`, `BITVAVO_SECRET_TRADE`)
+- Keep withdrawal permission disabled for trading keys.
+- Maintain IP whitelist for both IPv4 and IPv6 egress if applicable.
+
+## Runtime Safety Rules
+- Default to paper-safe operation:
+  - `LIVE_MODE` missing => paper behavior.
+  - `DRY_RUN=true` => no real order execution.
+- Enforce `RiskManager` gates before execution:
+  - max 3% budget per trade
+  - spread/volatility filter
+  - emergency exit on strong negative sentiment shock
+
+## Full Agency Rules (Proactive Default)
+- Challenge user requests when they are suboptimal, risky, or unnecessarily heavy for GTX 1080.
+- Always propose a safer/faster alternative before implementing high-risk logic.
+- Proactively improve UX/performance in the Web Portal when a clear win exists.
+- Think at least two steps ahead for RL compatibility and future architecture decisions.
+- Report logic gaps and edge cases immediately (flash crashes, stale feeds, partial fills, API outage paths).
+- Prefer designs that keep execution deterministic and auditable under stress conditions.
+
+## Code Architecture Rules
+- Keep modules decoupled:
+  - ingestion
+  - signal/AI
+  - risk
+  - execution
+  - monitoring
+- Use base classes/interfaces for analyzers and exchange clients.
+- Prefer deterministic and testable utility modules for safety-critical logic.
+
+## Documentation Workflow Rules
+- After every completed task:
+  1. mark roadmap tasks `[x]`
+  2. recalculate progress numbers
+  3. write the next logical step
+  4. refresh `MEMORY.md` technical state if architecture/integrations changed
