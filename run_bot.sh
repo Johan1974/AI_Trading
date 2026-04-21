@@ -10,6 +10,12 @@
 #   ./run_bot.sh --no-cache         -> build --no-cache vóór start
 #   ./run_bot.sh --clean            -> down --volumes --rmi local (zwaar)
 #
+# Data-onderhoud: na compose down draait `scripts/optimize_data.py` op de host (geen open container,
+#   dus geen file locks door Docker). Python: $AI_TRADING_PYTHON, .venv/, venv/, anders python3;
+#   zelfde mappen als compose: AI_TRADING_STORAGE_ROOT=$PROJECT_DIR/storage, RL_MODEL_DIR=$PROJECT_DIR/artifacts/rl.
+#   Overslaan: --skip-optimize. PEP 668: python3 -m venv .venv && .venv/bin/pip install pandas pyarrow
+#   of: sudo apt install python3-pandas python3-pyarrow
+#
 # Omgeving: GENESIS_MAX_HEAL (default 6) max heal-cycli; HEALTH_PORT (default 8000).
 
 set -euo pipefail
@@ -115,8 +121,28 @@ fi
 docker rm -f ai-trading-bot >/dev/null 2>&1 || true
 
 if [[ "$SKIP_OPTIMIZE" -ne 1 && -f "$OPTIMIZE_SCRIPT" ]]; then
-  echo "Voer data-onderhoud uit via scripts/optimize_data.py"
-  python3 "$OPTIMIZE_SCRIPT" || echo "Waarschuwing: optimize_data.py faalde; ga door."
+  OPTIMIZE_PYTHON=""
+  if [[ -n "${AI_TRADING_PYTHON:-}" && -x "${AI_TRADING_PYTHON}" ]]; then
+    OPTIMIZE_PYTHON="$AI_TRADING_PYTHON"
+  elif [[ -x "$PROJECT_DIR/.venv/bin/python" ]]; then
+    OPTIMIZE_PYTHON="$PROJECT_DIR/.venv/bin/python"
+  elif [[ -x "$PROJECT_DIR/.venv/bin/python3" ]]; then
+    OPTIMIZE_PYTHON="$PROJECT_DIR/.venv/bin/python3"
+  elif [[ -x "$PROJECT_DIR/venv/bin/python" ]]; then
+    OPTIMIZE_PYTHON="$PROJECT_DIR/venv/bin/python"
+  else
+    OPTIMIZE_PYTHON="$(command -v python3)"
+  fi
+  echo "Data-onderhoud op host (${OPTIMIZE_PYTHON} → repo storage/artifacts): scripts/optimize_data.py"
+  if "$OPTIMIZE_PYTHON" -c "import pandas, pyarrow" >/dev/null 2>&1; then
+    env \
+      AI_TRADING_STORAGE_ROOT="$PROJECT_DIR/storage" \
+      RL_MODEL_DIR="$PROJECT_DIR/artifacts/rl" \
+      "$OPTIMIZE_PYTHON" "$OPTIMIZE_SCRIPT" || echo "Waarschuwing: optimize_data.py faalde; ga door."
+  else
+    echo "Waarschuwing: ${OPTIMIZE_PYTHON} mist pandas/pyarrow; sla optimize_data.py over."
+    echo "  Opties: --skip-optimize | .venv: python3 -m venv .venv && .venv/bin/pip install pandas pyarrow | apt: python3-pandas python3-pyarrow"
+  fi
 fi
 
 docker_build() {

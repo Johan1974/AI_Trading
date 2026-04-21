@@ -13,7 +13,7 @@ from app.datetime_util import UTC
 import time
 from typing import Any
 
-from app.ai.sentiment.finbert_sentiment import FinBertSentimentAnalyzer
+from app.ai.sentiment.finbert_sentiment import FinBertSentimentAnalyzer, LazyFinBertSentimentAnalyzer
 from app.services.ingestion import fetch_news_articles
 
 
@@ -24,7 +24,9 @@ class _CacheState:
 
 
 class NewsMappingService:
-    def __init__(self, sentiment: FinBertSentimentAnalyzer | None = None) -> None:
+    def __init__(
+        self, sentiment: FinBertSentimentAnalyzer | LazyFinBertSentimentAnalyzer | None = None
+    ) -> None:
         self.sentiment = sentiment if sentiment is not None else FinBertSentimentAnalyzer()
         self.cache = _CacheState()
         self.cache_ttl_seconds = 60.0
@@ -70,6 +72,18 @@ class NewsMappingService:
             "optimism": "OP",
             "op": "OP",
             "pepe": "PEPE",
+            "open campus": "EDU",
+            "edu": "EDU",
+            "layerzero": "ZRO",
+            "zro": "ZRO",
+            "merlin": "MERL",
+            "merl": "MERL",
+            "gwei": "GWEI",
+            "portal": "PORTAL",
+            "aave": "AAVE",
+            "prom": "PROM",
+            "highstreet": "HIGH",
+            "high": "HIGH",
         }
         self.generic_crypto_terms = {
             "CRYPTO",
@@ -180,7 +194,10 @@ class NewsMappingService:
             }
             mentions_top_coin = any(c in tokenized for c in top_coins)
             strong_sentiment = sentiment > 0.4 or sentiment < -0.4
+            extreme_mkt_sentiment = sentiment > 0.8 or sentiment < -0.8
             if not strong_sentiment and not mentions_top_coin and coin == "MKT":
+                continue
+            if coin == "MKT" and not extreme_mkt_sentiment:
                 continue
 
             mapped.append(

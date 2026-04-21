@@ -61,8 +61,23 @@ def risk_controls_for_close(latest_close: float) -> dict[str, float]:
     }
 
 
-def weighted_avg_entry(wallet: dict[str, Any]) -> float:
-    lots = wallet.get("open_lots") or []
+def weighted_avg_entry(wallet: dict[str, Any], market: str | None = None) -> float:
+    lots: list[Any] = []
+    mku = str(market or "").strip().upper()
+    if mku:
+        bym = wallet.get("open_lots_by_market") or {}
+        if isinstance(bym, dict):
+            raw = bym.get(mku)
+            if isinstance(raw, list):
+                lots = [x for x in raw if isinstance(x, dict)]
+        if not lots and str(wallet.get("position_symbol") or "").upper() == mku:
+            flat = wallet.get("open_lots") or []
+            if isinstance(flat, list):
+                lots = [x for x in flat if isinstance(x, dict)]
+    else:
+        flat = wallet.get("open_lots") or []
+        if isinstance(flat, list):
+            lots = [x for x in flat if isinstance(x, dict)]
     if not isinstance(lots, list) or not lots:
         return float(wallet.get("avg_entry_price") or 0.0)
     total_qty = 0.0
@@ -80,10 +95,14 @@ def weighted_avg_entry(wallet: dict[str, Any]) -> float:
 
 
 def position_value_eur(wallet: dict[str, Any], price: float, market: str) -> float:
-    qty = float(wallet.get("position_qty") or 0.0)
-    sym = str(wallet.get("position_symbol") or "")
-    if qty <= 0 or sym.upper() != (market or "").upper():
-        return 0.0
+    mku = (market or "").strip().upper()
+    pbm = wallet.get("position_by_market") if isinstance(wallet.get("position_by_market"), dict) else {}
+    qty = float(pbm.get(mku, 0.0) or 0.0) if pbm else 0.0
+    if qty <= 1e-12:
+        qty = float(wallet.get("position_qty") or 0.0)
+        sym = str(wallet.get("position_symbol") or "")
+        if qty <= 0 or sym.upper() != mku:
+            return 0.0
     px = float(price)
     return max(0.0, qty * px)
 
@@ -101,11 +120,16 @@ class RiskManager:
         price: float,
         wallet: dict[str, Any],
     ) -> tuple[bool, str | None]:
-        qty = float(wallet.get("position_qty") or 0.0)
-        sym = str(wallet.get("position_symbol") or "")
-        if qty <= 0 or sym.upper() != (market or "").upper():
-            return False, None
-        entry = weighted_avg_entry(wallet)
+        mku = (market or "").strip().upper()
+        qty = float((wallet.get("position_by_market") or {}).get(mku, 0.0) or 0.0) if isinstance(
+            wallet.get("position_by_market"), dict
+        ) else 0.0
+        if qty <= 1e-12:
+            qty = float(wallet.get("position_qty") or 0.0)
+            sym = str(wallet.get("position_symbol") or "")
+            if qty <= 0 or sym.upper() != mku:
+                return False, None
+        entry = weighted_avg_entry(wallet, market=mku)
         px = float(price)
         if entry <= 0 or px <= 0:
             return False, None

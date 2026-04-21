@@ -5,6 +5,7 @@ Functie: Sentiment analyzer met HuggingFace Transformers FinBERT.
 """
 
 import os
+import threading
 from collections.abc import Sequence
 
 import torch
@@ -79,3 +80,27 @@ class FinBertSentimentAnalyzer(SentimentAnalyzer):
             model_name=self.model_name,
         )
         return {"aggregate": aggregate, "items": details}
+
+
+class LazyFinBertSentimentAnalyzer(SentimentAnalyzer):
+    """Laadt FinBERT pas bij eerste sentiment-call (snellere app-import en eerste HTTP-responses)."""
+
+    def __init__(self, model_id: str = "ProsusAI/finbert") -> None:
+        self.model_id = model_id
+        self.model_name = f"hf-{model_id}"
+        self._inner: FinBertSentimentAnalyzer | None = None
+        self._lock = threading.Lock()
+        if str(os.getenv("FINBERT_EAGER_INIT", "0")).strip().lower() in ("1", "true", "yes", "on"):
+            self._ensure()
+
+    def _ensure(self) -> FinBertSentimentAnalyzer:
+        with self._lock:
+            if self._inner is None:
+                self._inner = FinBertSentimentAnalyzer(model_id=self.model_id)
+            return self._inner
+
+    def score(self, texts: Sequence[str]) -> SentimentResult:
+        return self._ensure().score(texts)
+
+    def score_with_breakdown(self, texts: Sequence[str]) -> dict[str, object]:
+        return self._ensure().score_with_breakdown(texts)

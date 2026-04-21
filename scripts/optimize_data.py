@@ -19,7 +19,9 @@ from typing import Any
 
 import pandas as pd
 
-STORAGE_ROOT = Path.home() / "AI_Trading" / "storage"
+# Zelfde root als runtime (Docker: /app/storage via compose); lokaal: ~/AI_Trading/storage of expliciet env.
+_default_storage = Path.home() / "AI_Trading" / "storage"
+STORAGE_ROOT = Path(os.getenv("AI_TRADING_STORAGE_ROOT", str(_default_storage))).expanduser()
 MODEL_ROOT = Path(os.getenv("RL_MODEL_DIR", "artifacts/rl")).expanduser()
 TOP_MODEL_COUNT = 5
 STATS_PATH = STORAGE_ROOT / "stats.json"

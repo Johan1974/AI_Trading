@@ -4,9 +4,9 @@ Single Source of Truth voor planning, voortgang en architecturale keuzes.
 
 ## Voortgang
 
-**Overall voortgang: 83% (124/150 taken)**
+**Overall voortgang: 85% (164/194 taken)**
 
-`[████████████████████░░] 83%`
+`[█████████████████░░░] 85%`
 
 ---
 
@@ -76,6 +76,29 @@ Doel: automatisch liquiditeitsgestuurde marketselectie en live pair switching in
 - [x] Filter pairs op 24u volume drempel (default > EUR 500.000).
 - [x] Voeg portal dropdown toe voor live pair selectie en WebSocket follow.
 - [x] Voeg vault-gedreven balanscheck per geselecteerd pair toe.
+- [x] Hybride Elite-8: vaste Pillars (BTC/ETH/SOL + één roterende large-cap uit top-10 volume) + Movers (top-50 volume, 24h vol > 1M EUR, 4h-volatiliteit) met market-cap ≥ 500M EUR (CoinGecko; fallback allowlist).
+- [x] Terminal: pillars bovenaan in dropdown/ticker met `*` indicator; API-velden `is_pillar` / `pillar_kind`.
+- [x] RL background-train + AUTO-OPT micro-finetune: hogere `total_timesteps` (chunk) voor BTC-EUR en ETH-EUR (`RL_PRIORITY_PAIR_TRAIN_MULT`).
+- [x] Historical health filter: only quality movers met dagtrend boven SMA-200, positieve 30d momentum en >=1 jaar listing-history; long-term downtrend coins uitgesloten.
+- [x] Elite-8 hiërarchie verstrakt: Top-3 ankers (BTC/ETH/SOL) + Next-5 quality movers; stablecoin-bases uitgesloten van movers.
+- [x] UI contrast hardening: panel/card styling geforceerd (`border: 2px solid #333`, `radius: 8px`, `margin: 10px`, `bg: #0b0e11`) + expliciete chart-titlebars.
+- [x] Executive summary feedback: scanner selectiereden (`selection_reason`) opgenomen in notifier-overzicht.
+- [x] Social momentum: CryptoCompare **social/coin/latest** (Twitter/Reddit velden) + news-mention fallback; **Social velocity** vs ~1u baseline; **HIGH INTEREST** bij stijging ≥ `SOCIAL_HIGH_INTEREST_PCT` (default 300%).
+- [x] RL bevestigingslaag: `apply_social_overlay_to_rl_row` (bullish vs divergent regime) op laatste RL-vector vóór `decide` (paper + multi-infer).
+- [x] Social ruis-filter: alleen `is_pillar` of `passes_quality` markets krijgen social state + overlay.
+- [x] Dashboard: Strategy **Social Buzz** strip + Intelligence ticker regels (`/api/v1/social/buzz`, WS `social_buzz`).
+- [x] **Whale radar & social/whale ledger:** `core/social_engine.py` — news-based whale scan (≥1M USD), inflow/outflow heuristiek, `STATE["whale_radar_moves"]` / `whale_flow_by_market`; `refresh_whale_radar_state` na social refresh (Elite-8 bases).
+- [x] Live trade ledger: kolom **Social/Whale Context** (`ledger_context` in SQLite `trade_history`, round-trip API + terminal rendering).
+- [x] RL: `apply_whale_attention_blend` (default gewicht **0.25** via env) + confidence-demping bij whale **inflow** vs bullish technische tape; lichte boost bij **outflow** + BUY.
+- [x] API `GET /api/v1/whale/radar` + terminal **Whale radar** widget (laatste 3 moves); `refreshWhaleRadar()` gekoppeld aan `refreshActivity()`.
+- [x] **Whale Panic Mode** (`core/risk_management.py`): rolling log van Elite-8 **exchange inflows** ≥ **$5M**; trigger = **>3 events in 10 min** (default `WHALE_PANIC_MIN_INFLOWS=4`); → **directe volledige MARKET SELL** op open positie (vóór RL), min. `WHALE_PANIC_REARM_SEC` tussen herhaalde panics.
+- [x] Post-panic **60 min buy cooldown** per munt (`WHALE_PANIC_COOLDOWN_SEC`); `/activity` expose `whale_panic_cooldowns`; zelfde-cyclus **BUY suppress** na panic-sell.
+- [x] Telegram **`send_whale_panic_mode`** met vast critical-bericht bij panic-activatie.
+- [x] Dashboard: **`whale_danger_zone`** op `GET /api/v1/history` + rode chart-rand (`#priceChart.whale-danger-zone`) + optionele **price line** “Whale Danger Zone”.
+- [x] **Elite-8 UI status bar** boven de prijsgrafiek: per munt AI-staat (groen BUY/HOLD, grijs neutral, rood SELL/panic) uit `STATE["rl_multi_decisions"]` + `/activity` veld **`elite_ai_signals`**; klik = volledige portal-switch.
+- [x] **Intelligence ticker elite-mix:** `GET /api/v1/news/ticker?elite_mix=1` + round-robin per Elite-munt; **`scanner_intel_feed`** bij scanner-rotatie (replace-meldingen) in ticker + `/activity`.
+- [x] **Ticker switcher:** scanner-badge + dropdown + Elite-pill roepen `switchEliteMarket` → POST `/markets/select`, chart, balance, **Brain Lab**, nieuws/ticker, activity.
+- [x] **RL-BG verify log:** na geslaagde `asyncio.gather` chunk → `[RL-BG] Parallel PPO chunk OK | Elite-N markets (not UI-only): …`.
 
 ## Fase 3 - Bitvavo Integratie
 
@@ -254,6 +277,43 @@ Doel: alleen gecontroleerd live gaan met aantoonbare robuustheid.
 - [ ] Definieer incident runbook (API down, latency spike, flash move)
 - [ ] Plan periodieke model hertraining + recalibratie
 
+## Fase 6.2 - Autonomous Audit & Trade Integrity
+
+Doel: self-correcting execution voor Elite-8 met harde ownership guard en autonome parameterbijsturing.
+
+- [x] Voeg Ownership Guard toe: blokkeer SELL zonder ownership en log als `CRITICAL_BLOCKED`.
+- [x] Bouw round-trip ledger view (open tijd, munt, entry/exit, netto P/L EUR en %).
+- [x] Voeg hourly AuditEngine toe voor Elite-8 (Profit Factor + Win Rate per munt).
+- [x] Activeer auto-tuning voor `decision_threshold` en `stop_loss_pct` met stapgrootte +/- 0.05.
+
+## Fase 6.3 - Full Autonomous Maintenance Mode
+
+Doel: minimale menselijke tussenkomst met self-heal watchdog, strikte anomaly-alerts en compact UI runtime.
+
+- [x] Implementeer health watchdog: forceer herstel bij engine/websocket stall >60s.
+- [x] Herlaad paper state uit SQLite bij startup (wallet snapshot restore).
+- [x] Beperk email alerts tot urgente anomalieën (API fail, insufficient balance, daily stop-loss).
+- [x] Vervang restart-mails door Daily Executive Summary om 08:00 inclusief PnL/reflection/Elite-8.
+
+## Fase 6.4 - Feature Weight Optimization & Signal Activation
+
+Doel: observation-space balanceren zodat news/whale/orderbook signalen aantoonbaar doorwerken in RL-decisions.
+
+- [x] Voeg centrale RL feature-normalisatie toe in `core/preprocessor.py` met ranges [-1,1] / [0,1].
+- [x] Activeer signal-integrity checks + forward-fill fallback voor News Sentiment en Whale Pressure.
+- [x] Voeg lichte attention-gating toe over observation features voor training/inference.
+- [x] Pas Strategy feature charts aan met zoom-schaal zodat kleine waarden zichtbaar blijven.
+
+## Fase 6.5 - Autonomous Self-Improvement Loop
+
+Doel: continue runtime-optimalisatie zonder handmatige parameter-tuning.
+
+- [x] Voeg autonome optimizer-loop toe die exploration/risk cap/train chunk bijstuurt op basis van 24h Elite-8 prestaties.
+- [x] Voeg opportunistische micro-finetune toe bij underperformance (parallel RL online updates).
+- [x] Expose optimizer-status via `/api/v1/system/report-status` voor operationele observability.
+- [x] Voeg persistente optimizer-state opslag/herstel toe in SQLite voor restart-continuiteit.
+- [x] Voeg rollback-guardrail toe: revert naar best-known settings na 2 cycli verslechtering.
+
 ---
 
 ## Architecturale Beslissingen
@@ -330,3 +390,6 @@ Bij elke afgeronde taak:
 - Uitgevoerd: Interactive Live Console controls met pause/resume buffer en clear-actie.
 - Volgende logische stap: IP-whitelisting runbook toevoegen + order status reconciliatie (fills/partials) + risk guards (daily max drawdown / consecutive losses).
 - Whale Alert vervangen door CryptoCompare headline-scan voor `whale_pressure`; System Logs tonen `[WHALE-SYNC]` in hoog contrast.
+- Uitgevoerd: Full Autonomous Audit & Trade Integrity voor Elite-8 (ownership guard, round-trip ledger, hourly self-reflection + auto-tuning, AI Zelfreflectie in e-mailrapport).
+- Uitgevoerd: AI Brain Recovery & Visual Polish — floors gezet op `learning_rate >= 1e-5` en `epsilon >= 0.05`, strategy-weights genormaliseerd via `core/analytics.py`, plus high-contrast card borders/padding in Brain Lab.
+- Uitgevoerd: Performance & Doctrine alignment — async worker-queues voor `/predict` en `/paper/run`, cached GPU stats (`SYSTEM_STATS_CACHE_SEC`), tenant-scoped runtime state + tenant-tagged SQLite records, orderbook spread/slippage frictie in paper execution, en dagelijkse auto-calibration (`AUTO_CALIBRATION_INTERVAL_SEC`, default 24h).

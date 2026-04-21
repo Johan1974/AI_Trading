@@ -2,6 +2,8 @@
 # Relatief pad: ./.gitignore
 # Functie: Sluit gegenereerde lokale bestanden uit van versiebeheer.
 
+.venv/
+venv/
 __pycache__/
 *.py[cod]
 bot.log

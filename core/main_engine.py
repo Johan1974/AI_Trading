@@ -17,6 +17,8 @@ from app.services.coinmarketcap import CoinMarketCapService
 from app.services.news_service import CryptoCompareNewsService
 from app.services.rss_engine import RssEngineService
 
+from core.trading_engine import elite_execution_pairs
+
 
 class MainIntegrationEngine:
     def __init__(
@@ -41,7 +43,9 @@ class MainIntegrationEngine:
     async def _loop(self) -> None:
         while True:
             try:
-                pair = str(self._state.get("selected_market") or "BTC-EUR").upper()
+                pairs = elite_execution_pairs(self._state)
+                if not pairs:
+                    pairs = ["BTC-EUR"]
                 lookback = int(self._state.get("lookback_days", 400) or 400)
                 # Trigger API+RSS fetch paths and keep feed hot.
                 crypto_key = str(self._state.get("cryptocompare_key") or os.getenv("CRYPTOCOMPARE_KEY") or "")
@@ -53,14 +57,16 @@ class MainIntegrationEngine:
                 cmc = self._cmc_service.fetch_global_metrics(api_key=str(cmc_key or ""))
                 self._state["cmc_metrics"] = cmc
 
-                outcome = await asyncio.to_thread(self._run_cycle, pair, lookback)
-                self._state["last_engine_cycle"] = {
-                    "ok": True,
-                    "pair": pair,
-                    "ts": datetime.now(UTC).isoformat(),
-                    "result": outcome,
-                }
-                print(f"[ENGINE] Paper cycle completed for {pair}")
+                for pair in pairs:
+                    outcome = await asyncio.to_thread(self._run_cycle, pair, lookback)
+                    self._state["last_engine_cycle"] = {
+                        "ok": True,
+                        "pair": pair,
+                        "elite_sweep_pairs": pairs,
+                        "ts": datetime.now(UTC).isoformat(),
+                        "result": outcome,
+                    }
+                    print(f"[ENGINE] Paper cycle completed for {pair}")
             except Exception as exc:
                 self._state["last_engine_cycle"] = {
                     "ok": False,

@@ -22,8 +22,14 @@ from stable_baselines3.common.vec_env import DummyVecEnv
 
 import os
 
+from core.preprocessor import attention_gate_weights
+from core.social_engine import apply_whale_attention_blend
 from app.rl.data import build_rl_training_frame, fetch_bitvavo_historical_candles
 from app.rl.env import BitvavoTradingEnv
+from app.services import rl_metrics_store
+
+MIN_LEARNING_RATE = 1.0e-5
+MIN_EXPLORATION_EPS = 0.05
 
 
 class RewardLossCallback(BaseCallback):
@@ -90,10 +96,13 @@ class RLAgentService:
         self.active_pair: str | None = None
         self.last_training_progress: dict[str, list[float]] = {"reward": [], "loss": []}
         self.last_training_stats: dict[str, float | int] = {
-            "learning_rate": 0.0,
+            "learning_rate": MIN_LEARNING_RATE,
             "global_step_count": 0,
-            "exploration_rate_pct": 0.0,
-            "exploration_final_eps": float(os.getenv("RL_EXPLORATION_FINAL_EPS", "0.05") or 0.05),
+            "exploration_rate_pct": 100.0,
+            "exploration_final_eps": max(
+                MIN_EXPLORATION_EPS,
+                float(os.getenv("RL_EXPLORATION_FINAL_EPS", "0.05") or 0.05),
+            ),
         }
         self._paper_sl_hits: int = 0
         self.last_network_logs: dict[str, list[float]] = {"approx_kl": [], "value_loss": []}
@@ -123,6 +132,47 @@ class RLAgentService:
             "ema_gap_pct",
         ]
         self.model_top_k = 5
+
+    def _chart_series_cap(self) -> int:
+        return max(200, min(int(os.getenv("RL_TRAINING_CHART_MAX_POINTS", "8000") or 8000), 50000))
+
+    def _exploration_decay_per_1k_pct(self) -> float:
+        return max(0.0, float(os.getenv("RL_EPS_DECAY_PCT_PER_1K_STEPS", "0.5") or 0.5))
+
+    def _exploration_live_from_steps(self, global_steps: int) -> float:
+        floor = max(MIN_EXPLORATION_EPS, float(os.getenv("RL_EXPLORATION_MIN_EPS", "0.05") or 0.05))
+        steps = max(0, int(global_steps))
+        decay_pct = self._exploration_decay_per_1k_pct() * (float(steps) / 1000.0)
+        eps_pct = max(floor * 100.0, 100.0 - decay_pct)
+        return max(floor, min(1.0, eps_pct / 100.0))
+
+    def _persist_training_from_callback(self, pair: str, cb: RewardLossCallback) -> None:
+        try:
+            gs = int(cb.global_steps[-1]) if cb.global_steps else int(self.last_training_stats.get("global_step_count", 0))
+            rl_metrics_store.append_training_chunk(
+                pair=pair,
+                rewards=list(cb.cumulative_rewards),
+                loss=list(cb.loss_series),
+                value_loss=list(cb.value_loss),
+                policy_entropy=list(cb.policy_entropy),
+                episode_length=list(cb.episode_lengths),
+                global_step=gs,
+            )
+        except Exception:
+            pass
+
+    def save_hourly_checkpoint(self, pair: str) -> None:
+        """Schrijft model-weights weg (PPO .zip) zonder de reward-ranglijst te verstoren."""
+        if self.model is None:
+            return
+        pair = pair.upper()
+        ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        out = self._model_path(pair, timestamp=f"hourly_{ts}")
+        try:
+            self.model.save(str(out))
+            print(f"[RL-CHECKPOINT] Hourly weights saved: {out}.zip")
+        except Exception as exc:
+            print(f"[RL-CHECKPOINT] Save failed: {exc}")
 
     def online_update(
         self,
@@ -161,24 +211,32 @@ class RLAgentService:
             progress_bar=False,
             reset_num_timesteps=False,
         )
+        cap = self._chart_series_cap()
         self.last_training_progress = {
-            "reward": (self.last_training_progress.get("reward", []) + cb.cumulative_rewards)[-500:],
-            "loss": (self.last_training_progress.get("loss", []) + cb.loss_series)[-500:],
-            "episode_length": (self.last_training_progress.get("episode_length", []) + cb.episode_lengths)[-500:],
-            "policy_entropy": (self.last_training_progress.get("policy_entropy", []) + cb.policy_entropy)[-500:],
+            "reward": (self.last_training_progress.get("reward", []) + cb.cumulative_rewards)[-cap:],
+            "loss": (self.last_training_progress.get("loss", []) + cb.loss_series)[-cap:],
+            "episode_length": (self.last_training_progress.get("episode_length", []) + cb.episode_lengths)[-cap:],
+            "policy_entropy": (self.last_training_progress.get("policy_entropy", []) + cb.policy_entropy)[-cap:],
         }
         self.last_network_logs = {
-            "approx_kl": (self.last_network_logs.get("approx_kl", []) + cb.approx_kl)[-500:],
-            "value_loss": (self.last_network_logs.get("value_loss", []) + cb.value_loss)[-500:],
+            "approx_kl": (self.last_network_logs.get("approx_kl", []) + cb.approx_kl)[-cap:],
+            "value_loss": (self.last_network_logs.get("value_loss", []) + cb.value_loss)[-cap:],
         }
+        self._persist_training_from_callback(pair, cb)
         self.last_training_stats["global_step_count"] = int(
             cb.global_steps[-1] if cb.global_steps else self.last_training_stats.get("global_step_count", 0)
         )
         self.last_benchmark = self._benchmark_vs_buy_hold(model=self.model, frame=frame)
         if self.model is not None:
-            self.last_training_stats["learning_rate"] = round(float(self.model.lr_schedule(1.0)), 8)
+            self.last_training_stats["learning_rate"] = round(
+                max(MIN_LEARNING_RATE, float(self.model.lr_schedule(1.0))),
+                8,
+            )
+        gs_now = int(self.last_training_stats.get("global_step_count", 0) or 0)
+        eps_now = self._exploration_live_from_steps(gs_now)
+        os.environ["RL_EXPLORATION_FINAL_EPS"] = f"{eps_now:.4f}"
         self.last_training_stats["exploration_final_eps"] = round(
-            float(os.getenv("RL_EXPLORATION_FINAL_EPS", "0.05") or 0.05), 4
+            eps_now, 4
         )
 
     def ingest_paper_stop_loss(self) -> None:
@@ -299,25 +357,33 @@ class RLAgentService:
         model.save(str(out))
         self.model = model
         self.active_pair = pair
+        cap = self._chart_series_cap()
         self.last_training_progress = {
-            "reward": cb.cumulative_rewards[-500:],
-            "loss": cb.loss_series[-500:],
-            "episode_length": cb.episode_lengths[-500:],
-            "policy_entropy": cb.policy_entropy[-500:],
+            "reward": cb.cumulative_rewards[-cap:],
+            "loss": cb.loss_series[-cap:],
+            "episode_length": cb.episode_lengths[-cap:],
+            "policy_entropy": cb.policy_entropy[-cap:],
         }
         self.last_network_logs = {
-            "approx_kl": cb.approx_kl[-500:],
-            "value_loss": cb.value_loss[-500:],
+            "approx_kl": cb.approx_kl[-cap:],
+            "value_loss": cb.value_loss[-cap:],
         }
-        current_lr = float(model.lr_schedule(1.0))
+        self._persist_training_from_callback(pair, cb)
+        current_lr = max(MIN_LEARNING_RATE, float(model.lr_schedule(1.0)))
         latest_entropy = float(cb.policy_entropy[-1]) if cb.policy_entropy else 0.0
         max_entropy = float(np.log(3.0))
-        exploration = 0.0 if max_entropy <= 1e-9 else min(1.0, max(0.0, latest_entropy / max_entropy))
+        exploration = MIN_EXPLORATION_EPS if max_entropy <= 1e-9 else min(
+            1.0,
+            max(MIN_EXPLORATION_EPS, latest_entropy / max_entropy),
+        )
+        gs_now = int(cb.global_steps[-1] if cb.global_steps else total_timesteps)
+        eps_floor = self._exploration_live_from_steps(gs_now)
+        os.environ["RL_EXPLORATION_FINAL_EPS"] = f"{eps_floor:.4f}"
         self.last_training_stats = {
             "learning_rate": round(current_lr, 8),
-            "global_step_count": int(cb.global_steps[-1] if cb.global_steps else total_timesteps),
-            "exploration_rate_pct": round(exploration * 100.0, 2),
-            "exploration_final_eps": round(float(os.getenv("RL_EXPLORATION_FINAL_EPS", "0.05") or 0.05), 4),
+            "global_step_count": gs_now,
+            "exploration_rate_pct": round(eps_floor * 100.0, 2),
+            "exploration_final_eps": round(eps_floor, 4),
         }
         self.last_benchmark = self._benchmark_vs_buy_hold(model=model, frame=frame)
         self.last_correlation = self._sentiment_price_correlation(frame=frame)
@@ -409,9 +475,15 @@ class RLAgentService:
             return np.ones(len(self.feature_names), dtype=float)
         return base / np.sum(base)
 
-    def decide(self, latest_row: dict[str, float], account: dict[str, float] | None = None) -> RLDecision:
+    def decide(
+        self,
+        latest_row: dict[str, float],
+        account: dict[str, float] | None = None,
+        trade_context: dict[str, Any] | None = None,
+    ) -> RLDecision:
         if self.model is None:
             raise RuntimeError("RL model not initialized.")
+        tc = trade_context if isinstance(trade_context, dict) else {}
         acct = account or {
             "balance_ratio": 1.0,
             "position": 0.0,
@@ -419,6 +491,12 @@ class RLAgentService:
             "trade_ratio": 0.0,
         }
         obs_features = np.array([float(latest_row.get(k, 0.0)) for k in self.feature_names], dtype=np.float32)
+        if not np.all(np.isfinite(obs_features)):
+            print("WARNING: RL decide() state-features bevatten NaN/Inf; invoer wordt gesaneerd.")
+            obs_features = np.nan_to_num(obs_features, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+        gate = attention_gate_weights(obs_features, temperature=0.7)
+        gate = apply_whale_attention_blend(gate, list(self.feature_names))
+        obs_features = (obs_features * gate).astype(np.float32)
         obs = np.concatenate(
             [
                 obs_features,
@@ -437,8 +515,9 @@ class RLAgentService:
             obs_t = torch.tensor(obs, dtype=torch.float32, device=self.model.device).unsqueeze(0)
             dist = self.model.policy.get_distribution(obs_t)
             probs = dist.distribution.probs.detach().cpu().numpy().reshape(-1)
-        eps_live = float(os.getenv("RL_EXPLORATION_FINAL_EPS", "0.05") or 0.05)
-        eps_live = max(0.0, min(1.0, eps_live))
+        gs_live = int(self.last_training_stats.get("global_step_count", 0) or 0)
+        eps_live = self._exploration_live_from_steps(gs_live)
+        eps_live = max(MIN_EXPLORATION_EPS, min(1.0, eps_live))
         explore_roll = float(np.random.random())
         explored = explore_roll < eps_live
         greedy = int(np.argmax(probs))
@@ -447,6 +526,30 @@ class RLAgentService:
         else:
             action = greedy
         confidence = float(probs[int(action)])
+
+        whale_bias = str(tc.get("whale_bias") or "neutral")
+        whale_st = float(tc.get("whale_strength", 0.0) or 0.0)
+        price_push = float(latest_row.get("price_action", 0.0) or 0.0)
+        conflict_mult = float(os.getenv("WHALE_TECH_CONFLICT_CONF_MULT", "0.82") or 0.82)
+        whale_damp_note = ""
+        if whale_bias == "inflow" and whale_st >= float(os.getenv("WHALE_CONFLICT_MIN_STRENGTH", "0.28") or 0.28):
+            if int(action) == 1 and price_push > float(os.getenv("WHALE_TECH_PRICE_ACTION_THRESH", "0.12") or 0.12):
+                confidence *= conflict_mult
+                whale_damp_note = " Whale inflow vs bullish tape → confidence reduced."
+        if whale_bias == "outflow" and whale_st >= float(os.getenv("WHALE_OUTFLOW_CONFIRM_MIN_STRENGTH", "0.28") or 0.28):
+            if int(action) == 1:
+                confidence = min(1.0, confidence * float(os.getenv("WHALE_OUTFLOW_BUY_CONF_BOOST", "1.05") or 1.05))
+
+        min_trade_conf = float(os.getenv("RL_ACTION_MIN_CONFIDENCE", "0") or 0.0)
+        min_trade_conf = max(0.0, min(1.0, min_trade_conf))
+        gated_note = ""
+        if min_trade_conf > 0 and int(action) in (1, 2) and confidence < min_trade_conf:
+            gated_note = (
+                f"Confidence {confidence:.2f} < actiedrempel {min_trade_conf:.2f} → HOLD i.p.v. "
+                f"{self._action_to_name(int(action))}. "
+            )
+            action = 0
+            confidence = float(probs[int(action)])
 
         risk_prefix = ""
         if self._paper_sl_hits > 0:
@@ -457,7 +560,7 @@ class RLAgentService:
             self._paper_sl_hits -= 1
 
         base_w = self._extract_feature_weighting()
-        contrib = np.abs(obs_features) * base_w
+        contrib = np.abs(obs_features) * base_w * gate
         denom = np.sum(contrib) if float(np.sum(contrib)) > 1e-12 else 1.0
         norm = contrib / denom
         feature_weights = {
@@ -470,9 +573,11 @@ class RLAgentService:
             explore_note = f"(Exploratie ε={eps_live:g}: random actie i.p.v. greedy {self._action_to_name(greedy)}.) "
         reasoning = (
             f"{risk_prefix}"
+            f"{gated_note}"
             f"Besluit: {self._action_to_name(action)}. Reden: {top[0][0]} ({top[0][1]:.2f}) "
             f"en {top[1][0]} ({top[1][1]:.2f}) sturen de policy. "
             f"{explore_note}"
+            f"{whale_damp_note}"
             f"Verwachte beloning: {expected_reward_pct:+.2f}%."
         )
         decision = RLDecision(
@@ -509,9 +614,24 @@ class RLAgentService:
         )
         return decision
 
+    @staticmethod
+    def _normalize_reward_series_for_ui(values: list[Any]) -> list[float]:
+        """Cumulatieve training-reward schalen naar [-1, 1] voor stabiele charts (UI + WebSocket)."""
+        if not values:
+            return []
+        arr = np.asarray([float(v) for v in values], dtype=np.float64)
+        m = float(np.max(np.abs(arr)))
+        if not np.isfinite(m) or m < 1e-12:
+            return [0.0] * len(values)
+        clipped = np.clip(arr / m, -1.0, 1.0)
+        return [float(x) for x in clipped.tolist()]
+
     def training_monitor(self) -> dict[str, Any]:
+        raw_r = self.last_training_progress.get("reward", [])
+        r_list = [float(x) for x in raw_r] if isinstance(raw_r, list) else []
         return {
             **self.last_training_progress,
+            "reward_normalized": self._normalize_reward_series_for_ui(r_list),
             "stats": self.last_training_stats,
             "network_logs": self.last_network_logs,
             "benchmark": self.last_benchmark,

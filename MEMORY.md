@@ -1,6 +1,6 @@
 # MEMORY - AI Trading Bot Technical State
 
-Last updated: 2026-04-20
+Last updated: 2026-04-21
 
 ## Governance Mode
 - Full Agency active via `.cursorrules`:
@@ -11,12 +11,14 @@ Last updated: 2026-04-20
   - flag logic gaps and edge cases immediately.
 
 ## Portal layout & GPU monitoring
-- **Genesis Noir Quant:** tabs **Terminal**, **AI Brain**, **Ledger** (trade history + equity/PnL charts), **Hardware** (vier ring-meters + logs). CSS-grid **`repeat(4, minmax(0,1fr))`**; **Inter** als UI-font, **JetBrains Mono** voor data/tabulair; labels min. **14px**; minimalistische **ghost/outline** header-knoppen; hint-bubbles via **`#brainHintPortal`** (**z-index 99999**). Terminal toont **3** top-nieuwsregels.
+- **Genesis Noir Quant:** tabs **Terminal**, **AI Brain**, **Ledger** (trade history + equity/PnL charts), **Hardware** (vier ring-meters + logs). CSS-grid **`repeat(4, minmax(0,1fr))`**; **Inter** als UI-font, **JetBrains Mono** voor data/tabulair; labels min. **14px**; minimalistische **ghost/outline** header-knoppen; hint-bubbles via **`#brainHintPortal`** (**z-index 99999**). Terminal toont **3** top-nieuwsregels; boven de chart een **Elite-8 AI status bar** (`#elite8AiStatusBar`, kleuren uit `/activity` → `elite_ai_signals` i.c.m. `rl_multi_decisions` + whale panic/danger). Intelligence ticker gebruikt **`/api/v1/news/ticker?elite_mix=1`** (round-robin alle Elite-munten) + **`scanner_intel_feed`** (scanner replace-berichten). Markt-switch via dropdown/scanner/pill: **`switchEliteMarket`** → POST **`/markets/select`** + chart + Brain Lab + ticker refresh.
 - **AI Brain Lab:** kolom 1 = Monitor + RL stats; kolom 2 = reasoning + state (o.a. MACD); kolom 3 = reward/feature weights/benchmark; kolom 4 = balance/risk/paper. Hints via **`initHintPortals()`** op alle tab-roots → **`#brainHintPortal`** (fixed, z-index ~2e9).
+- Dashboard cards hebben nu geforceerde contrast-layout: `border: 2px solid #333`, `border-radius: 8px`, `margin: 10px`, `background: #0b0e11`; titelbalken met eigen donkere headerstrip per panel/chart-box (`.chart-box-titlebar` voor ledger charts).
 - **Card-headers** met achtergrond `#111` (Electric Quant) voor sectiescheiding; hoofdprijschart achtergrond **#000000**, tekst **#FFFFFF**; neon-lijn **lineWidth 4**.
 - **Dockerfile:** **`nvidia/cuda:12.4.1-runtime-ubuntu22.04`**, **`ENTRYPOINT []`** (NVIDIA-default entrypoint verstopte torch &lt;2.4 en brak `transformers`). Daarna **`torch==2.6.0+cu124`** (`--index-url https://download.pytorch.org/whl/cu124`) — nodig voor **transformers 5.x** (CVE/torch.load-check) en **stable-baselines3**. **docker-compose:** `gpus: all`, **`GENESIS_REQUIRE_GPU`**, **`FINBERT_USE_CUDA`**. Logs: **`[DEVICE] Using device: cuda:0 (...)`**, **`[DASHBOARD] Dashboard live op poort 8000`**, **`[ENGINE] Tick | torch_device=cuda:0`**. GPU-%: `nvidia-smi` in `system_stats.py`.
 - Ubuntu image levert **Python 3.10**; `datetime.UTC` is pas 3.11+. Code gebruikt `app/datetime_util.UTC` (`timezone.utc`) + scripts met try/except zodat de API niet meer crasht op import.
 - `system_stats._nvidia_smi_stats`: lossere parsing van %/komma’s; extra `utilization.gpu`-query per GPU-index.
+- `app/services/system_stats.py` gebruikt nu TTL-cache op `get_system_stats()` (env `SYSTEM_STATS_CACHE_SEC`, default 2s) om `nvidia-smi` subprocess-load te verlagen.
 
 ## Risk engine (position sizing & SL/TP)
 - `core/risk_manager.py`: `RiskManager` leest o.a. `RISK_SIZING_MODE` (`fixed_eur` | `equity_pct`), `RISK_BASE_TRADE_EUR`, `RISK_MAX_TRADE_EQUITY_PCT`, `RISK_MAX_POSITION_EQUITY_PCT`, `RISK_STOP_LOSS_PCT`, `RISK_TAKE_PROFIT_PCT`.
@@ -75,9 +77,13 @@ Last updated: 2026-04-20
   - persists paper balances/orders in SQLite (`data/paper_bitvavo.db` by default)
   - `BitvavoClient` delegates to this manager when `LIVE_MODE` is disabled.
 
-## Whale pressure (CryptoCompare)
+## Whale pressure & whale radar (CryptoCompare)
 - `app/services/whale_watcher.py` gebruikt **geen** Whale Alert API (deprecated).
 - Whale pressure (0..1) komt uit **CryptoCompare `/data/v2/news/`** headlines: regex op o.a. `whale`, `large transfer`, `billion`, `million btc/eth`.
+- **`core/social_engine.py` (mijlpaal Whale Radar):** zelfde news-feed, gefilterd op Elite-8 market bases; schatting USD-notional uit headline; whale move ≥ **1M USD**; richting **inflow** (naar exchange) vs **outflow** (naar cold wallet/withdrawal) uit keyword-heuristiek; `refresh_whale_radar_state` → `STATE["whale_radar_moves"]`, `STATE["whale_flow_by_market"]`; `GET /api/v1/whale/radar` voor de terminal-widget (max 3 items); `refreshWhaleRadar()` wordt mee aangeroepen vanuit `refreshActivity()`.
+- Paper ledger: kolom **Social/Whale Context** = `trade_history.ledger_context` (ingevuld bij signal via `format_ledger_social_whale_context` / `build_trade_decision_context`); FIFO-close merged entry+exit context.
+- RL: vóór `decide` wordt **whale_pressure** attention-slot geblend met default gewicht **`WHALE_ATTENTION_WEIGHT` = 0.25**; bij conflict **inflow** + sterke bullish price-action + **BUY** wordt confidence vermenigvuldigd (`WHALE_TECH_CONFLICT_CONF_MULT`); bij **outflow** + BUY lichte boost (`WHALE_OUTFLOW_BUY_CONF_BOOST`).
+- **Whale Panic Mode (`core/risk_management.py`):** bij elke `refresh_whale_radar_state` worden grote **exchange-inflow** moves (≥ **`WHALE_PANIC_INFLOW_MIN_USD`**, default **5M USD**) in `STATE["whale_inflow_panic_log"]` gezet (dedup). Binnen **`WHALE_PANIC_WINDOW_SEC`** (default **600s**) tellen we per `MARKET`; bij ≥ **`WHALE_PANIC_MIN_INFLOWS`** (default **4** = “meer dan 3”) en **open positie** op die markt voert `_paper_whale_panic_intervention` vóór de RL-stap een **volledige MARKET SELL** uit (`process_signal`), zet **`whale_panic_cooldown_until`** (**60 min** koopblokkade), `record_whale_panic_sell_fired` (re-arm debounce **`WHALE_PANIC_REARM_SEC`**), Telegram **`send_whale_panic_mode`**, en event `whale_panic_sell`. `/api/v1/history` bevat **`whale_danger_zone`** voor de rode **Whale Danger Zone** op de chart (CSS `#priceChart.whale-danger-zone` + optionele price line). `/activity` bevat **`whale_panic_cooldowns`** (ISO tot per markt).
 - `CRYPTOCOMPARE_KEY` wordt gebruikt (zelfde key als nieuws); optioneel ook zonder key als de endpoint reageert.
 - Bij startup wordt `bot_execution.log` gevuld met `[WHALE-SYNC] Data nu via CryptoCompare feed.`
 - `/api/v1/brain/state-overview` ververst `whale_watch` en zet `state.whale_pressure` live voor het AI Brain dashboard.
@@ -103,6 +109,11 @@ Last updated: 2026-04-20
 - Dynamic market scanner:
   - `app/services/market_scanner.py` pulls active Bitvavo markets + 24h stats
   - filters by `MIN_24H_VOLUME_EUR` (default 500000)
+  - `core/scanner.py` **DynamicVolatilityScanner** (Elite-8): **Pillars** = BTC-EUR, ETH-EUR, SOL-EUR + één roterende EUR-pair uit voorkeurslijst die in de **top-10 op 24h-volume** zit; **Movers** = resterende slots uit **top-50 volume**, `SCANNER_MOVER_MIN_VOLUME_EUR` (default 1M), sorteer op **4h high/low swing %**, met **market cap ≥ `SCANNER_MIN_MARKET_CAP_EUR`** (default 500M) via **CoinGecko** `/coins/markets?vs_currency=eur`; zonder CoinGecko-data: striktere **fallback allowlist** (`FALLBACK_LARGE_CAP_BASES`) voor Movers.
+  - `_refresh_active_markets_cache` in `app/main.py` zet `active_markets` in **scanner-volgorde** en vult `is_pillar` / `pillar_kind` / optioneel `move_pct_4h`; pairs die onder `MIN_24H_VOLUME_EUR` vallen maar wél in de Elite-8 zitten krijgen een **synthetische rij** zodat ze niet verdwijnen uit de dropdown.
+  - Historical quality gate (mijlpaal refinement): Next-5 movers moeten **alle drie** slagen: `close > SMA200` (dag), `momentum_30d_pct > 0`, `listing_days >= 365`; veldset `quality_score` (0..3), `passes_quality`, `is_long_term_downtrend`, `selection_reason`. Stablecoin-bases (o.a. USDT/USDC/DAI) worden uitgesloten als mover.
+  - Scanner feedback: `/markets/active` rows bevatten nu scanner-rationale (`selection_reason`) plus quality metadata; notifier Executive Summary toont voortaan per selected pair de reden.
+- **Social momentum (`core/news_engine.py`):** periodieke refresh (`SOCIAL_REFRESH_SEC`, default 300s) via `refresh_social_momentum_state` → `STATE["social_momentum_by_market"]` + `STATE["social_buzz_summary"]`. CryptoCompare `data/social/coin/latest` (met `api_key`) parsed voor o.a. Reddit posts/h & active users + Twitter follower delta; **velocity** = max(CC-composite, news-mention 60m) t.o.v. baseline ≥ `SOCIAL_VELOCITY_MIN_AGE_SEC` (~1h). **RL-overlay** alleen voor markets met `is_pillar` of `passes_quality` (`apply_social_overlay_to_rl_row`). REST: `GET /api/v1/social/buzz`; Brain WS/REST bevat `social_buzz`.
 - News mapping:
   - `app/services/news_mapping.py` maps headlines to active Bitvavo top-volume coins
   - alias rules include direct BTC mapping (`Bitcoin`, `BTC`, `Halving`)
@@ -137,6 +148,7 @@ Last updated: 2026-04-20
     - global step count.
 
 ## RL Stack
+- Background PPO-updates (`_rl_background_training_loop`): voor **BTC-EUR** en **ETH-EUR** wordt `RL_TRAIN_CHUNK_STEPS` vermenigvuldigd met **`RL_PRIORITY_PAIR_TRAIN_MULT`** (default 1.65); zelfde factor bij AUTO-OPT micro-finetune na ordening (BTC/ETH eerst in de boost-batch).
 - Stable Baselines3 PPO training loop added.
 - Custom gymnasium env:
   - reward: EUR pnl delta
@@ -172,9 +184,76 @@ Last updated: 2026-04-20
   - FIFO lot closing for realized PnL accuracy
   - live Bitvavo reference price used for `XXX-EUR` markets
   - trade history now stores `ai_thought` text for explainable outcomes.
+  - ownership guard blocks SELL without position ownership; event is persisted as `CRITICAL_BLOCKED` with `status=critical_blocked`.
+  - round-trip ledger API view is available via `GET /api/v1/trades?view=roundtrip` (open time, market, entry/exit, net pnl eur/%, **`ledger_context`** = Social/Whale Context).
+
+## Autonomous AuditEngine
+- Hourly self-reflection loop in `app/main.py` (`_audit_engine_loop`) evaluates last 24h outcomes per Elite-8 market from SQLite trade history.
+- Metrics per market: `profit_factor`, `win_rate`, `wins`, `losses` via `PaperTradeManager.elite8_audit_metrics(...)`.
+- Auto-tuning applies bounded step updates (`+/- 0.05`) to:
+  - `STATE["decision_threshold"]`
+  - `STATE["stop_loss_pct"]`
+- Audit state exported in memory:
+  - `AUDIT_LAST_RUN`
+  - `AUDIT_LAST_TUNING`
+  - `AUDIT_REFLECTIONS` (rolling history)
+- Restart/scheduled notifier now includes `AI Zelfreflectie` section with threshold/stop-loss deltas and rationale.
+
+## Autonomous Maintenance Mode
+- Watchdog loop in `app/main.py` forces auto-recovery (`os._exit(1)`) when:
+  - engine heartbeat is stale beyond `WATCHDOG_STALL_LIMIT_SEC` (default 60s),
+  - or websocket heartbeat is stale while websocket clients are connected.
+- `docker-compose.yml` already enforces `restart: always`; watchdog exit triggers container self-restart.
+- `PaperTradeManager` now persists/loads wallet snapshot in SQLite table `wallet_state` for state restore after restart.
+- Email policy updated:
+  - periodic mail: daily executive summary at 08:00 Europe/Amsterdam (`daily_restart_report_loop` schedule),
+  - urgent-only alerts via `send_urgent_alert()` for API failure streak, insufficient balance trade rejection, and 3% stop-loss threshold.
+- UI headless mode added:
+  - toggle button `Headless` in terminal chart controls,
+  - hides chart/ticker/time controls client-side while trading engine continues server-side on GPU.
+
+## RL Feature Optimization
+- New module `core/preprocessor.py` centralizes RL preprocessing:
+  - robust min-max scaling to `[0,1]`,
+  - tanh(z-score) scaling to `[-1,1]`,
+  - dead-signal forward fill (`forward_fill_dead_signal`),
+  - lightweight feature attention gate (`attention_gate_weights`).
+- `app/rl/data.py` now applies:
+  - signal fallback cache per market for `sentiment_score` and `whale_pressure`,
+  - forward-fill replacement when API-origin values collapse to `0`,
+  - final normalization for all RL observation features before training/inference.
+- `build_rl_training_frame(..., metadata_out=...)` now exports `signal_integrity` counters for non-zero sentiment/whale coverage.
+- `app/main.py` emits explicit warnings when sentiment/whale channels are effectively empty after preprocessing.
+- `app/rl/env.py` and `app/rl/agent_rl.py` apply the same attention-gating transformation to observation features.
+- Strategy feature bars in `app/static/js/terminal.js` use a zoom transform (`log10(1 + value * 1000)`) with tooltips showing both raw and zoomed values.
+
+## Autonomous Self-Improvement
+- `app/main.py` includes `_autonomous_improvement_loop()`:
+  - cadence via `AUTO_OPT_INTERVAL_SEC` (default 3600s),
+  - reads 24h Elite-8 metrics (`profit_factor`, `win_rate`) from SQLite rollup,
+  - self-adjusts runtime knobs within safety bounds:
+    - `RL_EXPLORATION_FINAL_EPS`,
+    - `RISK_MAX_PER_ASSET_TRADE_PCT`,
+    - `RL_TRAIN_CHUNK_STEPS`.
+- Underperformance branch triggers opportunistic micro-finetune (`RL_AGENT.online_update`) in parallel for top active markets.
+- Optimizer state exposed in `/api/v1/system/report-status` under `autonomous_optimizer` with last tuning rationale and applied values.
+- Optimizer persistence:
+  - SQLite table `optimizer_state` stores rolling snapshots (`settings_json`) from autonomous optimizer loop.
+  - Startup restores best-known optimizer settings and score history, then reapplies env/runtime knobs.
+- Rollback guardrail:
+  - if optimizer score degrades for 2 consecutive cycles, runtime settings are reverted to best-known stable settings.
+  - score uses combined 24h edge metric (`profit_factor * 100 + win_rate`).
 
 ## Monitoring/API
 - FastAPI endpoints for health, predict, activity, paper run, and daily dry-run PnL.
+- Hot routes `/predict` en `/paper/run` lopen nu via async worker-queues (`PREDICT_QUEUE`, `PAPER_RUN_QUEUE`) zodat blocking IO niet op de request-thread blijft hangen.
+- Tenant isolation hardening:
+  - `app/services/state.py` gebruikt tenant-scoped runtime state via `ContextVar` + middleware (`x-tenant-id`/`tenant_id`),
+  - paper SQLite records zijn tenant-tagged (`tenant_id`) en tenant-filtered voor analytics/ledger/recent trades/optimizer-state.
+- Execution realism:
+  - orderbook-based frictie actief in paper cycle: spread + slippage uit Bitvavo book (`/v2/book`) beïnvloeden execution price.
+- Daily auto-calibration:
+  - extra 24h-loop (`_daily_auto_calibration_loop`) stuurt `decision_threshold` en `stop_loss_pct` bij met max stap ±0.05.
 - News ticker endpoint:
   - `GET /api/v1/news/ticker` returns mapped high-impact news tuples (`text`, `coin`, `sentiment` + metadata).
 - History endpoint:
@@ -197,6 +276,10 @@ Last updated: 2026-04-20
   - `GET /api/v1/brain/reasoning`
   - `GET /api/v1/brain/feature-importance`
   - `GET /api/v1/brain/training-monitor`
+  - recovery floors active:
+    - learning rate floor blijft `>= 1e-5` (geen 0.00e+0 freeze-state meer in UI/stats),
+    - exploration floor blijft `>= 5%` (`RL_EXPLORATION_FINAL_EPS` runtime clamp op `0.05`).
+  - strategy bars zijn nu altijd relatief genormaliseerd (som ~1.0) via `core/analytics.py::normalize_feature_weights` (softmax/minmax pad).
   - `training-monitor` now returns:
     - learning stats cards (`learning_rate`, `global_step_count`, `exploration_rate_pct`)
     - benchmark block (`rl_pnl_pct`, `buy_hold_pnl_pct`, `alpha_pct`)

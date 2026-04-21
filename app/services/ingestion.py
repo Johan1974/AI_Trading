@@ -6,6 +6,8 @@ Functie: Haalt OHLCV-marktdata en nieuwsdata op met minimale validatie.
 
 from typing import Any
 from datetime import datetime, timedelta
+import contextlib
+import io
 
 from app.datetime_util import UTC
 import email.utils
@@ -81,9 +83,66 @@ def _fetch_rss_news_articles(max_items: int = 60) -> list[dict[str, Any]]:
 
 
 def fetch_market_data(ticker: str, lookback_days: int) -> pd.DataFrame:
-    df = yf.download(ticker, period=f"{lookback_days}d", interval="1d", auto_adjust=True, progress=False)
+    symbol = str(ticker or "").upper().strip()
+
+    # Bitvavo fallback for EUR crypto pairs when yfinance coverage is weak/missing.
+    # This prevents Elite-8 cycles from failing on newer/smaller assets.
+    def _bitvavo_daily_fallback() -> pd.DataFrame:
+        if "-" not in symbol or not symbol.endswith("-EUR"):
+            return pd.DataFrame()
+        try:
+            url = f"https://api.bitvavo.com/v2/{symbol}/candles"
+            resp = requests.get(url, params={"interval": "1d", "limit": max(60, int(lookback_days) + 10)}, timeout=15)
+            if resp.status_code != 200:
+                return pd.DataFrame()
+            candles = resp.json()
+            if not isinstance(candles, list) or not candles:
+                return pd.DataFrame()
+            rows: list[dict[str, Any]] = []
+            for c in candles:
+                if not isinstance(c, list) or len(c) < 6:
+                    continue
+                try:
+                    ts = int(c[0])
+                    rows.append(
+                        {
+                            "Date": datetime.fromtimestamp(ts / 1000, tz=UTC),
+                            "Open": float(c[1]),
+                            "High": float(c[2]),
+                            "Low": float(c[3]),
+                            "Close": float(c[4]),
+                            "Volume": float(c[5]),
+                        }
+                    )
+                except Exception:
+                    continue
+            if not rows:
+                return pd.DataFrame()
+            dfb = pd.DataFrame(rows).sort_values("Date").reset_index(drop=True)
+            return dfb
+        except Exception:
+            return pd.DataFrame()
+
+    # yfinance can print noisy errors for unknown symbols (e.g. EDU-EUR).
+    # Capture/suppress those and fail gracefully so startup logs remain clean.
+    try:
+        with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            df = yf.download(
+                symbol,
+                period=f"{lookback_days}d",
+                interval="1d",
+                auto_adjust=True,
+                progress=False,
+            )
+    except Exception as exc:
+        df = pd.DataFrame()
     if df.empty or len(df) < 40:
-        raise ValueError(f"Onvoldoende marktdata voor ticker {ticker}.")
+        dfb = _bitvavo_daily_fallback()
+        if not dfb.empty and len(dfb) >= 40:
+            return dfb
+        raise ValueError(f"Onvoldoende marktdata voor ticker {symbol}.")
+    if df.empty or len(df) < 40:
+        raise ValueError(f"Onvoldoende marktdata voor ticker {symbol}.")
     return df.reset_index()
 
 

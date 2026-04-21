@@ -594,7 +594,8 @@ button:hover {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 9999;
+  /* Boven panic/header; onder hint-portal (fixed tooltips) */
+  z-index: 520;
 }
 
 .news-modal.hidden {

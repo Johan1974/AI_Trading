@@ -10,6 +10,7 @@ import io
 import os
 import shutil
 import subprocess
+import time
 from typing import Any
 
 
@@ -177,5 +178,14 @@ def collect_system_stats() -> dict[str, Any]:
 
 
 def get_system_stats() -> dict[str, Any]:
-    """Verse snapshot voor WebSocket/API (elke poll opnieuw gemeten)."""
-    return collect_system_stats()
+    """Cached snapshot to reduce frequent nvidia-smi subprocess overhead."""
+    ttl = max(0.5, float(os.getenv("SYSTEM_STATS_CACHE_SEC", "2.0") or 2.0))
+    now = time.time()
+    cache = getattr(get_system_stats, "_cache", None)
+    if isinstance(cache, dict):
+        ts = float(cache.get("ts", 0.0) or 0.0)
+        if (now - ts) < ttl and isinstance(cache.get("data"), dict):
+            return dict(cache["data"])
+    data = collect_system_stats()
+    setattr(get_system_stats, "_cache", {"ts": now, "data": dict(data)})
+    return data

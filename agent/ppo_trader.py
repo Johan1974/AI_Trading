@@ -32,8 +32,13 @@ class PPOTrader:
         self.agent.ensure_pretrained(pair=target, lookback_days=self.config.lookback_days)
         self.current_pair = target
 
-    def decide(self, latest_row: dict[str, float], account: dict[str, float] | None = None) -> dict[str, Any]:
-        decision = self.agent.decide(latest_row=latest_row, account=account)
+    def decide(
+        self,
+        latest_row: dict[str, float],
+        account: dict[str, float] | None = None,
+        trade_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        decision = self.agent.decide(latest_row=latest_row, account=account, trade_context=trade_context)
         return {
             "action": decision.action_name,
             "confidence": float(decision.confidence),

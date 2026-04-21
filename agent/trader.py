@@ -32,8 +32,13 @@ class Trader(PPOTrader):
             "volatility_24",
         ]
 
-    def decide(self, latest_row: dict[str, float], account: dict[str, float] | None = None) -> dict[str, Any]:
-        payload = super().decide(latest_row=latest_row, account=account)
+    def decide(
+        self,
+        latest_row: dict[str, float],
+        account: dict[str, float] | None = None,
+        trade_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload = super().decide(latest_row=latest_row, account=account, trade_context=trade_context)
         payload["state_features"] = self.describe_state()
         return payload
 

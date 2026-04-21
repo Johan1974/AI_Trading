@@ -68,3 +68,36 @@ class NewsEngineService:
                 break
         return out
 
+    @staticmethod
+    def prioritize_for_elite_tickers(
+        rows: list[dict[str, Any]],
+        elite_tickers: list[str],
+        coin_aliases: dict[str, list[str]] | None = None,
+    ) -> list[dict[str, Any]]:
+        alias_map = coin_aliases or {}
+        elite = [str(t or "").upper() for t in elite_tickers if str(t or "").strip()]
+        if not elite:
+            return rows
+
+        def _score(row: dict[str, Any]) -> tuple[int, int]:
+            title = str(row.get("title") or "")
+            desc = str(row.get("description") or "")
+            text = f"{title} {desc}".upper()
+            strong = int(abs(float(row.get("sentiment", 0.0) or 0.0)) >= 0.8)
+            match = 0
+            for tk in elite:
+                base = tk.split("-", 1)[0]
+                if base and base in text:
+                    match = 1
+                    break
+                for alias in alias_map.get(base, []):
+                    if str(alias).upper() in text:
+                        match = 1
+                        break
+                if match:
+                    break
+            return (match, strong)
+
+        scored = sorted(rows, key=lambda r: _score(r), reverse=True)
+        return scored
+

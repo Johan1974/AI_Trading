@@ -17,7 +17,9 @@ import numpy as np
 import pandas as pd
 import requests
 
+from core.preprocessor import forward_fill_dead_signal, normalize_rl_feature_frame
 from app.rl.events import MAJOR_CRYPTO_EVENTS_UTC
+from app.rl.observation_audit import warn_if_news_sentiment_empty, warn_if_whale_source_likely_empty
 from app.services.fear_greed import FearGreedService
 from app.services.macro_calendar import MacroCalendarService
 from app.services.whale_watcher import WhaleWatcherService
@@ -29,6 +31,7 @@ FEATURE_STORAGE_DIR = STORAGE_ROOT / "rl_features"
 FEAR_GREED_SERVICE = FearGreedService()
 WHALE_WATCHER_SERVICE = WhaleWatcherService()
 MACRO_CALENDAR_SERVICE = MacroCalendarService()
+_LAST_SIGNAL_CACHE: dict[str, dict[str, float]] = {}
 
 
 def _ensure_storage_dirs() -> None:
@@ -226,9 +229,9 @@ def _attach_news_features(
     market: str,
     news_query: str,
     news_api_key: str | None,
-) -> tuple[pd.Series, pd.Series, pd.Series]:
+) -> tuple[pd.Series, pd.Series, pd.Series, int]:
     if df.empty:
-        return pd.Series(dtype=float), pd.Series(dtype=float), pd.Series(dtype=float)
+        return pd.Series(dtype=float), pd.Series(dtype=float), pd.Series(dtype=float), 0
     start_dt = df["timestamp"].min().to_pydatetime()
     end_dt = df["timestamp"].max().to_pydatetime()
     coin = (market or "").upper().split("-", 1)[0]
@@ -241,7 +244,9 @@ def _attach_news_features(
     )
     if not articles:
         news_df = pd.DataFrame(columns=["timestamp", "sentiment_score", "news_confidence", "social_volume"])
+        n_articles = 0
     else:
+        n_articles = len(articles)
         news_df = pd.DataFrame(
             [
                 {
@@ -263,7 +268,7 @@ def _attach_news_features(
 
     if news_df.empty:
         zeros = pd.Series(np.zeros(len(df), dtype=float), index=df.index)
-        return zeros.copy(), zeros.copy(), zeros.copy()
+        return zeros.copy(), zeros.copy(), zeros.copy(), int(n_articles)
     news_df["bucket"] = news_df["timestamp"].dt.floor("h")
     grouped = news_df.groupby("bucket", as_index=False).agg(
         sentiment_score=("sentiment_score", "mean"),
@@ -276,7 +281,7 @@ def _attach_news_features(
     sentiment = merged["sentiment_score"].fillna(0.0).astype(float)
     confidence = merged["news_confidence"].fillna(0.0).astype(float)
     social_volume = merged["social_volume"].fillna(0.0).astype(float)
-    return sentiment, confidence, social_volume
+    return sentiment, confidence, social_volume, int(n_articles)
 
 
 def build_rl_training_frame(
@@ -287,7 +292,10 @@ def build_rl_training_frame(
     news_api_key: str | None = None,
     cryptocompare_key: str | None = None,
     cmc_metrics: dict[str, Any] | None = None,
+    metadata_out: dict[str, Any] | None = None,
 ) -> pd.DataFrame:
+    market_key = str(market or "BTC-EUR").upper()
+    cache = _LAST_SIGNAL_CACHE.setdefault(market_key, {"sentiment_score": 0.0, "whale_pressure": 0.0})
     df = candles_df.copy()
     df["returns"] = df["close"].pct_change().fillna(0.0)
     df["log_returns"] = np.log1p(df["returns"]).fillna(0.0)
@@ -334,22 +342,37 @@ def build_rl_training_frame(
 
     # Historical news alignment for pre-training period:
     # aggregate article-level signals into the same hourly buckets as price candles.
-    hist_sentiment, hist_conf, hist_social_volume = _attach_news_features(
+    hist_sentiment, hist_conf, hist_social_volume, news_article_count = _attach_news_features(
         df=df,
         market=market,
         news_query=news_query,
         news_api_key=news_api_key,
     )
+    if metadata_out is not None:
+        metadata_out["news_article_count"] = int(news_article_count)
+        metadata_out["news_api_key_present"] = bool((news_api_key or "").strip())
+        cc_key = (cryptocompare_key or news_api_key or "").strip() or None
+        metadata_out["cryptocompare_key_present"] = bool(cc_key)
+    if metadata_out is not None and int(news_article_count) <= 0:
+        warn_if_news_sentiment_empty(
+            news_article_count=int(news_article_count),
+            news_api_key_present=bool((news_api_key or "").strip()),
+        )
     sentiment_proxy = np.tanh((df["event_impact"] * np.sign(df["feature_price_momentum"])) * 1.8).astype(float)
     df["sentiment_score"] = np.where(np.abs(hist_sentiment.values) > 1e-8, hist_sentiment.values, sentiment_proxy)
     df["news_confidence"] = np.where(hist_conf.values > 1e-8, hist_conf.values, np.clip(df["event_impact"], 0.0, 1.0))
     df["social_volume"] = np.log1p(np.clip(hist_social_volume.values, 0.0, None))
     fear_greed = FEAR_GREED_SERVICE.fetch_index()
     cc_key = (cryptocompare_key or news_api_key or "").strip() or None
+    if metadata_out is not None and not cc_key:
+        warn_if_whale_source_likely_empty(cc_key_present=False)
     whale = WHALE_WATCHER_SERVICE.fetch_exchange_pressure(api_key=cc_key, lookback_minutes=60)
     macro = MACRO_CALENDAR_SERVICE.fetch_today_macro_context()
     df["fear_greed_score"] = float(fear_greed.get("fear_greed_score", 0.5) or 0.5)
-    df["whale_pressure"] = float(whale.get("whale_pressure", 0.0) or 0.0)
+    whale_val = float(whale.get("whale_pressure", 0.0) or 0.0)
+    if abs(whale_val) <= 1e-12 and abs(float(cache.get("whale_pressure", 0.0) or 0.0)) > 1e-12:
+        whale_val = float(cache.get("whale_pressure", 0.0) or 0.0)
+    df["whale_pressure"] = whale_val
     cmc = cmc_metrics or {}
     dom = float(cmc.get("btc_dominance_pct", 0.0) or 0.0)
     if dom <= 0.0:
@@ -368,7 +391,26 @@ def build_rl_training_frame(
     df["macd"] = (ema_fast - ema_slow).replace([np.inf, -np.inf], 0.0).fillna(0.0)
     if "bucket" in df.columns:
         df = df.drop(columns=["bucket"])
-    out = df.reset_index(drop=True)
+    df["sentiment_score"] = forward_fill_dead_signal(
+        df["sentiment_score"],
+        last_value=float(cache.get("sentiment_score", 0.0) or 0.0),
+        treat_zero_as_dead=True,
+    )
+    df["whale_pressure"] = forward_fill_dead_signal(
+        df["whale_pressure"],
+        last_value=float(cache.get("whale_pressure", 0.0) or 0.0),
+        treat_zero_as_dead=True,
+    )
+    out = normalize_rl_feature_frame(df.reset_index(drop=True))
+    cache["sentiment_score"] = float(out["sentiment_score"].iloc[-1]) if not out.empty else float(cache["sentiment_score"])
+    cache["whale_pressure"] = float(out["whale_pressure"].iloc[-1]) if not out.empty else float(cache["whale_pressure"])
+    if metadata_out is not None:
+        metadata_out["signal_integrity"] = {
+            "sentiment_last": float(cache["sentiment_score"]),
+            "whale_last": float(cache["whale_pressure"]),
+            "sentiment_nonzero_count": int((np.abs(out["sentiment_score"].to_numpy()) > 1e-10).sum()) if not out.empty else 0,
+            "whale_nonzero_count": int((np.abs(out["whale_pressure"].to_numpy()) > 1e-10).sum()) if not out.empty else 0,
+        }
 
     if news_api_key:
         try:

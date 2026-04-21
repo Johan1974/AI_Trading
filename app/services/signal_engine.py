@@ -9,12 +9,14 @@ from typing import Any
 import numpy as np
 
 from app.ai.judge.weighted_judge import WeightedJudge
-from app.ai.sentiment.finbert_sentiment import FinBertSentimentAnalyzer
+from app.ai.sentiment.finbert_sentiment import FinBertSentimentAnalyzer, LazyFinBertSentimentAnalyzer
 from app.ai.technical.sklearn_technical import SklearnTechnicalAnalyzer
 
 
 class SignalEngine:
-    def __init__(self, sentiment: FinBertSentimentAnalyzer | None = None) -> None:
+    def __init__(
+        self, sentiment: FinBertSentimentAnalyzer | LazyFinBertSentimentAnalyzer | None = None
+    ) -> None:
         self.technical = SklearnTechnicalAnalyzer(window=30)
         self.sentiment = sentiment if sentiment is not None else FinBertSentimentAnalyzer()
         self.judge = WeightedJudge(technical_weight=0.65, sentiment_weight=0.35)
