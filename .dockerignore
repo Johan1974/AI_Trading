@@ -1,0 +1,20 @@
+# Data & Storage (worden via volumes gemount)
+storage/
+logs/
+artifacts/
+data/
+
+# Python cache & virtual environments
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+env/
+
+# Git & Secrets
+.git/
+.github/
+.env

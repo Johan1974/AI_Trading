@@ -187,7 +187,7 @@ Actieve riskregels vóór execution:
 
 - Geen `.env` in de projectfolder.
 - Alle geheimen staan in: `$HOME/.trading_vault`.
-- Startscript: `./run_bot.sh` laadt alleen externe vault en faalt bij lokale `.env` bestanden.
+- Scripts onder `scripts/` sourcen `scripts/lib_compose_root.sh` en laden `~/.trading_vault`; geen `.env` in de repo.
 
 Voorbeeld vault:
 
@@ -210,22 +210,51 @@ Mode-regel:
 - `LIVE_MODE` ontbreekt in de vault -> app draait standaard in paper mode.
 - `LIVE_MODE=true` -> `BITVAVO_KEY_TRADE` en `BITVAVO_SECRET_TRADE` zijn verplicht (fail-fast bij startup).
 
-## Starten (container altijd via `run_bot.sh`)
+### IP-Whitelisting (Cruciaal voor Live Trading)
+Voor maximale veiligheid van je funds is het sterk aanbevolen om IP-whitelisting toe te passen op je Bitvavo API keys (zowel `READ` als `TRADE`).
 
-Gebruik **`./run_bot.sh`** als vaste manier om de container te bouwen en te starten. Zo wordt
-`~/.trading_vault` geëxporteerd, draaien er korte API health-checks vóór `docker compose`, en wordt
-altijd het compose-bestand in deze repo aangesproken (`-f …/docker-compose.yml`).  
-Handmatig `docker compose up` kan, maar is dan **niet** hetzelfde pad (geen vault uit dit script, ander cwd-risico).
+1. Achterhaal het publieke IP-adres van je server (bijv. via `curl ifconfig.me` in je terminal).
+2. Ga naar je **Bitvavo Dashboard** -> **API Instellingen**.
+3. Bewerk je actieve API keys en vul bij **IP Whitelist** het IP-adres van je server in.
+4. Resultaat: mocht de inhoud van je `~/.trading_vault` ooit onbedoeld uitlekken, dan kan een aanvaller absoluut niets met deze keys vanaf een ander netwerk.
+
+## Starten (Docker Compose + vault)
+
+Vanuit de **repo-root** (`cd` naar deze map). Geheimen komen uit **`~/.trading_vault`**.
+
+**Optie A — hele stack (Compose bepaalt volgorde / depends_on):**
 
 ```bash
 cd "$HOME/AI_Trading"
-./run_bot.sh
+# shellcheck disable=SC1091
+source ./scripts/lib_compose_root.sh
+docker compose down --remove-orphans --timeout 30
+docker compose up -d
 ```
 
-Standaard start dit de container **op de achtergrond** (`-d`). Voor logs in de terminal: `./run_bot.sh -f`.  
-Stoppen bijvoorbeeld: `docker compose -f "$HOME/AI_Trading/docker-compose.yml" stop` (of opnieuw `./run_bot.sh` na een eerdere `down` — het script ruimt eerst oude containers op).
+(`down --remove-orphans` helpt tegen container-naamconflicten / orphans; de **`./scripts/run_*.sh`** scripts doen dit automatisch vóór build/up.)
 
-**Flags (efficiency / troubleshooting):** `--skip-optimize` (sla host `optimize_data.py` over), `--no-cache` (forceer Docker image rebuild zonder cache), `--clean` (compose `down` met `--volumes` en `--rmi local`, traag — alleen bij hardnekkige image-problemen).
+**Optie B — per service (vault automatisch):**
+
+```bash
+cd "$HOME/AI_Trading"
+./scripts/run_redis.sh build
+./scripts/run_worker.sh build
+./scripts/run_portal.sh build
+```
+
+Elk `run_*.sh`-script accepteert **`build`** (standaard) of **`rebuild`** (`docker compose build --no-cache` voor portal/worker). Zie `scripts/lib_run_container.sh`.
+
+Logs: `docker compose logs -f portal` (of `worker` / `redis`). Stoppen: `docker compose stop`.
+
+**Redis (host):** als je in de logs de melding over `vm.overcommit_memory` ziet, eenmalig op de **Linux-host** (niet in de container):
+
+```bash
+cd "$HOME/AI_Trading"
+sudo ./scripts/install_vm_overcommit.sh
+```
+
+Dat schrijft `/etc/sysctl.d/99-ai-trading-redis.conf` en laadt `vm.overcommit_memory=1` direct.
 
 Open daarna:
 - `http://localhost:8000`

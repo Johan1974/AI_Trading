@@ -32,6 +32,19 @@ MIN_LEARNING_RATE = 1.0e-5
 MIN_EXPLORATION_EPS = 0.05
 
 
+def get_rl_ppo_device() -> str:
+    """
+    SB3 MlpPolicy is sneller op CPU dan op een losse GPU-kernel; zet RL_PPO_DEVICE=cuda voor GPU-forcing.
+    """
+    raw = str(os.getenv("RL_PPO_DEVICE", "cpu") or "cpu").strip().lower()
+    if raw.startswith("cuda") or raw in ("gpu", "auto"):
+        try:
+            return "cuda" if torch.cuda.is_available() else "cpu"
+        except Exception:
+            return "cpu"
+    return "cpu"
+
+
 class RewardLossCallback(BaseCallback):
     def __init__(self) -> None:
         super().__init__()
@@ -203,6 +216,12 @@ class RLAgentService:
             cmc_metrics=cmc_metrics or {"btc_dominance_pct": float(os.getenv("CMC_BTC_DOMINANCE_FALLBACK", "0") or 0.0)},
         )
         vec_env = DummyVecEnv([lambda: BitvavoTradingEnv(data=frame, max_trades=10000)])
+        
+        # SENIOR FIX: Voorkom DataFrame memory leaks door de oude environment netjes af te sluiten
+        old_env = self.model.get_env()
+        if old_env is not None:
+            old_env.close()
+            
         self.model.set_env(vec_env)
         cb = RewardLossCallback()
         self.model.learn(
@@ -238,6 +257,13 @@ class RLAgentService:
         self.last_training_stats["exploration_final_eps"] = round(
             eps_now, 4
         )
+        
+        # SENIOR FIX: Forceer GC en clear VRAM fragmentatie na elke train-cycle
+        import gc
+        del frame
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     def ingest_paper_stop_loss(self) -> None:
         """Harde stop-loss vanuit risk-engine (paper): één 'geheugen'-puls voor volgende decide()."""
@@ -295,13 +321,13 @@ class RLAgentService:
             best = sorted(rows, key=lambda x: float(x.get("reward_score", -1e18)), reverse=True)[0]
             best_model_path = Path(str(best.get("model_path", "")))
             if best_model_path.exists():
-                self.model = PPO.load(str(best_model_path.with_suffix("")))
+                self.model = PPO.load(str(best_model_path.with_suffix("")), device=get_rl_ppo_device())
                 self.active_pair = pair
                 return True
         path = self._model_path(pair)
         zip_path = Path(f"{path}.zip")
         if zip_path.exists():
-            self.model = PPO.load(str(path))
+            self.model = PPO.load(str(path), device=get_rl_ppo_device())
             self.active_pair = pair
             return True
         return False
@@ -334,6 +360,12 @@ class RLAgentService:
             cryptocompare_key=os.getenv("CRYPTOCOMPARE_KEY"),
             cmc_metrics={"btc_dominance_pct": float(os.getenv("CMC_BTC_DOMINANCE_FALLBACK", "0") or 0.0)},
         )
+        
+        # SENIOR FIX: Ruim eventuele bestaande model-envs op om cyclische referenties te breken
+        if self.model is not None:
+            old_env = self.model.get_env()
+            if old_env is not None:
+                old_env.close()
 
         def _make_env():
             return BitvavoTradingEnv(data=frame, max_trades=10000)
@@ -349,6 +381,7 @@ class RLAgentService:
             gamma=0.99,
             gae_lambda=0.95,
             ent_coef=0.01,
+            device=get_rl_ppo_device(),
         )
         cb = RewardLossCallback()
         model.learn(total_timesteps=total_timesteps, callback=cb, progress_bar=False)
@@ -389,6 +422,13 @@ class RLAgentService:
         self.last_correlation = self._sentiment_price_correlation(frame=frame)
         reward_score = float(cb.cumulative_rewards[-1]) if cb.cumulative_rewards else 0.0
         self._register_model_version(pair=pair, timestamp=timestamp, reward_score=reward_score)
+        
+        # SENIOR FIX: Forceer GC en clear VRAM na zware pre-train initiatie
+        import gc
+        del frame
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     def _benchmark_vs_buy_hold(self, model: PPO, frame) -> dict[str, float]:
         env = BitvavoTradingEnv(data=frame, max_trades=10000)
@@ -496,6 +536,7 @@ class RLAgentService:
             obs_features = np.nan_to_num(obs_features, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
         gate = attention_gate_weights(obs_features, temperature=0.7)
         gate = apply_whale_attention_blend(gate, list(self.feature_names))
+        gate = np.asarray(gate, dtype=np.float32)
         obs_features = (obs_features * gate).astype(np.float32)
         obs = np.concatenate(
             [

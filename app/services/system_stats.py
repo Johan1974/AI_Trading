@@ -126,6 +126,19 @@ def _nvidia_smi_stats() -> dict[str, Any]:
     return out
 
 
+def _disk_usage_percent() -> float:
+    """Schijf%: standaard container-root; zet SYSTEM_STATS_DISK_PATH=/hostfs + bind-mount host `/` voor echte host-schijf."""
+    import psutil
+
+    path = str(os.getenv("SYSTEM_STATS_DISK_PATH", "/") or "/").strip() or "/"
+    for candidate in (path, "/"):
+        try:
+            return float(psutil.disk_usage(candidate).percent)
+        except Exception:
+            continue
+    return 0.0
+
+
 def collect_system_stats() -> dict[str, Any]:
     """Eén snapshot voor WebSocket/API: CPU%, RAM%, disk% root, GPU%, VRAM (MB)."""
     cpu_pct = 0.0
@@ -138,7 +151,7 @@ def collect_system_stats() -> dict[str, Any]:
         _ = psutil.cpu_percent(interval=0.05)
         cpu_pct = float(psutil.cpu_percent(interval=0.22))
         ram_pct = float(psutil.virtual_memory().percent)
-        disk_pct = float(psutil.disk_usage("/").percent)
+        disk_pct = _disk_usage_percent()
     except Exception:
         pass
 

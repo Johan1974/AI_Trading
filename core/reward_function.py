@@ -31,6 +31,9 @@ CONSISTENCY_BONUS = _f("RL_CONSISTENCY_BONUS", "0.05")
 CONSISTENCY_WHALE_MIN = _f("RL_CONSISTENCY_WHALE_MIN", "0.5")
 # Harde straf wanneer gesimuleerde risk-stop wordt geraakt (align met RISK_STOP_LOSS_PCT in de env).
 STOP_LOSS_SHOCK = _f("RL_STOP_LOSS_SHOCK", "12.0")
+# Straf per stap als een positie te lang open staat (stagnatie).
+STAGNATION_MAX_HOURS = _f("RL_STAGNATION_MAX_HOURS", "72.0")
+STAGNATION_PENALTY = _f("RL_STAGNATION_PENALTY", "0.02")
 
 
 def compute_trading_step_reward(
@@ -46,6 +49,7 @@ def compute_trading_step_reward(
     entry_price: float,
     current_price: float,
     forced_stop_loss: bool,
+    position_hours: float = 0.0,
 ) -> float:
     """
     Beloning voor één omgevingsstap na uitvoering van de actie (en eventuele risk-forced exit).
@@ -55,6 +59,7 @@ def compute_trading_step_reward(
     - Friction: kleine vaste aftrek per trade.
     - Consistency: bonus bij HOLD, whale_pressure > drempel, en positieve unrealized PnL.
     - Stop-loss shock: grote negatieve spike als risk-stop in de simulatie wordt getriggerd.
+    - Stagnation: lichte straf per stap als de trade langer open staat dan STAGNATION_MAX_HOURS.
     """
     _ = initial_balance_eur  # gereserveerd voor toekomstige normalisatie / logging
 
@@ -83,4 +88,11 @@ def compute_trading_step_reward(
 
     sl_shock = -STOP_LOSS_SHOCK if forced_stop_loss else 0.0
 
-    return float(pnl_reward + drawdown_penalty + friction + consistency + sl_shock)
+    stagnation = 0.0
+    if position_btc > 1e-12 and position_hours > STAGNATION_MAX_HOURS:
+        stagnation = -STAGNATION_PENALTY
+        
+        # Tijdelijke debug: print de straf naar de terminal (zonder de logs te overspoelen)
+        # print(f"[REWARD DEBUG] Stagnatie straf! uren={position_hours:.1f}, penalty={stagnation:.2f}, totaal_reward={(pnl_reward + drawdown_penalty + friction + consistency + sl_shock + stagnation):.4f}")
+
+    return float(pnl_reward + drawdown_penalty + friction + consistency + sl_shock + stagnation)

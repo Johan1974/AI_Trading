@@ -4,7 +4,7 @@ Single Source of Truth voor planning, voortgang en architecturale keuzes.
 
 ## Voortgang
 
-**Overall voortgang: 85% (164/194 taken)**
+**Overall voortgang: 85% (166/195 taken)**
 
 `[█████████████████░░░] 85%`
 
@@ -36,7 +36,7 @@ Doel: API-veiligheid, ban-preventie en operationele robuustheid rond exchange-ve
 
 - [x] Implementatie van de Rate Limit Controller (1000 punten/minuut regel).
 - [x] Logging van API-verbruik per uur.
-- [ ] IP-Whitelisting instructie (veiligheid voor je API keys).
+- [x] IP-Whitelisting instructie (veiligheid voor je API keys).
 - [x] 'Circuit Breaker' bij herhaalde API-fouten om een ban te voorkomen.
 
 ## Fase 0 - Governance & Memory
@@ -176,8 +176,9 @@ Doel: transparante operatie, snelle troubleshooting en veilige uitrol.
 - [x] Electric Quant theme engine (`electric-quant.css`): transparante kaarten, witte rand 15% opacity, 4px radius; Terminal + Brain dezelfde 4-koloms structuur; glass tooltips; trade-lijsten met neon buy/sell dots.
 - [x] Symmetrisch dashboard: CSS grid `repeat(4,1fr)` + `grid-auto-rows: 1fr`, kaarten vullen kolomhoogte; Terminal kolommen Monitor / Signals (reasoning·state·news) / Learning (training·features) / Action (trades|balance); Brain-tab in dezelfde indeling.
 - [x] GPU in container: Dockerfile op `nvidia/cuda` runtime + `docker-compose` `gpus: all`; `nvidia-smi` parsing robuuster (util-fallback per GPU-index).
+- [x] Split worker/portal: portal-hardware (header + rings) volgt **worker**-metingen via Redis `system_stats`; host-schijfvulling via compose-bind `/:/hostfs:ro` + `SYSTEM_STATS_DISK_PATH` (slim portal-image heeft geen GPU-binary).
 - [x] Genesis **4-tab** portal (Noir Quant): **Terminal** / **AI Brain** / **Ledger** / **Hardware**; ledger-tab tot 200 trades + performance-charts; Terminal **3** top-nieuws; uniform **4×1fr** grid, **Inter** + mono data, ghost-knoppen, hint-portal **z-index 99999**.
-- [x] Dockerfile: **CUDA 12.4.1-runtime** + **`torch==2.2.0+cu121`**; compose **`GENESIS_REQUIRE_GPU`** + **`FINBERT_USE_CUDA`**; startup **`[DEVICE] Using device: cuda:0 (...)`**; `run_bot.sh --heal` wacht op device-log + scant Traceback/CUDA/driver-fouten.
+- [x] Dockerfile: **CUDA 12.4.1-runtime** + **`torch==2.2.0+cu121`**; compose **`GENESIS_REQUIRE_GPU`** + **`FINBERT_USE_CUDA`**; startup **`[DEVICE] Using device: cuda:0 (...)`** (GPU-log voor operators / CI).
 - [ ] Toon trades log live in portal
 - [ ] Voeg model metrics dashboard toe (hit-rate, pnl/trade, max DD)
 - [ ] Voeg alerting toe (Telegram/Slack) bij risk breaches
@@ -366,7 +367,7 @@ Bij elke afgeronde taak:
 
 - Toegevoegd: governance-bestanden `.cursorrules` en `MEMORY.md`.
 - Bevestigd: rate-limit en security regels uit Bitvavo docs vastgelegd als ontwikkelstandaard.
-- Toegevoegd: executiefase met nieuw `run_bot.sh` (Docker-only + .env + background/interactief) en portal-controls.
+- Toegevoegd: executiefase Docker-only (`docker compose` + vault) en portal-controls.
 - Stabilisatie: portal runtime issues opgelost (`TemplateResponse` compat + `/paper/run` shape-fix in technical analyzer).
 - Toegevoegd: Fase 2.1 dynamic market selection (scanner + volumefilter + dropdown + vault balance-check).
 - Verbeterd: portal live polling voor sentiment/status/activity zodat updates zonder handmatige actie zichtbaar zijn.
@@ -393,3 +394,4 @@ Bij elke afgeronde taak:
 - Uitgevoerd: Full Autonomous Audit & Trade Integrity voor Elite-8 (ownership guard, round-trip ledger, hourly self-reflection + auto-tuning, AI Zelfreflectie in e-mailrapport).
 - Uitgevoerd: AI Brain Recovery & Visual Polish — floors gezet op `learning_rate >= 1e-5` en `epsilon >= 0.05`, strategy-weights genormaliseerd via `core/analytics.py`, plus high-contrast card borders/padding in Brain Lab.
 - Uitgevoerd: Performance & Doctrine alignment — async worker-queues voor `/predict` en `/paper/run`, cached GPU stats (`SYSTEM_STATS_CACHE_SEC`), tenant-scoped runtime state + tenant-tagged SQLite records, orderbook spread/slippage frictie in paper execution, en dagelijkse auto-calibration (`AUTO_CALIBRATION_INTERVAL_SEC`, default 24h).
+- Uitgevoerd: IP-Whitelisting veiligheidsinstructies toegevoegd aan de README (Fase 1.1).

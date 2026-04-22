@@ -1,6 +1,6 @@
-# Bestand: Dockerfile
-# Relatief pad: ./Dockerfile
-# Functie: Bouwt de API-container met CUDA-runtime (nvidia-smi) voor GPU-monitoring en RL-stack.
+# Bestand: Dockerfile.worker
+# Relatief pad: ./Dockerfile.worker
+# Functie: Worker/Chef-image met CUDA-runtime (nvidia-smi) en volledige AI-stack (torch, transformers, SB3).
 # CUDA 12.4 runtime (host-driver) + PyTorch cu124-wheels (eigen CUDA-runtime in wheel).
 FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
 
@@ -22,10 +22,10 @@ RUN apt-get update \
 
 WORKDIR /app
 
-COPY requirements.txt .
-# Torch: cu124 + v2.6+ vereist door transformers 5.x (CVE-2025-32434 / torch.load); matcht CUDA 12.4-runtime.
+COPY requirements-worker.txt .
+# Torch: cu124 + v2.6+ vereist door transformers 5.x; matcht CUDA 12.4-runtime.
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir -r requirements-worker.txt \
     && pip install --no-cache-dir --force-reinstall \
         "torch==2.6.0+cu124" \
         --index-url https://download.pytorch.org/whl/cu124

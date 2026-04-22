@@ -5,16 +5,14 @@ Functie: Abstracte base classes voor technical model, sentiment model en judge m
 """
 
 from abc import ABC, abstractmethod
-from typing import Sequence
-
-import numpy as np
+from typing import Any, Sequence
 
 from app.ai.types import JudgeResult, SentimentResult, TechnicalResult
 
 
 class TechnicalAnalyzer(ABC):
     @abstractmethod
-    def score(self, close_prices: np.ndarray) -> TechnicalResult:
+    def score(self, close_prices: Any) -> TechnicalResult:
         raise NotImplementedError
 
 

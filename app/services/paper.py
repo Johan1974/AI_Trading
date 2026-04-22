@@ -31,7 +31,7 @@ def apply_paper_order(
     if signal not in {"BUY", "SELL"}:
         snapshot = _snapshot(portfolio, ticker, price, "HOLD")
         portfolio["history"].append(snapshot)
-        portfolio["history"] = portfolio["history"][-300:]
+        portfolio["history"] = portfolio["history"][-200:]
         return snapshot
 
     notional = max(0.0, portfolio["equity"] * size_fraction)
@@ -58,7 +58,7 @@ def apply_paper_order(
 
     snapshot = _snapshot(portfolio, ticker, price, signal)
     portfolio["history"].append(snapshot)
-    portfolio["history"] = portfolio["history"][-300:]
+    portfolio["history"] = portfolio["history"][-200:]
     return snapshot
 
 

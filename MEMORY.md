@@ -11,6 +11,8 @@ Last updated: 2026-04-21
   - flag logic gaps and edge cases immediately.
 
 ## Portal layout & GPU monitoring
+- **Terminal `/activity` vs Redis WS:** `/ws/trading-updates` kan lang open blijven zonder pub/sub-berichten. `terminal.js` gebruikt **`lastTradingWsActivityAtMs`**: alleen als er ~20s geen bruikbare payload was, draait de gestaggerde **`refreshActivity()`** poll weer (voorheen werd die uitgezet zodra de socket opende). **`refreshMarkets()`** triggert activity nu non-blocking (`void refreshActivity()`).
+- **Hardware (GPU/schijf) in split compose:** de **portal**-image heeft geen `nvidia-smi`; `/ws/system-stats` op de portal gebruikt **`STATE['_system_stats_ws_payload']`** gevuld door Redis-kanaal **`system_stats`** waar de **worker** elke ~2s `collect_system_stats()` publiceert (echte GPU + load). Schijf% gebruikt **`SYSTEM_STATS_DISK_PATH`** (default **`/hostfs`**) met compose-bind **`/:/hostfs:ro`** zodat de meter de **host**-rootvulling toont, niet alleen de dunne container-laag.
 - **Genesis Noir Quant:** tabs **Terminal**, **AI Brain**, **Ledger** (trade history + equity/PnL charts), **Hardware** (vier ring-meters + logs). CSS-grid **`repeat(4, minmax(0,1fr))`**; **Inter** als UI-font, **JetBrains Mono** voor data/tabulair; labels min. **14px**; minimalistische **ghost/outline** header-knoppen; hint-bubbles via **`#brainHintPortal`** (**z-index 99999**). Terminal toont **3** top-nieuwsregels; boven de chart een **Elite-8 AI status bar** (`#elite8AiStatusBar`, kleuren uit `/activity` → `elite_ai_signals` i.c.m. `rl_multi_decisions` + whale panic/danger). Intelligence ticker gebruikt **`/api/v1/news/ticker?elite_mix=1`** (round-robin alle Elite-munten) + **`scanner_intel_feed`** (scanner replace-berichten). Markt-switch via dropdown/scanner/pill: **`switchEliteMarket`** → POST **`/markets/select`** + chart + Brain Lab + ticker refresh.
 - **AI Brain Lab:** kolom 1 = Monitor + RL stats; kolom 2 = reasoning + state (o.a. MACD); kolom 3 = reward/feature weights/benchmark; kolom 4 = balance/risk/paper. Hints via **`initHintPortals()`** op alle tab-roots → **`#brainHintPortal`** (fixed, z-index ~2e9).
 - Dashboard cards hebben nu geforceerde contrast-layout: `border: 2px solid #333`, `border-radius: 8px`, `margin: 10px`, `background: #0b0e11`; titelbalken met eigen donkere headerstrip per panel/chart-box (`.chart-box-titlebar` voor ledger charts).
@@ -29,23 +31,21 @@ Last updated: 2026-04-21
 ## Current Runtime Modes
 - `LIVE_MODE` from vault, default fallback is paper mode when missing.
 - `DRY_RUN` supported; when true, order calls are logged/simulated.
-- **Operationeel:** container start/stop voor dagelijks gebruik via **`./run_bot.sh`**; script sourcet vault, health-checks, `docker compose -f <repo>/docker-compose.yml`. Flags: `--skip-optimize`, `--no-cache`, `--clean`, **`--heal`** (bounded rebuild/restart + log-pattern grep op o.a. CUDA OOM / driver mismatch / API errors), `--follow` voor live compose logs.
-- Standaard **geen** `docker compose down --volumes --rmi local` meer bij elke start (te traag); `--clean` voor oude gedrag. Eén gedeelde **FinBERT**-instantie voor `SignalEngine` en `NewsMappingService`; `FINBERT_USE_CUDA=0` in compose om PyTorch/CUDA-driver-warnings te vermijden tenzij je driver expliciet matcht.
+- **Operationeel:** vault via **`scripts/lib_compose_root.sh`** (of per-service **`./scripts/run_*.sh`**); stack met **`docker compose up -d`** vanuit repo-root na vault laden.
+- Eén gedeelde **FinBERT**-instantie voor `SignalEngine` en `NewsMappingService`; `FINBERT_USE_CUDA=0` in compose om PyTorch/CUDA-driver-warnings te vermijden tenzij je driver expliciet matcht.
 - **Tijdzone:** `ai-trading-bot` mount `/etc/localtime` en `/etc/timezone` read-only zodat container-CET/CEST gelijk loopt met de Linux-host; `TZ=Europe/Amsterdam` blijft in compose. Telegram start/stop gebruikt `pytz.timezone('Europe/Amsterdam')` voor tijdstempels.
-- `run_bot.sh` supports:
-  - **default:** background/detached (`docker compose up -d`); portal op `http://localhost:8000`
-  - foreground: `-f` / `--foreground` / `--interactive` (logs in terminal)
-  - expliciet achtergrond: `-b` / `--background` (zelfde als default)
-  - `docker-compose.yml`: **`restart: always`** op `ai-trading-bot` — bij procescrash of na reboot van Docker start de container opnieuw (tenzij expliciet verwijderd).
-  - Docker Compose only runtime (no local venv dependency)
-  - environment loading from project `.env` when present (`--env-file`)
+- Compose / scripts:
+  - Stack: `source ./scripts/lib_compose_root.sh` dan `docker compose up -d`; portal op `http://localhost:8000`
+  - Per image: `./scripts/run_{redis,worker,portal}.sh [build|rebuild]`
+  - `docker-compose.yml`: **`restart: always`** op services — na crash/reboot start Docker ze opnieuw (tenzij verwijderd).
+  - Geen `.env` in de repo; secrets via vault vóór `docker compose`.
 
 ## Secret Management
 - Secrets sourced from: `$HOME/.trading_vault`
 - Expected key groups:
   - Read-only: `BITVAVO_KEY_READ`, `BITVAVO_SECRET_READ`
   - Trading: `BITVAVO_KEY_TRADE`, `BITVAVO_SECRET_TRADE`
-  - Telegram lifecycle alerts (optioneel): `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID` — moeten in de shell staan vóór `docker compose` of via `docker-compose.yml` environment; `run_bot.sh` sourcet de vault zodat deze variabelen de container ingaan.
+  - Telegram lifecycle alerts (optioneel): `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID` — in de shell vóór `docker compose` (via vault + `lib_compose_root.sh`) of via `docker-compose.yml` environment.
 - Bij succesvolle FastAPI lifecycle: `TELEGRAM.send_start()` na engine-start; `TELEGRAM.send_stop()` bij shutdown (o.a. `docker compose stop`).
 
 ## Exchange Integrations

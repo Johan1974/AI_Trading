@@ -1,0 +1,18 @@
+# Worker ("Chef"): ML/trading. Start: python -m app.worker_entry (geen FastAPI/Jinja2).
+# pydantic: app.schemas.prediction — starlette: core.ws_manager (WebSocket; zelfde als FastAPI-re-export).
+pydantic
+pydantic-settings
+# starlette  # TODO: Verwijderen om de Worker volledig web-vrij te maken (controleer core.ws_manager)
+torch
+transformers
+pandas
+pyarrow
+numpy
+scikit-learn
+yfinance
+redis
+python-dotenv
+ccxt
+gymnasium
+stable-baselines3
+requests

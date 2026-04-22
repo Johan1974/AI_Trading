@@ -14,6 +14,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv
 
 from app.rl.data import build_rl_training_frame, default_training_period, fetch_bitvavo_historical_candles
 from app.rl.env import BitvavoTradingEnv
+from app.rl.agent_rl import get_rl_ppo_device
 
 
 def train_rl_agent(
@@ -46,6 +47,7 @@ def train_rl_agent(
         gamma=0.99,
         gae_lambda=0.95,
         ent_coef=0.01,
+        device=get_rl_ppo_device(),
     )
     model.learn(total_timesteps=total_timesteps)
 

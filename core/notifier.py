@@ -24,6 +24,16 @@ from core.auditor import format_startup_or_daily_audit_telegram
 
 TZ = pytz.timezone("Europe/Amsterdam")
 
+# Voorkom herhaalde "[NOTIFIER] … Telegram not configured" bij elke audit/urgent-call.
+_telegram_missing_logged: set[str] = set()
+
+
+def _log_telegram_not_configured_once(key: str, line: str) -> None:
+    if key in _telegram_missing_logged:
+        return
+    _telegram_missing_logged.add(key)
+    print(line)
+
 
 def _env_truthy(name: str) -> bool:
     return str(os.getenv(name, "0")).strip().lower() in ("1", "true", "yes", "on")
@@ -32,6 +42,12 @@ def _env_truthy(name: str) -> bool:
 def system_alerts_email_enabled() -> bool:
     """Volledige HTML-e-mail voor restart/Jarvis/urgent alleen als expliciet ingeschakeld (backup)."""
     return _env_truthy("SYSTEM_ALERTS_EMAIL_ENABLED")
+
+
+def telegram_configured() -> bool:
+    token = str(os.getenv("TELEGRAM_TOKEN", "") or os.getenv("TELEGRAM_BOT_TOKEN", "")).strip()
+    chat_id = str(os.getenv("TELEGRAM_CHAT_ID", "")).strip()
+    return bool(token and chat_id)
 
 
 def send_telegram_message(text: str, *, disable_notification: bool = False) -> bool:
@@ -146,8 +162,13 @@ def send_restart_report(
     tg_ok = send_telegram_message(tg_text, disable_notification=False)
     if tg_ok:
         print("[NOTIFIER] Restart audit (Telegram) sent.")
+    elif not telegram_configured():
+        _log_telegram_not_configured_once(
+            "restart_audit",
+            "[NOTIFIER] Restart audit: Telegram not configured (TELEGRAM_TOKEN / TELEGRAM_CHAT_ID).",
+        )
     else:
-        print("[NOTIFIER] Restart audit Telegram skipped or failed (TELEGRAM_TOKEN / TELEGRAM_CHAT_ID).")
+        print("[NOTIFIER] Restart audit: Telegram send failed.")
 
     if not system_alerts_email_enabled():
         return tg_ok
@@ -416,8 +437,13 @@ def send_urgent_alert(subject: str, details: str) -> bool:
     tg_ok = send_telegram_message(tg_body, disable_notification=False)
     if tg_ok:
         print("[NOTIFIER] Urgent alert sent to Telegram.")
+    elif not telegram_configured():
+        _log_telegram_not_configured_once(
+            "urgent_alert",
+            "[NOTIFIER] Urgent alert: Telegram not configured (TELEGRAM_TOKEN / TELEGRAM_CHAT_ID).",
+        )
     else:
-        print("[NOTIFIER] Urgent alert Telegram skipped or failed.")
+        print("[NOTIFIER] Urgent alert: Telegram send failed.")
 
     if not system_alerts_email_enabled():
         return tg_ok

@@ -4,6 +4,8 @@ Relatief pad: ./app/ai/technical/sklearn_technical.py
 Functie: Technical analyzer op basis van Scikit-learn trendprojectie.
 """
 
+from typing import Any
+
 import numpy as np
 from sklearn.linear_model import LinearRegression
 
@@ -16,7 +18,7 @@ class SklearnTechnicalAnalyzer(TechnicalAnalyzer):
         self.window = window
         self.model_name = "sklearn-linear-regression"
 
-    def score(self, close_prices: np.ndarray) -> TechnicalResult:
+    def score(self, close_prices: Any) -> TechnicalResult:
         prices = np.asarray(close_prices, dtype=float).reshape(-1)
         if prices.size < max(10, self.window):
             raise ValueError("Onvoldoende close-prijzen voor technical analyse.")

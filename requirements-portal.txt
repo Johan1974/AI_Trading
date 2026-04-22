@@ -1,0 +1,11 @@
+# Bestand: requirements-portal.txt
+# Portal ("Waiter"): alleen UI + HTTP + Redis-bridge. Geen torch/transformers/pandas/sklearn/yfinance.
+fastapi
+uvicorn[standard]
+jinja2
+redis
+python-dotenv
+requests
+psutil
+pytz
+feedparser

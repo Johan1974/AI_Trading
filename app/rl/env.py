@@ -27,6 +27,7 @@ class BitvavoTradingEnv(gym.Env):
         max_trade_notional_eur: float = 500.0,
         max_trades: int = 10000,
         drawdown_penalty_factor: float = 0.25,
+        interval_hours: float = 1.0,
     ) -> None:
         super().__init__()
         self.df = data.reset_index(drop=True)
@@ -36,6 +37,7 @@ class BitvavoTradingEnv(gym.Env):
         self.max_trades = max_trades
         # Legacy: beloning zit in core.reward_function; parameter blijft voor backwards compatibility.
         self.drawdown_penalty_factor = drawdown_penalty_factor
+        self.interval_hours = interval_hours
         self._risk_cfg = load_risk_engine_config()
         self._attention_enabled = True
 
@@ -67,7 +69,7 @@ class BitvavoTradingEnv(gym.Env):
 
         # 0=HOLD, 1=BUY, 2=SELL
         self.action_space = spaces.Discrete(3)
-        obs_size = len(self.feature_cols) + 4
+        obs_size = len(self.feature_cols) + 5
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
@@ -82,6 +84,8 @@ class BitvavoTradingEnv(gym.Env):
         self.balance_eur = self.initial_balance_eur
         self.position_btc = 0.0
         self.entry_price = 0.0
+        self.position_peak_price = 0.0
+        self.position_hours = 0.0
         self.trade_count = 0
         self.equity_peak = self.initial_balance_eur
         self.last_equity = self.initial_balance_eur
@@ -111,6 +115,7 @@ class BitvavoTradingEnv(gym.Env):
                 self.position_btc,
                 (equity - self.initial_balance_eur) / self.initial_balance_eur,
                 self.trade_count / max(1, self.max_trades),
+                self.position_hours,
             ],
             dtype=np.float32,
         )
@@ -137,6 +142,8 @@ class BitvavoTradingEnv(gym.Env):
             self.balance_eur -= notional
             self.position_btc += qty
             self.entry_price = price
+            self.position_peak_price = price
+            self.position_hours = 0.0
             self.trade_count += 1
             executed_trade = True
         elif action == 2 and self.position_btc > 0:
@@ -146,21 +153,35 @@ class BitvavoTradingEnv(gym.Env):
             self.balance_eur += max(0.0, notional - fee)
             self.position_btc = 0.0
             self.entry_price = 0.0
+            self.position_peak_price = 0.0
+            self.position_hours = 0.0
             self.trade_count += 1
             executed_trade = True
 
-        if self.position_btc > 1e-12 and self.entry_price > 1e-12:
-            sl_mult = 1.0 - (self._risk_cfg.stop_loss_pct / 100.0)
-            if price <= self.entry_price * sl_mult:
+        if self.position_btc > 1e-12:
+            self.position_peak_price = max(self.position_peak_price, price)
+
+        if self.position_btc > 1e-12 and self.position_peak_price > 1e-12:
+            # Dynamische Trailing Stop via 'range_pct' (True Range / ATR proxy)
+            raw_range_pct = float(self.df.loc[self.step_idx, "range_pct"]) * 100.0 if "range_pct" in self.df.columns else 0.0
+            dynamic_sl_pct = max(self._risk_cfg.stop_loss_pct, raw_range_pct * 2.5)
+            
+            sl_mult = 1.0 - (dynamic_sl_pct / 100.0)
+            if price <= self.position_peak_price * sl_mult:
                 qty = self.position_btc
                 notional = qty * price
                 fee = notional * fee_rate
                 self.balance_eur += max(0.0, notional - fee)
                 self.position_btc = 0.0
                 self.entry_price = 0.0
+                self.position_peak_price = 0.0
+                self.position_hours = 0.0
                 self.trade_count += 1
                 executed_trade = True
                 forced_stop_loss = True
+
+        if self.position_btc > 1e-12:
+            self.position_hours += self.interval_hours
 
         equity = self._equity()
         peak_for_dd = max(self.equity_peak, equity)
@@ -181,6 +202,7 @@ class BitvavoTradingEnv(gym.Env):
             entry_price=self.entry_price,
             current_price=price,
             forced_stop_loss=forced_stop_loss,
+            position_hours=self.position_hours,
         )
         # Internal shaping: reward alignment with strong news/whale impulses.
         aligned_signal = False
@@ -207,6 +229,7 @@ class BitvavoTradingEnv(gym.Env):
             "equity_eur": round(equity, 2),
             "balance_eur": round(self.balance_eur, 2),
             "position_btc": self.position_btc,
+            "position_hours": round(self.position_hours, 2),
             "drawdown": round(drawdown, 6),
             "trade_count": self.trade_count,
             "pnl_eur_total": round(equity - self.initial_balance_eur, 2),

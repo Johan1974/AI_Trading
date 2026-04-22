@@ -1538,8 +1538,8 @@ button:hover {
   border-radius: 8px;
   padding: 10px;
   white-space: pre-wrap;
-  line-height: 1.45;
-  font-size: 0.95rem;
+  line-height: 1.6;
+  font-size: 0.9rem;
   overflow-wrap: anywhere;
   color: #ffffff !important;
 }
@@ -2835,7 +2835,8 @@ body {
   --oled-bg: #000000;
   --oled-panel: #0a0a0a;
   --oled-border: #333333;
-  --oled-text: #e0e0e0;
+  --oled-text: #ffffff;
+  --oled-text-soft: rgba(255, 255, 255, 0.78);
   --neon-buy: #00ff88;
   --neon-sell: #ff0055;
   --z-base: 0;
@@ -3511,8 +3512,8 @@ body.cockpit-body {
 
 .cockpit-reasoning-primary {
   font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
-  font-size: 14px !important;
-  line-height: 1.6 !important;
+  font-size: 0.9rem !important;
+  line-height: 1.65 !important;
   font-weight: 600 !important;
   color: var(--oled-text) !important;
   -webkit-font-smoothing: antialiased;
@@ -3653,7 +3654,7 @@ body.cockpit-body {
 }
 
 .whale-radar-widget {
-  margin: 8px 0 0 0;
+  margin: 20px 0 0 0;
   padding: 8px 10px;
   border: 2px solid #333333;
   border-radius: 8px;
@@ -3724,8 +3725,65 @@ body.cockpit-body {
 
 .executive-allocation-coins {
   margin: 0;
-  padding-left: 1.1rem;
-  color: rgba(230, 235, 245, 0.88);
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: rgba(230, 235, 245, 0.92);
+}
+
+.alloc-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  position: relative;
+  padding: 4px 8px;
+  font-variant-numeric: tabular-nums;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.alloc-row::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    rgba(124, 249, 255, 0.2) 0,
+    rgba(124, 249, 255, 0.2) var(--weight, 0%),
+    transparent var(--weight, 0%)
+  );
+  border-radius: 4px;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.alloc-row > * {
+  position: relative;
+  z-index: 1;
+}
+
+.alloc-coin {
+  flex: 1;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.alloc-weight {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-weight: 700;
+  color: #ffffff;
+}
+
+.alloc-chip {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  padding: 1px 6px;
+  border: 1px solid #7cf9ff;
+  border-radius: 999px;
+  color: #7cf9ff;
+  text-transform: uppercase;
 }
 
 .executive-allocation-empty {
@@ -4261,28 +4319,7 @@ body.sniper-fullscreen .cockpit-chart-panel {
   font-weight: 600;
 }
 
-.cockpit-hidden-host {
-  position: absolute !important;
-  width: 1px !important;
-  height: 1px !important;
-  padding: 0 !important;
-  margin: -1px !important;
-  overflow: hidden !important;
-  clip: rect(0, 0, 0, 0) !important;
-  white-space: nowrap !important;
-  border: 0 !important;
-}
-
-.cockpit-hidden-host .mini-chart {
-  width: 320px;
-  height: 160px;
-}
-
-.cockpit-hidden-host .ring-meters-row {
-  width: 400px;
-}
-
-/* Off-screen: houdt DOM-ids voor Chart.js / activity updates zonder layout te breken */
+/* Off-screen host voor Chart.js ids buiten actieve tab-views. */
 .ledger-charts-host {
   width: 480px;
   min-height: 480px;
@@ -4303,18 +4340,6 @@ body.sniper-fullscreen .cockpit-chart-panel {
   background: #000000 !important;
   color: #ffffff !important;
   border: 1px solid #222222 !important;
-}
-
-.cockpit-offscreen {
-  position: fixed;
-  left: -2400px;
-  top: 0;
-  width: 720px;
-  min-height: 800px;
-  overflow: hidden;
-  pointer-events: none;
-  opacity: 0;
-  z-index: -1;
 }
 
 .btn-outline {
@@ -4740,6 +4765,7 @@ body.cockpit-body {
   display: grid !important;
   grid-template: minmax(500px, 1fr) / minmax(0, 1fr);
   min-height: 500px;
+  height: 500px;
   flex: 1 1 auto;
   min-width: 0;
 }

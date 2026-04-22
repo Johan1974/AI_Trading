@@ -13,7 +13,6 @@ from app.datetime_util import UTC
 import time
 from typing import Any
 
-from app.ai.sentiment.finbert_sentiment import FinBertSentimentAnalyzer, LazyFinBertSentimentAnalyzer
 from app.services.ingestion import fetch_news_articles
 
 
@@ -24,12 +23,15 @@ class _CacheState:
 
 
 class NewsMappingService:
-    def __init__(
-        self, sentiment: FinBertSentimentAnalyzer | LazyFinBertSentimentAnalyzer | None = None
-    ) -> None:
-        self.sentiment = sentiment if sentiment is not None else FinBertSentimentAnalyzer()
+    def __init__(self, sentiment: Any = None) -> None:
+        if sentiment is not None:
+            self.sentiment = sentiment
+        else:
+            from app.ai.sentiment.finbert_sentiment import FinBertSentimentAnalyzer
+
+            self.sentiment = FinBertSentimentAnalyzer()
         self.cache = _CacheState()
-        self.cache_ttl_seconds = 60.0
+        self.cache_ttl_seconds = 90.0
         self.alias_to_coin: dict[str, str] = {
             "bitcoin": "BTC",
             "btc": "BTC",
@@ -161,8 +163,12 @@ class NewsMappingService:
         prefetched_articles: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         now = time.time()
-        if self.cache.payload is not None and (now - self.cache.updated_at) < self.cache_ttl_seconds:
-            return self.cache.payload
+        # Alleen TTL-cache als we zelf artikelen ophalen. Bij caller-supplied `prefetched_articles`
+        # (ticker / signal-pipeline) moet altijd opnieuw gemapt worden — anders blijft oude of lege
+        # cache hangen terwijl verse CryptoCompare-rows genegeerd worden.
+        if prefetched_articles is None:
+            if self.cache.payload is not None and (now - self.cache.updated_at) < self.cache_ttl_seconds:
+                return self.cache.payload
         prev_payload = self.cache.payload or []
 
         articles = prefetched_articles if isinstance(prefetched_articles, list) else fetch_news_articles(news_query, news_api_key)

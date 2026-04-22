@@ -693,3 +693,22 @@ div.chartjs-tooltip {
   color: #ffffff !important;
   font-weight: 700;
 }
+
+/* Tab-Isolatie, Z-Index en Canvas Overflow Guards */
+.tab-content, .cockpit-tab-panel {
+  overflow: hidden;
+  position: relative;
+  z-index: 1;
+}
+
+.chart-container, .chart-box {
+  overflow: hidden;
+  position: relative;
+  z-index: 2;
+}
+
+canvas {
+  max-width: 100% !important;
+  max-height: 100% !important;
+  z-index: 3;
+}

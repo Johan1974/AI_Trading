@@ -4,7 +4,8 @@ Analytics helpers for strategy/feature-weight rendering.
 
 from __future__ import annotations
 
-import numpy as np
+import math
+from typing import Any
 
 
 def normalize_feature_weights(
@@ -15,21 +16,31 @@ def normalize_feature_weights(
     if not weights:
         return {}
     keys = [str(k) for k in weights.keys()]
-    vals = np.array([float(weights.get(k, 0.0) or 0.0) for k in keys], dtype=float)
-    vals = np.nan_to_num(vals, nan=0.0, posinf=0.0, neginf=0.0)
-    vals = np.maximum(vals, 0.0)
+    vals = [max(0.0, float(weights.get(k, 0.0) or 0.0)) for k in keys]
+    vals = [0.0 if (math.isnan(v) or math.isinf(v)) else v for v in vals]
 
     if str(method).lower() == "minmax":
-        vmin = float(np.min(vals)) if vals.size else 0.0
-        vmax = float(np.max(vals)) if vals.size else 0.0
+        vmin = min(vals) if vals else 0.0
+        vmax = max(vals) if vals else 0.0
         span = vmax - vmin
-        scaled = (vals - vmin) / span if span > 1e-12 else np.ones_like(vals)
-        denom = float(np.sum(scaled))
-        norm = scaled / denom if denom > 1e-12 else np.full_like(vals, 1.0 / max(1, len(vals)))
+        if span > 1e-12:
+            scaled = [(v - vmin) / span for v in vals]
+        else:
+            scaled = [1.0] * len(vals)
+        denom = sum(scaled)
+        if denom > 1e-12:
+            norm = [s / denom for s in scaled]
+        else:
+            n = max(1, len(vals))
+            norm = [1.0 / n] * len(vals)
     else:
-        vmax = float(np.max(vals)) if vals.size else 0.0
-        exps = np.exp(np.clip(vals - vmax, -50.0, 50.0))
-        denom = float(np.sum(exps))
-        norm = exps / denom if denom > 1e-12 else np.full_like(vals, 1.0 / max(1, len(vals)))
+        vmax = max(vals) if vals else 0.0
+        exps = [math.exp(min(50.0, max(-50.0, v - vmax))) for v in vals]
+        denom = sum(exps)
+        if denom > 1e-12:
+            norm = [e / denom for e in exps]
+        else:
+            n = max(1, len(vals))
+            norm = [1.0 / n] * len(vals)
 
-    return {k: float(v) for k, v in zip(keys, norm.tolist())}
+    return {k: float(v) for k, v in zip(keys, norm)}

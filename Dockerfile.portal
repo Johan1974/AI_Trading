@@ -1,0 +1,23 @@
+# Bestand: Dockerfile.portal
+# Relatief pad: ./Dockerfile.portal
+# Functie: Lichte portal-image (python:3.11-slim) — geen NVIDIA/CUDA/toolkit, geen torch/transformers.
+# SQLite: via Python stdlib (sqlite3); DB-paden via /app/storage (compose-volume).
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY requirements-portal.txt .
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements-portal.txt
+
+COPY . .
+
+EXPOSE 8000
+
+CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

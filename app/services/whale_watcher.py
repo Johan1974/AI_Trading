@@ -6,6 +6,7 @@ Functie: Whale pressure via CryptoCompare nieuws (headline-scan); geen Whale Ale
 
 from __future__ import annotations
 
+import math
 import re
 import time
 from datetime import datetime, timedelta
@@ -13,7 +14,6 @@ from datetime import datetime, timedelta
 from app.datetime_util import UTC
 from typing import Any
 
-import numpy as np
 import requests
 
 # Sterkste patronen eerst (substring / regex overlap).
@@ -122,7 +122,7 @@ class WhaleWatcherService:
                 raw_score += w
 
         # Meerdere treffers -> hogere druk; tanh voorkomt saturatie.
-        pressure = float(np.tanh(raw_score / 2.2))
+        pressure = float(math.tanh(raw_score / 2.2))
         out = {
             "whale_pressure": max(0.0, min(1.0, pressure)),
             "whale_headline_hits": int(hits),

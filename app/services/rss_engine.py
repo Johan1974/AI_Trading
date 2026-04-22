@@ -6,14 +6,16 @@ Functie: Zero-key RSS engine met lokale deduplicatiecache.
 
 from __future__ import annotations
 
+import email.utils
 import json
+import xml.etree.ElementTree as ET
 from datetime import datetime
+
+import requests
 
 from app.datetime_util import UTC
 from pathlib import Path
 from typing import Any
-
-import feedparser
 
 
 class RssEngineService:
@@ -62,29 +64,51 @@ class RssEngineService:
             self._processed_links.append(value)
             self._save_cache()
 
+    def _safe_parse_datetime(self, text: str | None) -> datetime | None:
+        if not text:
+            return None
+        raw = str(text).strip()
+        try:
+            if raw.endswith("Z"):
+                return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(UTC)
+            return datetime.fromisoformat(raw).astimezone(UTC)
+        except Exception:
+            pass
+        try:
+            dt = email.utils.parsedate_to_datetime(raw)
+            if dt is None:
+                return None
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=UTC)
+            return dt.astimezone(UTC)
+        except Exception:
+            return None
+
     def fetch_unprocessed_articles(self, limit: int = 80) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         for feed_url in self.FEEDS:
             try:
-                parsed = feedparser.parse(feed_url)
+                resp = requests.get(feed_url, timeout=10)
+                if resp.status_code != 200 or not resp.text:
+                    continue
+                root = ET.fromstring(resp.text)
             except Exception:
                 continue
             source_name = feed_url.split("/")[2]
-            for entry in (parsed.entries or []):
-                title = str(getattr(entry, "title", "") or "").strip()
-                link = str(getattr(entry, "link", "") or "").strip()
-                summary = str(getattr(entry, "summary", "") or "").strip()
-                published_at = None
-                try:
-                    parsed_struct = getattr(entry, "published_parsed", None) or getattr(entry, "updated_parsed", None)
-                    if parsed_struct:
-                        published_at = datetime(*parsed_struct[:6], tzinfo=UTC).isoformat().replace("+00:00", "Z")
-                except Exception:
-                    published_at = None
+            for item in root.findall(".//item"):
+                title = (item.findtext("title") or "").strip()
+                link = (item.findtext("link") or "").strip()
+                summary = (item.findtext("description") or "").strip()
+                pub = (item.findtext("pubDate") or "").strip()
+                
                 if not title or not link:
                     continue
                 if self.is_processed(link):
                     continue
+                    
+                dt = self._safe_parse_datetime(pub)
+                published_at = (dt.isoformat().replace("+00:00", "Z") if dt else None)
+                
                 out.append(
                     {
                         "title": title,
@@ -103,9 +127,11 @@ class RssEngineService:
     def feeds_healthy(self) -> bool:
         for feed_url in self.FEEDS:
             try:
-                parsed = feedparser.parse(feed_url)
-                if getattr(parsed, "entries", None):
-                    return True
+                resp = requests.get(feed_url, timeout=10)
+                if resp.status_code == 200 and resp.text:
+                    root = ET.fromstring(resp.text)
+                    if root.find(".//item") is not None:
+                        return True
             except Exception:
                 continue
         return False

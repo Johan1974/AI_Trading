@@ -119,12 +119,15 @@ class RiskManager:
         market: str,
         price: float,
         wallet: dict[str, Any],
+        current_volatility_pct: float | None = None,
     ) -> tuple[bool, str | None]:
         mku = (market or "").strip().upper()
         qty = float((wallet.get("position_by_market") or {}).get(mku, 0.0) or 0.0) if isinstance(
             wallet.get("position_by_market"), dict
         ) else 0.0
         if qty <= 1e-12:
+            if "position_peak_prices" in wallet:
+                wallet["position_peak_prices"].pop(mku, None)
             qty = float(wallet.get("position_qty") or 0.0)
             sym = str(wallet.get("position_symbol") or "")
             if qty <= 0 or sym.upper() != mku:
@@ -133,10 +136,20 @@ class RiskManager:
         px = float(price)
         if entry <= 0 or px <= 0:
             return False, None
-        sl_mult = 1.0 - (self.cfg.stop_loss_pct / 100.0)
+            
+        # Trailing Stop: Bewaar de hoogste koers sinds instap
+        peaks = wallet.setdefault("position_peak_prices", {})
+        peak = max(float(peaks.get(mku, entry)), px)
+        peaks[mku] = peak
+
+        # ATR-gebaseerde Trailing Stop: Gebruik de hoogste van (vaste SL) of (2.5x ATR)
+        base_sl_pct = self.cfg.stop_loss_pct
+        dyn_sl_pct = max(base_sl_pct, current_volatility_pct * 2.5) if current_volatility_pct else base_sl_pct
+        
+        sl_mult = 1.0 - (dyn_sl_pct / 100.0)
         tp_mult = 1.0 + (self.cfg.take_profit_pct / 100.0)
-        if px <= entry * sl_mult:
-            return True, "hard_stop_loss"
+        if px <= peak * sl_mult:
+            return True, "hard_trailing_stop"
         if px >= entry * tp_mult:
             return True, "hard_take_profit"
         return False, None

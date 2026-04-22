@@ -13,15 +13,35 @@ from app.datetime_util import UTC
 import email.utils
 import xml.etree.ElementTree as ET
 
-import pandas as pd
 import requests
-import yfinance as yf
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 
 RSS_FEEDS = [
     "https://www.coindesk.com/arc/outboundfeeds/rss/",
     "https://cointelegraph.com/rss",
 ]
+
+
+def _get_resilient_session(retries: int = 3, backoff_factor: float = 0.5, timeout: float = 12.0) -> requests.Session:
+    """Creëert een geharde request session die NOOIT oneindig blokkeert."""
+    session = requests.Session()
+    retry_strategy = Retry(
+        total=retries,
+        backoff_factor=backoff_factor,
+        status_forcelist=[408, 429, 500, 502, 503, 504],
+        allowed_methods=["HEAD", "GET", "OPTIONS"]
+    )
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    
+    request_orig = session.request
+    session.request = lambda method, url, **kwargs: request_orig(
+        method, url, timeout=kwargs.pop('timeout', timeout), **kwargs
+    )
+    return session
 
 
 def _safe_parse_datetime(text: str | None) -> datetime | None:
@@ -48,9 +68,11 @@ def _safe_parse_datetime(text: str | None) -> datetime | None:
 def _fetch_rss_news_articles(max_items: int = 60) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     seen: set[str] = set()
+    session = _get_resilient_session(retries=2, timeout=10.0)
+    
     for feed_url in RSS_FEEDS:
         try:
-            resp = requests.get(feed_url, timeout=15)
+            resp = session.get(feed_url)
             if resp.status_code != 200 or not resp.text:
                 continue
             root = ET.fromstring(resp.text)
@@ -82,17 +104,21 @@ def _fetch_rss_news_articles(max_items: int = 60) -> list[dict[str, Any]]:
     return items[:max_items]
 
 
-def fetch_market_data(ticker: str, lookback_days: int) -> pd.DataFrame:
+def fetch_market_data(ticker: str, lookback_days: int) -> Any:
+    import pandas as pd
+    import yfinance as yf
+
     symbol = str(ticker or "").upper().strip()
+    session = _get_resilient_session(retries=3, timeout=12.0)
 
     # Bitvavo fallback for EUR crypto pairs when yfinance coverage is weak/missing.
     # This prevents Elite-8 cycles from failing on newer/smaller assets.
-    def _bitvavo_daily_fallback() -> pd.DataFrame:
+    def _bitvavo_daily_fallback() -> Any:
         if "-" not in symbol or not symbol.endswith("-EUR"):
             return pd.DataFrame()
         try:
             url = f"https://api.bitvavo.com/v2/{symbol}/candles"
-            resp = requests.get(url, params={"interval": "1d", "limit": max(60, int(lookback_days) + 10)}, timeout=15)
+            resp = session.get(url, params={"interval": "1d", "limit": max(60, int(lookback_days) + 10)})
             if resp.status_code != 200:
                 return pd.DataFrame()
             candles = resp.json()
@@ -133,6 +159,8 @@ def fetch_market_data(ticker: str, lookback_days: int) -> pd.DataFrame:
                 interval="1d",
                 auto_adjust=True,
                 progress=False,
+                session=session,
+                ignore_tz=True
             )
     except Exception as exc:
         df = pd.DataFrame()
@@ -148,13 +176,14 @@ def fetch_market_data(ticker: str, lookback_days: int) -> pd.DataFrame:
 
 def fetch_news_articles(news_query: str, news_api_key: str | None) -> list[dict[str, Any]]:
     cryptocompare_key = str(news_api_key or "").strip()
+    session = _get_resilient_session(retries=2, timeout=10.0)
+    
     if cryptocompare_key:
         try:
-            resp = requests.get(
+            resp = session.get(
                 "https://min-api.cryptocompare.com/data/v2/news/",
                 params={"lang": "EN"},
-                headers={"authorization": f"Apikey {cryptocompare_key}"},
-                timeout=15,
+                headers={"authorization": f"Apikey {cryptocompare_key}"}
             )
             if resp.status_code == 200:
                 payload = resp.json()
@@ -215,7 +244,7 @@ def fetch_news_articles(news_query: str, news_api_key: str | None) -> list[dict[
             "apiKey": news_api_key,
         }
         try:
-            resp = requests.get(everything_url, params=params, timeout=20)
+            resp = session.get(everything_url, params=params)
             if resp.status_code == 200:
                 articles = resp.json().get("articles", [])
                 if articles:
@@ -233,7 +262,7 @@ def fetch_news_articles(news_query: str, news_api_key: str | None) -> list[dict[
             "pageSize": 50,
             "apiKey": news_api_key,
         }
-        resp = requests.get(top_headlines_url, params=top_params, timeout=20)
+        resp = session.get(top_headlines_url, params=top_params)
         if resp.status_code == 200:
             articles = resp.json().get("articles", [])
             if articles:
@@ -251,7 +280,7 @@ def fetch_news_articles(news_query: str, news_api_key: str | None) -> list[dict[
                 "pageSize": 50,
                 "apiKey": news_api_key,
             }
-            resp = requests.get(everything_url, params=params, timeout=20)
+            resp = session.get(everything_url, params=params)
             if resp.status_code == 200:
                 api_items = resp.json().get("articles", [])
         except Exception:

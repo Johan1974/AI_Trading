@@ -4,6 +4,7 @@ Relatief pad: ./app/services/state.py
 Functie: Beheert de in-memory applicatiestatus en activity-events voor de portal.
 """
 
+from collections.abc import MutableMapping
 from contextvars import ContextVar
 from datetime import datetime
 from typing import Any
@@ -53,12 +54,15 @@ def get_tenant_state(tenant_id: str | None = None) -> dict[str, Any]:
     return _TENANT_STATES[tid]
 
 
-class _TenantAwareState(dict):
+class _TenantAwareState(MutableMapping):
     def __getitem__(self, key: str) -> Any:
-        return get_tenant_state().get(key)
+        return get_tenant_state()[key]
 
     def __setitem__(self, key: str, value: Any) -> None:
         get_tenant_state()[key] = value
+
+    def __delitem__(self, key: str) -> None:
+        del get_tenant_state()[key]
 
     def get(self, key: str, default: Any = None) -> Any:
         return get_tenant_state().get(key, default)
@@ -68,6 +72,27 @@ class _TenantAwareState(dict):
 
     def setdefault(self, key: str, default: Any = None) -> Any:
         return get_tenant_state().setdefault(key, default)
+
+    def __contains__(self, key: Any) -> bool:
+        return key in get_tenant_state()
+
+    def keys(self):
+        return get_tenant_state().keys()
+
+    def values(self):
+        return get_tenant_state().values()
+
+    def items(self):
+        return get_tenant_state().items()
+
+    def __iter__(self):
+        return iter(get_tenant_state())
+
+    def __len__(self):
+        return len(get_tenant_state())
+
+    def copy(self):
+        return get_tenant_state().copy()
 
 
 STATE: _TenantAwareState = _TenantAwareState()

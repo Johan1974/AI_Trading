@@ -11,9 +11,8 @@ import math
 import os
 import re
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Sequence
 
-import numpy as np
 import requests
 
 from app.datetime_util import UTC
@@ -252,23 +251,31 @@ def build_trade_decision_context(market: str, state: dict[str, Any]) -> dict[str
 
 
 def apply_whale_attention_blend(
-    gate: np.ndarray,
+    gate: Sequence[float] | Any,
     feature_names: list[str],
     *,
     whale_weight: float | None = None,
-) -> np.ndarray:
-    """Blend attention gate so whale_pressure channel gets fixed mass (default 0.25)."""
+) -> Any:
+    """Blend attention gate so whale_pressure channel gets fixed mass (default 0.25).
+
+    Geen numpy in deze module: portal kan ``trading_core`` laden. RL-worker zet het
+    resultaat om met ``np.asarray(..., dtype=np.float32)``.
+    """
     w = float(os.getenv("WHALE_ATTENTION_WEIGHT", "0.25") if whale_weight is None else whale_weight)
     w = max(0.0, min(0.6, w))
     try:
         idx = int(feature_names.index("whale_pressure"))
     except ValueError:
         return gate
-    g = np.asarray(gate, dtype=np.float32).copy()
-    wh = np.zeros_like(g)
+    seq = list(gate) if hasattr(gate, "__iter__") and not isinstance(gate, (str, bytes)) else []
+    g = [float(x) for x in seq]
+    if not g:
+        return g
+    n = len(g)
+    wh = [0.0] * n
     wh[idx] = 1.0
-    out = (1.0 - w) * g + w * wh
-    s = float(np.sum(out))
+    out = [(1.0 - w) * g[i] + w * wh[i] for i in range(n)]
+    s = sum(out)
     if s <= 1e-12:
-        return gate
-    return (out / s).astype(np.float32)
+        return g
+    return [float(x / s) for x in out]

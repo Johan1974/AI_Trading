@@ -5,10 +5,10 @@ Zet RL_DATA_AUDIT_HEARTBEAT=1 voor console [DATA AUDIT] elke engine-cycle (run_p
 
 from __future__ import annotations
 
+import math
 import os
 from typing import Any
 
-import numpy as np
 from core.analytics import normalize_feature_weights
 
 
@@ -32,13 +32,13 @@ def log_rl_data_audit_heartbeat(
     whale = float(last_row.get("whale_pressure", 0) or 0)
     dom = float(last_row.get("btc_dominance_pct", 0) or 0)
     fin_line = ""
-    if portal_sentiment is not None and np.isfinite(portal_sentiment):
+    if portal_sentiment is not None and math.isfinite(float(portal_sentiment)):
         fin_line = f"\n  - Portal sentiment (FinBERT/judge-pad): [{float(portal_sentiment):.4f}]"
     news_line = ""
     if news_article_count is not None:
         news_line = f"\n  - NewsAPI artikelen in frame-window: [{int(news_article_count)}]"
-    vec = np.array([pa, rsi, macd, sent, whale, dom], dtype=float)
-    if not np.all(np.isfinite(vec)):
+    vec = [pa, rsi, macd, sent, whale, dom]
+    if not all(math.isfinite(x) for x in vec):
         print(
             "WARNING: RL observation audit found NaN/Inf in core fields "
             f"(price_action, rsi, macd, sentiment, whale, dominance): {vec!r}"

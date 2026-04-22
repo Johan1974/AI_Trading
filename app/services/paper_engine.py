@@ -75,7 +75,11 @@ class PaperTradeManager:
         return conn
 
     def _tenant_id(self) -> str:
-        return str(current_tenant_id() or "default").strip().lower() or "default"
+        try:
+            tid = current_tenant_id()
+        except (LookupError, RuntimeError, Exception):
+            tid = "default"
+        return str(tid or "default").strip().lower() or "default"
 
     def _ensure_wallet_for_tenant(self, tenant_id: str) -> dict[str, Any]:
         tid = str(tenant_id or "default").strip().lower() or "default"
@@ -336,7 +340,7 @@ class PaperTradeManager:
             "realized_pnl_eur": round(float(self.wallet["realized_pnl_eur"]), 2),
         }
         self.wallet["history"].append(row)
-        self.wallet["history"] = self.wallet["history"][-1000:]
+        self.wallet["history"] = self.wallet["history"][-200:]
 
     def _recompute_equity(self, mark_price: float | None = None, mark_market: str | None = None) -> None:
         lp_map = self.wallet.setdefault("last_prices_by_market", {})
@@ -375,6 +379,20 @@ class PaperTradeManager:
     def _persist_wallet_state(self) -> None:
         ts = datetime.now(UTC).isoformat()
         tenant_id = self._tenant_id()
+        
+        # Memory & I/O optimalisatie: Maak een shallow copy en kort de history lijst
+        # af in de snapshot. Dit voorkomt dat we bij ELKE engine cyclus (elke paar sec)
+        # honderden kilobytes aan JSON stringificeren en naar disk schrijven.
+        wallet_snap = dict(self.wallet)
+        if "history" in wallet_snap and isinstance(wallet_snap["history"], list):
+            wallet_snap["history"] = wallet_snap["history"][-100:]
+            
+        try:
+            snap_json = json.dumps(wallet_snap)
+        except Exception as exc:
+            print(f"[PAPER] Waarschuwing: Kan wallet state niet opslaan door serialisatie fout: {exc}")
+            return
+
         with self._conn() as conn:
             conn.execute(
                 """
@@ -382,7 +400,7 @@ class PaperTradeManager:
                 VALUES (?, ?, ?)
                 ON CONFLICT(tenant_id) DO UPDATE SET snapshot_json=excluded.snapshot_json, updated_ts_utc=excluded.updated_ts_utc
                 """,
-                (tenant_id, json.dumps(self.wallet), ts),
+                (tenant_id, snap_json, ts),
             )
 
     def _restore_wallet_state(self, tenant_id: str | None = None) -> None:

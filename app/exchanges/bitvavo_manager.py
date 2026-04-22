@@ -28,6 +28,7 @@ class RateLimitState:
 @dataclass
 class CircuitBreakerState:
     is_open: bool = False
+    half_open: bool = False
     open_until_ms: int = 0
     failure_threshold: int = 5
     failure_window_seconds: int = 120
@@ -85,6 +86,9 @@ class BitvavoRateLimitManager:
         if self.circuit_breaker.open_until_ms > now_ms:
             self.circuit_breaker.is_open = True
             return True
+        if self.circuit_breaker.is_open:
+            self.circuit_breaker.is_open = False
+            self.circuit_breaker.half_open = True
         self.circuit_breaker.is_open = False
         return False
 
@@ -95,7 +99,7 @@ class BitvavoRateLimitManager:
         now_ms = self._now_ms()
         if self._is_circuit_open(now_ms):
             wait_s = max(0.0, (self.circuit_breaker.open_until_ms - now_ms) / 1000.0)
-            raise RuntimeError(f"Bitvavo circuit breaker open for {wait_s:.1f}s")
+            raise RuntimeError(f"Bitvavo circuit breaker OPEN. Network blocked for {wait_s:.1f}s to prevent bans.")
 
         weight = self.resolve_weight(method, path)
         limit = max(1, self.state.limit)
@@ -131,15 +135,26 @@ class BitvavoRateLimitManager:
         self._log_usage(weight=assumed_weight, status="ok")
         now_ms = self._now_ms()
         self._prune_failures(now_ms)
+        
+        if self.circuit_breaker.half_open:
+            self.circuit_breaker.half_open = False
+            self._failure_timestamps_ms.clear()
+            
         if not self._is_circuit_open(now_ms):
-            # Soft recovery: if healthy, clear stale failure spikes faster.
             if len(self._failure_timestamps_ms) <= 1:
                 self._failure_timestamps_ms.clear()
 
     def record_failure(self, assumed_weight: int, status_code: int | None = None) -> None:
-        status = f"error_{status_code}" if status_code is not None else "error"
+        status = f"error_{status_code}" if status_code is not None else "error_network"
         self._log_usage(weight=assumed_weight, status=status)
         now_ms = self._now_ms()
+        
+        if self.circuit_breaker.half_open:
+            self.circuit_breaker.half_open = False
+            self.circuit_breaker.open_until_ms = now_ms + (self.circuit_breaker.open_duration_seconds * 1000)
+            self.circuit_breaker.is_open = True
+            return
+            
         self._failure_timestamps_ms.append(now_ms)
         self._prune_failures(now_ms)
 
