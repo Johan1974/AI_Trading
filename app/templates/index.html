@@ -15,8 +15,156 @@
       body.cockpit-body {
         margin: 0;
         background: #000000;
-        color: #e0e0e0;
+        color: #ffffff;
         font-family: system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif;
+      }
+      
+      /* Dashboard Restructure */
+      body.cockpit-body {
+        background: #121212;
+      }
+      .panel-noir {
+        background: #1a1a1a !important;
+        border: 1px solid #2a2a2a !important;
+        border-radius: 6px;
+        position: relative;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+      }
+      .cockpit-card-title, .cockpit-chart-titlebar {
+        display: none !important;
+      }
+      .subtle-label {
+        position: absolute;
+        top: 8px;
+        left: 12px;
+        font-size: 10px;
+        color: #666;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        z-index: 10;
+        pointer-events: none;
+        font-weight: 600;
+      }
+      .cockpit-terminal-grid {
+        display: grid;
+        grid-template-columns: 3fr 1fr !important;
+        gap: 16px;
+        align-items: start;
+      }
+      .cockpit-terminal-main-col {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        height: calc(100vh - 120px);
+      }
+      .cockpit-chart-panel {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        padding: 30px 12px 12px 12px !important;
+      }
+      .chart-controls-absolute {
+        position: absolute;
+        top: 6px;
+        right: 12px;
+        z-index: 10;
+        display: flex;
+        gap: 6px;
+      }
+      .chart-controls-absolute button {
+        background: transparent;
+        border: 1px solid #333;
+        color: #888;
+        font-size: 11px;
+        padding: 2px 8px;
+        border-radius: 4px;
+        cursor: pointer;
+      }
+      .chart-controls-absolute button:hover {
+        background: #222;
+        color: #fff;
+      }
+      .cockpit-ticker-tape {
+        padding: 0 !important;
+        height: 36px;
+        display: flex;
+        align-items: center;
+        overflow: hidden;
+        border-radius: 6px;
+      }
+      .cockpit-ticker-head {
+        display: none !important;
+      }
+      .marquee-label {
+        padding: 0 12px;
+        border-right: 1px solid #2a2a2a;
+        color: #666;
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        font-weight: 600;
+        line-height: 36px;
+        white-space: nowrap;
+      }
+      .cockpit-ticker-item-badge--bull, .terminal-news-badge--bull {
+        background: #1e3a23 !important;
+        color: #4ade80 !important;
+        padding: 2px 6px !important;
+        border-radius: 3px !important;
+      }
+      .cockpit-ticker-item-badge--bear, .terminal-news-badge--bear {
+        background: #3a1e1e !important;
+        color: #f87171 !important;
+        padding: 2px 6px !important;
+        border-radius: 3px !important;
+      }
+      .cockpit-ai-panel {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+      .panel-noir-sidebar {
+        padding: 30px 16px 16px 16px;
+      }
+      .ledger-footer {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        width: 100%;
+        background: #121212;
+        border-top: 1px solid #2a2a2a;
+        z-index: 1000;
+        transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        box-shadow: 0 -4px 12px rgba(0,0,0,0.5);
+        max-height: 35vh;
+        display: flex;
+        flex-direction: column;
+      }
+      .ledger-footer.is-collapsed {
+        transform: translateY(calc(100% - 30px));
+      }
+      .ledger-footer-header {
+        height: 30px;
+        background: #1a1a1a;
+        border-bottom: 1px solid #2a2a2a;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 16px;
+        cursor: pointer;
+        user-select: none;
+      }
+      .ledger-footer-title {
+        font-size: 11px;
+        color: #888;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        font-weight: 600;
+      }
+      .ledger-footer-content {
+        flex: 1;
+        overflow: auto;
+        padding: 12px 16px;
       }
     </style>
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
@@ -36,10 +184,10 @@
           <span>AI TRADING</span>
         </div>
         <nav class="cockpit-nav-tabs" aria-label="Hoofdnavigatie">
-          <button type="button" id="tabTerminalBtn" class="cockpit-tab active">Terminal</button>
-          <button type="button" id="tabBrainBtn" class="cockpit-tab">AI Brain</button>
-          <button type="button" id="tabLedgerBtn" class="cockpit-tab">Ledger</button>
-          <button type="button" id="tabHardwareBtn" class="cockpit-tab">Hardware</button>
+          <button type="button" id="btn-terminal" class="cockpit-tab active">Terminal</button>
+          <button type="button" id="btn-aibrain" class="cockpit-tab">AI Brain</button>
+          <button type="button" id="btn-ledger" class="cockpit-tab">Ledger</button>
+          <button type="button" id="btn-hardware" class="cockpit-tab">Hardware</button>
         </nav>
       </div>
       <div class="cockpit-header-center">
@@ -62,10 +210,10 @@
           <span class="hint-icon">(i)</span>
           <span class="hint-bubble">Live CPU, RAM, GPU (nvidia-smi) en schijf; vernieuwt via WebSocket.</span>
         </span>
-        <span id="headerStatCpu">CPU —%</span>
-        <span id="headerStatRam">RAM —%</span>
-        <span id="headerStatGpu" class="cockpit-gpu-neon">GPU —%</span>
-        <span id="headerStatDisk">DISK —%</span>
+        <span id="headerStatCpu">🖥️ —%</span>
+        <span id="headerStatRam">🧠 —%</span>
+        <span id="headerStatGpu" class="cockpit-gpu-neon">🎮 —%</span>
+        <span id="headerStatDisk">💾 —%</span>
       </div>
       <div class="cockpit-actions">
         <button type="button" id="paperBtn" class="btn-outline" title="Paper-run op geselecteerde markt">Paper</button>
@@ -83,125 +231,108 @@
     </div>
 
     <main class="cockpit-main-stage" id="cockpitMainStage">
-    <div id="terminalTab" class="cockpit-shell cockpit-tab-root cockpit-tab-root--terminal">
+    <div id="tab-terminal" class="cockpit-shell cockpit-tab-root cockpit-tab-root--terminal tab-content active">
       <div class="cockpit-terminal-workspace">
         <div class="cockpit-terminal-grid">
           <div class="cockpit-terminal-main-col">
         <section class="cockpit-chart-panel panel-noir">
-          <div class="cockpit-chart-stack">
-            <div class="cockpit-chart-top">
-              <div class="cockpit-chart-titlebar">
-                <h2 class="cockpit-card-title card-title-with-hint">
-                  Prijsgrafiek
-                  <span class="hint-wrap" tabindex="0">
-                    <span class="hint-icon">(i)</span>
-                    <span class="hint-bubble">Candlesticks afgeleid van Bitvavo-historie; assen puur wit. Markers tonen RL-signaal.</span>
-                  </span>
-                </h2>
-                <span class="cockpit-panel-actions">
-                  <button type="button" id="toggleTickerBtn" class="btn-outline btn-outline--tiny">Ticker</button>
-                  <button type="button" id="toggleLedgerBtn" class="btn-outline btn-outline--tiny">Ledger</button>
-                  <button type="button" id="toggleHeadlessBtn" class="btn-outline btn-outline--tiny">Headless</button>
-                  <button type="button" id="toggleChartFullscreenBtn" class="btn-outline btn-outline--tiny">Fullscreen</button>
-                </span>
-              </div>
-              <div class="cockpit-chart-host chart-wrap--genesis cockpit-chart-anchor">
-                <div class="cockpit-chart-skeleton" id="priceChartSkeleton" aria-hidden="true"></div>
-                <div id="priceChart"></div>
-              </div>
-              <div class="chart-time-controls">
-                <button type="button" class="btn-outline btn-outline--tiny" onclick="setChartInterval('1m')">1</button>
-                <button type="button" class="btn-outline btn-outline--tiny" onclick="setChartInterval('5m')">5</button>
-                <button type="button" class="btn-outline btn-outline--tiny" onclick="setChartInterval('15m')">15</button>
-                <button type="button" class="btn-outline btn-outline--tiny" onclick="setChartInterval('60m')">60</button>
-                <div id="chartTimeFootnote" class="chart-time-footnote">Timeframes: 1m | 5m | 15m | 60m</div>
-              </div>
-              <pre id="prediction" class="cockpit-chart-meta">Laden…</pre>
-            </div>
-            <div
-              class="cockpit-intelligence-ticker cockpit-ticker-tape"
-              id="intelligenceTickerPanel"
-              aria-label="Marktintelligence"
-            >
-              <div class="cockpit-ticker-head">
-                <span class="cockpit-ticker-title">Intelligence ticker</span>
-                <div class="cockpit-ticker-metrics" aria-live="polite">
-                  <span class="cockpit-ticker-chip">Fear &amp; Greed: <strong id="tickerMetricFg">—</strong></span>
-                  <span class="cockpit-ticker-chip">BTC Dom: <strong id="tickerMetricBtcDom">—</strong></span>
-                  <span class="cockpit-ticker-chip">Whale: <strong id="tickerMetricWhale">—</strong></span>
-                </div>
-              </div>
-              <div class="cockpit-ticker-marquee" id="intelligenceTickerMarquee" aria-label="Marktintelligence nieuws ticker">
-                <div id="intelligenceTickerNews" class="cockpit-ticker-marquee-track" aria-live="polite"></div>
-              </div>
-              <div id="terminalNewsStream" class="cockpit-news-stream-mini"></div>
-              <div class="ticker-track cockpit-ticker-track-mini" id="tickerTrack"></div>
-            </div>
-            <div id="whaleRadarWidget" class="whale-radar-widget" aria-label="Whale radar Elite-8">
-              <div class="whale-radar-widget__title">Whale radar</div>
-              <ul id="whaleRadarList" class="whale-radar-widget__list"></ul>
-            </div>
+          <span class="subtle-label">Price</span>
+          <div class="chart-controls-absolute">
+            <button type="button" onclick="setChartInterval('1m')">1m</button>
+            <button type="button" onclick="setChartInterval('5m')">5m</button>
+            <button type="button" onclick="setChartInterval('15m')">15m</button>
+            <button type="button" onclick="setChartInterval('60m')">60m</button>
+            <button type="button" id="toggleHeadlessBtn">Headless</button>
+            <button type="button" id="toggleChartFullscreenBtn">⛶</button>
           </div>
+          <div class="cockpit-chart-host chart-wrap--genesis cockpit-chart-anchor" style="height: 100%;">
+            <div class="cockpit-chart-skeleton" id="priceChartSkeleton" aria-hidden="true"></div>
+            <div id="priceChart" style="height: 100%;"></div>
+          </div>
+          <pre id="prediction" class="cockpit-chart-meta" style="margin:0; font-size: 10px; color: #666; position: absolute; bottom: 8px; left: 12px; z-index: 10;">Laden…</pre>
           <div class="cockpit-sr-only">
             <span id="terminalFearGreed">-</span><span id="terminalFearGreedSub"></span>
           </div>
         </section>
 
-        <div id="cockpitChartCanvasDock" class="cockpit-chart-canvas-dock" aria-hidden="true">
-        <div class="terminal-training-grid">
-          <div class="mini-chart mini-chart--train"><canvas id="terminalRewardChart"></canvas></div>
-          <div class="mini-chart mini-chart--train"><canvas id="terminalNewsLagChart"></canvas></div>
-          <div class="mini-chart mini-chart--train"><canvas id="terminalEpisodeChart"></canvas></div>
-          <div class="mini-chart mini-chart--train"><canvas id="terminalEntropyChart"></canvas></div>
-          <div class="mini-chart mini-chart--train"><canvas id="terminalLossChart"></canvas></div>
-        </div>
-        <div class="mini-chart mini-chart--feature"><canvas id="terminalFeatureChart"></canvas></div>
-        <div class="mini-chart mini-chart--bench"><canvas id="terminalBenchmarkChart"></canvas></div>
-        <table><tbody id="terminalBenchmarkBody"></tbody></table>
-        <div class="brain-monitor-stats brain-monitor-stats--terminal">
-          <div><span>LR</span><strong id="terminalLearningRate">-</strong></div>
-          <div><span>Steps</span><strong id="terminalStepCount">-</strong></div>
-          <div><span>Explore</span><strong id="terminalExplorationRate">-</strong></div>
-        </div>
-        <div class="mini-chart mini-chart--corr-inline"><canvas id="terminalCorrelationChart"></canvas></div>
-      </div>
-
-      <section class="cockpit-ledger-panel panel-noir cockpit-ledger-panel--terminal-main" id="liveLedgerPanel">
-        <h2 class="cockpit-card-title card-title-with-hint">
-          Live trade ledger
-          <span class="hint-wrap" tabindex="0">
-            <span class="hint-icon">(i)</span>
-            <span class="hint-bubble">Alle recente paper-trades over volle breedte; vernieuwt elke paar seconden.</span>
-          </span>
-        </h2>
-        <div id="liveLedgerBodyWrap">
-          <div class="cockpit-ledger-status" id="cockpitLedgerStatus" aria-live="polite">
-            <span class="cockpit-ledger-status-dot" aria-hidden="true"></span>
-            <span id="cockpitLedgerStatusText" class="cockpit-ledger-status-text"
-              >Markten: laden… · Ledger: laden…</span>
-            <span class="cockpit-ledger-live">LIVE</span>
-          </div>
-          <div id="ledger-container" class="cockpit-ledger-scroll">
-            <table class="trade-table" id="cockpitLedgerTable">
-              <thead>
-                <tr>
-                  <th>Open Tijd</th>
-                  <th>Munt</th>
-                  <th>Entry Prijs</th>
-                  <th>Exit Prijs</th>
-                  <th>Netto P/L €</th>
-                  <th>Netto P/L %</th>
-                  <th>Social/Whale Context</th>
-                </tr>
-              </thead>
-              <tbody id="cockpitLedgerBody"></tbody>
-            </table>
+        <div class="cockpit-intelligence-ticker cockpit-ticker-tape panel-noir" id="intelligenceTickerPanel" aria-label="Marktintelligence">
+          <span class="marquee-label">Intelligence</span>
+          <div class="cockpit-ticker-marquee" id="intelligenceTickerMarquee" aria-label="Marktintelligence nieuws ticker" style="flex:1;">
+            <div id="intelligenceTickerNews" class="cockpit-ticker-marquee-track" aria-live="polite"></div>
           </div>
         </div>
-      </section>
           </div>
 
         <aside class="cockpit-ai-panel cockpit-reasoning-sidebar cockpit-terminal-rail">
+          
+          <section class="cockpit-terminal-extras panel-noir panel-noir-sidebar" aria-label="Paper- en systeemstatus">
+            <span class="subtle-label">Status</span>
+            <div class="portfolio-big neon-equity js-portfolio-equity">-</div>
+            <div class="portfolio-big neon-cash js-portfolio-cash">-</div>
+            <p class="js-portfolio-stats-rest"></p>
+            <p class="js-active-orders"></p>
+            <span class="js-sentiment-value"></span>
+            <div class="progress-bar js-sentiment-bar"></div>
+            <span class="js-sentiment-confidence"></span>
+            <p class="js-bot-status"></p>
+            <p class="js-balance-check"></p>
+            <ul class="risk-profile-list">
+              <li><span class="js-risk-profile-base"></span></li>
+              <li><span class="js-risk-profile-max"></span></li>
+              <li><span class="js-risk-profile-sl"></span></li>
+            </ul>
+            <span class="js-storage-usage-pct">-</span>
+            <div class="progress-bar storage-bar js-storage-usage-bar"></div>
+            <p class="js-storage-opt-stats"></p>
+            <p class="js-storage-health"></p>
+            <p class="js-live-updated-at"></p>
+          </section>
+
+          <div class="panel-noir panel-noir-sidebar">
+            <span class="subtle-label">Decision Reasoning</span>
+            <div id="brainReasoningBox" class="brain-reasoning cockpit-reasoning-primary" style="font-size: 13px; line-height: 1.4;">Nog geen RL-besluit beschikbaar.</div>
+            <p id="brainLastScanLine" class="cockpit-last-scan genesis-mono-strong" aria-live="polite" style="font-size: 11px; color: #888; margin-top: 8px;">Laatste scan: —</p>
+          </div>
+
+          <div class="panel-noir panel-noir-sidebar executive-allocation-panel" aria-label="Equal-weight portfolio allocatie">
+            <span class="subtle-label">Allocatie</span>
+            <div id="executiveAllocationSnapshot" class="executive-allocation-body" style="font-size: 13px;">Laden…</div>
+          </div>
+
+          <div class="panel-noir panel-noir-sidebar">
+            <span class="subtle-label">Signal Mix</span>
+            <div class="mini-chart mini-chart--corr-inline" style="height: 60px;"><canvas id="terminalCorrelationChart"></canvas></div>
+            <table class="trade-table trade-table--compact cockpit-signal-mix-table cockpit-signal-mix-table--spaced" style="font-size: 12px; margin-top: 8px; width: 100%;">
+              <tbody>
+                <tr>
+                  <td style="color:#888;">Correlation</td>
+                  <td class="cockpit-metric-value js-corr-value" style="text-align:right;">-</td>
+                </tr>
+                <tr>
+                  <td style="color:#888;">News weight</td>
+                  <td class="cockpit-metric-value js-news-weight" style="text-align:right;">-</td>
+                </tr>
+                <tr>
+                  <td style="color:#888;">Price weight</td>
+                  <td class="cockpit-metric-value js-price-weight" style="text-align:right;">-</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          
+        </aside>
+        </div>
+      </div>
+    </div>
+
+    <section id="tab-aibrain" class="brain-tab cockpit-tab-root cockpit-tab-root--brain tab-content hidden" aria-hidden="true" style="display: none;">
+      <div class="brain-tab-inner genesis-tab-inner cockpit-pad">
+        <header class="brain-tab-header">
+          <h2 class="brain-tab-title">AI Brain Lab</h2>
+          <p class="brain-tab-sub">Neural policy &amp; training telemetry — live via WebSocket (<code class="brain-tab-code">brain_stats</code>)</p>
+        </header>
+        
+        <div class="brain-top-row" style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px;">
           <div class="panel-noir">
             <h2 class="cockpit-card-title card-title-with-hint">
               Decision reasoning
@@ -212,16 +343,6 @@
             </h2>
             <div id="brainReasoningBox" class="brain-reasoning cockpit-reasoning-primary">Nog geen RL-besluit beschikbaar.</div>
             <p id="brainLastScanLine" class="cockpit-last-scan genesis-mono-strong" aria-live="polite">Laatste scan: —</p>
-          </div>
-          <div class="panel-noir executive-allocation-panel" aria-label="Equal-weight portfolio allocatie">
-            <h2 class="cockpit-card-title card-title-with-hint">
-              Executive snapshot — allocatie
-              <span class="hint-wrap" tabindex="0">
-                <span class="hint-icon">(i)</span>
-                <span class="hint-bubble">Elite-8 equal weight: max ca. 12,5% equity per munt; max 8 slots. Geen extra BUY op een munt zolang die slot vol is.</span>
-              </span>
-            </h2>
-            <div id="executiveAllocationSnapshot" class="executive-allocation-body">Laden…</div>
           </div>
           <div class="panel-noir">
             <h2 class="cockpit-card-title card-title-with-hint">
@@ -242,58 +363,21 @@
               <tbody>
                 <tr>
                   <td>Correlation</td>
-                  <td id="brainCorrValue" class="cockpit-metric-value">-</td>
+                  <td class="cockpit-metric-value js-corr-value">-</td>
                 </tr>
                 <tr>
                   <td>News weight</td>
-                  <td id="brainNewsWeight" class="cockpit-metric-value">-</td>
+                  <td class="cockpit-metric-value js-news-weight">-</td>
                 </tr>
                 <tr>
                   <td>Price weight</td>
-                  <td id="brainPriceWeight" class="cockpit-metric-value">-</td>
+                  <td class="cockpit-metric-value js-price-weight">-</td>
                 </tr>
               </tbody>
             </table>
           </div>
-          <section class="cockpit-terminal-extras panel-noir" aria-label="Paper- en systeemstatus">
-            <h2 class="cockpit-card-title">Status</h2>
-            <div class="portfolio-big neon-equity" id="portfolioEquity">-</div>
-            <div class="portfolio-big neon-cash" id="portfolioCash">-</div>
-            <p id="portfolioStatsRest"></p>
-            <p id="activeOrders"></p>
-            <span id="sentimentValue"></span>
-            <div id="sentimentBar" class="progress-bar"></div>
-            <span id="sentimentConfidence"></span>
-            <p id="botStatus"></p>
-            <p id="balanceCheck"></p>
-            <ul class="risk-profile-list">
-              <li><span id="riskProfileBase"></span></li>
-              <li><span id="riskProfileMax"></span></li>
-              <li><span id="riskProfileSl"></span></li>
-            </ul>
-            <div class="neon-equity" id="brainPortfolioEquity">-</div>
-            <div class="neon-cash" id="brainPortfolioCash">-</div>
-            <p id="brainPortfolioMeta">—</p>
-            <span id="brainRiskProfileBase"></span>
-            <span id="brainRiskProfileMax"></span>
-            <span id="brainRiskProfileSl"></span>
-            <span id="storageUsagePct">-</span>
-            <div id="storageUsageBar" class="progress-bar storage-bar"></div>
-            <p id="storageOptimizationStats"></p>
-            <p id="storageDataHealth"></p>
-            <p id="liveUpdatedAt"></p>
-          </section>
-        </aside>
         </div>
-      </div>
-    </div>
 
-    <section id="brainTab" class="brain-tab cockpit-tab-root cockpit-tab-root--brain hidden" aria-hidden="true">
-      <div class="brain-tab-inner genesis-tab-inner cockpit-pad">
-        <header class="brain-tab-header">
-          <h2 class="brain-tab-title">AI Brain Lab</h2>
-          <p class="brain-tab-sub">Neural policy &amp; training telemetry — live via WebSocket (<code class="brain-tab-code">brain_stats</code>)</p>
-        </header>
         <div class="brain-tab-grid-wrap">
           <div id="brainTabFallback" class="brain-tab-fallback" aria-live="polite">
             <p>Wachten op eerste trainings-data…</p>
@@ -375,7 +459,7 @@
       </div>
     </section>
 
-    <section id="ledgerTab" class="brain-tab cockpit-tab-root cockpit-tab-root--ledger hidden" aria-hidden="true">
+    <section id="tab-ledger" class="brain-tab cockpit-tab-root cockpit-tab-root--ledger tab-content hidden" aria-hidden="true" style="display: none;">
       <div class="ledger-tab-shell genesis-tab-inner cockpit-pad">
         <div class="ledger-tab-split">
           <div class="ledger-charts-col">
@@ -428,7 +512,7 @@
       </div>
     </section>
 
-    <section id="hardwareTab" class="brain-tab hardware-tab cockpit-tab-root cockpit-tab-root--hardware hidden" aria-hidden="true">
+    <section id="tab-hardware" class="brain-tab hardware-tab cockpit-tab-root cockpit-tab-root--hardware tab-content hidden" aria-hidden="true" style="display: none;">
       <div class="genesis-tab-inner system-resources-inner cockpit-pad">
         <div class="panel genesis-card eq-card system-meters-card">
           <div class="ring-meters-row ring-meters-row--quad" aria-label="CPU RAM GPU DISK">
@@ -477,6 +561,31 @@
     </section>
 
     </main>
+
+    <!-- Ledger Footer -->
+    <div id="liveLedgerFooter" class="ledger-footer is-collapsed">
+      <div class="ledger-footer-header" id="ledgerFooterToggle">
+        <span class="ledger-footer-title">Live Trade Ledger</span>
+        <span id="cockpitLedgerStatusText" class="ledger-footer-title" style="text-transform:none; font-weight:normal; color:#aaa;">Markten: laden… · Ledger: laden…</span>
+        <span id="ledgerFooterIcon" style="color: #888;">▲ Uitklappen</span>
+      </div>
+      <div class="ledger-footer-content">
+        <table class="trade-table" id="cockpitLedgerTable">
+          <thead>
+            <tr>
+              <th>Open Tijd</th>
+              <th>Munt</th>
+              <th>Entry Prijs</th>
+              <th>Exit Prijs</th>
+              <th>Netto P/L €</th>
+              <th>Netto P/L %</th>
+              <th>Social/Whale Context</th>
+            </tr>
+          </thead>
+          <tbody id="cockpitLedgerBody"></tbody>
+        </table>
+      </div>
+    </div>
 
     <div id="brainHintPortal" aria-hidden="true"></div>
 
