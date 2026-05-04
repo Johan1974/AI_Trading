@@ -1,84 +1,9 @@
-# Bestand: docker-compose.yml
-# Portal: Dockerfile.portal (python:3.11-slim). Worker: Dockerfile.worker (NVIDIA/CUDA + AI-stack).
-# Zelfde env/volumes via YAML-ankers.
-# Redis: pub/sub worker → portal (trading_updates + system_stats). Zet REDIS_URL om te override.
-# Host-schijf voor meters: /:/hostfs:ro + SYSTEM_STATS_DISK_PATH=/hostfs (worker publiceert naar portal).
-#
-# Start: vanuit repo-root vault laden (scripts/lib_compose_root.sh), daarna o.a.
-#   ./scripts/run_redis.sh build && ./scripts/run_worker.sh build && ./scripts/run_portal.sh build
-# of:  source ./scripts/lib_compose_root.sh && docker compose down --remove-orphans && docker compose up -d
-# Live code: ./app, ./core, ./agent, ./scripts → /app/…  |  UVICORN_RELOAD=1 voor --reload
-
-x-ai-trading-env: &ai-trading-env
-  UVICORN_RELOAD: ${UVICORN_RELOAD:-0}
-  TRANSFORMERS_VERBOSITY: ${TRANSFORMERS_VERBOSITY:-error}
-  HF_HUB_DISABLE_PROGRESS_BARS: ${HF_HUB_DISABLE_PROGRESS_BARS:-1}
-  TOKENIZERS_PARALLELISM: ${TOKENIZERS_PARALLELISM:-false}
-  TZ: Europe/Amsterdam
-  CRYPTOCOMPARE_KEY: ${CRYPTOCOMPARE_KEY:-}
-  SOCIAL_REFRESH_SEC: ${SOCIAL_REFRESH_SEC:-300}
-  SOCIAL_HIGH_INTEREST_PCT: ${SOCIAL_HIGH_INTEREST_PCT:-300}
-  COINMARKETCAP_KEY: ${COINMARKETCAP_KEY:-${CMC_API_KEY:-}}
-  PAPER_START_BALANCE_EUR: ${PAPER_START_BALANCE_EUR:-10000}
-  ENGINE_LOOP_MINUTES: ${ENGINE_LOOP_MINUTES:-1}
-  RL_EPISODE_HOURS: ${RL_EPISODE_HOURS:-24}
-  RL_EPISODE_TRAIN_STEPS: ${RL_EPISODE_TRAIN_STEPS:-3000}
-  DEFAULT_TICKER: ${DEFAULT_TICKER:-BTC-EUR}
-  TICKERS: ${TICKERS:-BTC-EUR,ETH-EUR,XRP-EUR,SOL-EUR}
-  SCANNER_TOP_VOLUME: ${SCANNER_TOP_VOLUME:-30}
-  SCANNER_TOP_VOLUME_POOL: ${SCANNER_TOP_VOLUME_POOL:-50}
-  SCANNER_ELITE_COUNT: ${SCANNER_ELITE_COUNT:-8}
-  SCANNER_MOVER_MIN_VOLUME_EUR: ${SCANNER_MOVER_MIN_VOLUME_EUR:-1000000}
-  SCANNER_MIN_MARKET_CAP_EUR: ${SCANNER_MIN_MARKET_CAP_EUR:-500000000}
-  SCANNER_INTERVAL_SEC: ${SCANNER_INTERVAL_SEC:-3600}
-  LOOKBACK_DAYS: ${LOOKBACK_DAYS:-400}
-  BITVAVO_KEY_READ: ${BITVAVO_KEY_READ:-}
-  BITVAVO_SECRET_READ: ${BITVAVO_SECRET_READ:-}
-  MIN_24H_VOLUME_EUR: ${MIN_24H_VOLUME_EUR:-500000}
-  PAIR_MIN_QUOTE_BALANCE: ${PAIR_MIN_QUOTE_BALANCE:-50}
-  PAIR_MIN_BASE_BALANCE: ${PAIR_MIN_BASE_BALANCE:-0.00001}
-  RISK_SIZING_MODE: ${RISK_SIZING_MODE:-fixed_eur}
-  RISK_BASE_TRADE_EUR: ${RISK_BASE_TRADE_EUR:-100}
-  RISK_MAX_TRADE_EQUITY_PCT: ${RISK_MAX_TRADE_EQUITY_PCT:-10}
-  RISK_MAX_PER_ASSET_TRADE_PCT: ${RISK_MAX_PER_ASSET_TRADE_PCT:-20}
-  RISK_MAX_POSITION_EQUITY_PCT: ${RISK_MAX_POSITION_EQUITY_PCT:-40}
-  RISK_STOP_LOSS_PCT: ${RISK_STOP_LOSS_PCT:-2.5}
-  RISK_TAKE_PROFIT_PCT: ${RISK_TAKE_PROFIT_PCT:-5.0}
-  TELEGRAM_TOKEN: ${TELEGRAM_TOKEN:-}
-  TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
-  PRIVATE_EMAIL: ${PRIVATE_EMAIL:-}
-  PRIVATE_PASS: ${PRIVATE_PASS:-}
-  PRIVATE_IMAP: ${PRIVATE_IMAP:-}
-  PRIVATE_SMTP: ${PRIVATE_SMTP:-}
-  PRIVATE_PORT: ${PRIVATE_PORT:-587}
-  GENESIS_HEAL_ALLOW_CPU_LOG: ${GENESIS_HEAL_ALLOW_CPU_LOG:-0}
-  FINBERT_USE_CUDA: ${FINBERT_USE_CUDA:-1}
-  RL_SEED_FIRST_POSITION: ${RL_SEED_FIRST_POSITION:-1}
-  RL_SEED_NOTIONAL_EUR: ${RL_SEED_NOTIONAL_EUR:-500}
-  RL_ACTION_MIN_CONFIDENCE: ${RL_ACTION_MIN_CONFIDENCE:-0.75}
-  RL_BACKGROUND_TRAIN: ${RL_BACKGROUND_TRAIN:-1}
-  RL_PPO_DEVICE: ${RL_PPO_DEVICE:-cpu}
-  RL_BG_TRAIN_CONCURRENCY: ${RL_BG_TRAIN_CONCURRENCY:-1}
-  HF_TOKEN: ${HF_TOKEN:-}
-  RL_TRAIN_CHUNK_STEPS: ${RL_TRAIN_CHUNK_STEPS:-1000}
-  RL_PRIORITY_PAIR_TRAIN_MULT: ${RL_PRIORITY_PAIR_TRAIN_MULT:-1.65}
-  RL_TRAIN_INTERVAL_SEC: ${RL_TRAIN_INTERVAL_SEC:-120}
-  RL_MULTI_INFER_INTERVAL_SEC: ${RL_MULTI_INFER_INTERVAL_SEC:-60}
-  RL_CHECKPOINT_INTERVAL_SEC: ${RL_CHECKPOINT_INTERVAL_SEC:-3600}
-  RL_METRICS_DB_PATH: ${RL_METRICS_DB_PATH:-/app/storage/rl_training_metrics.sqlite}
-  TRADE_HISTORY_DB_PATH: ${TRADE_HISTORY_DB_PATH:-/app/storage/trade_history.db}
-  PAPER_BITVAVO_DB_PATH: ${PAPER_BITVAVO_DB_PATH:-/app/storage/paper_bitvavo.db}
-  AI_TRADING_STORAGE_ROOT: ${AI_TRADING_STORAGE_ROOT:-/app/storage}
-  RL_TRAINING_CHART_MAX_POINTS: ${RL_TRAINING_CHART_MAX_POINTS:-12000}
-  RL_DATA_AUDIT_HEARTBEAT: ${RL_DATA_AUDIT_HEARTBEAT:-0}
-  REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-  PORTAL_SNAPSHOT_INTERVAL_SEC: ${PORTAL_SNAPSHOT_INTERVAL_SEC:-1.5}
-  # Host-schijf in hardware-strip: bind-mount hieronder + psutil op dit pad (worker → portal via Redis).
-  SYSTEM_STATS_DISK_PATH: ${SYSTEM_STATS_DISK_PATH:-/hostfs}
+# Bestand: docker-compose.yml (Final Audit-First Edition)
+# Gebruikt: docker-compose.env (Publiek) + ../.trading_vault (Secrets)
 
 x-ai-trading-volumes: &ai-trading-volumes
   - ./storage:/app/storage
-  - ./logs:/app/logs
+  - ./_logs_hub:/app/logs
   - ./artifacts:/app/artifacts
   - ./data:/app/data
   - ./app:/app/app
@@ -88,6 +13,7 @@ x-ai-trading-volumes: &ai-trading-volumes
   - /etc/localtime:/etc/localtime:ro
   - /etc/timezone:/etc/timezone:ro
   - /:/hostfs:ro
+  - /var/run/docker.sock:/var/run/docker.sock
 
 services:
   worker:
@@ -96,30 +22,23 @@ services:
       context: .
       dockerfile: Dockerfile.worker
     image: ai_trading-ai-trading-bot:latest
-    init: true
     restart: always
     deploy:
       resources:
-        limits:
-          memory: 4G
+        reservations:
+          devices: [{driver: nvidia, count: 1, capabilities: [gpu]}]
+    env_file:
+      - docker-compose.env
+      - ../.trading_vault
     networks:
       - ai_trading_net
     depends_on:
-      redis:
-        condition: service_healthy
-    shm_size: "2gb"
-    stop_grace_period: 45s
-    logging:
-      driver: json-file
-      options:
-        max-size: "50m"
-        max-file: "4"
+      redis: { condition: service_healthy }
     volumes: *ai-trading-volumes
-    gpus: all
-    command: ["python", "-m", "app.worker_entry"]
+    command: python -m app.worker_entry
     environment:
-      <<: *ai-trading-env
       AI_TRADING_PROCESS: worker
+      TZ: Europe/Amsterdam
       GENESIS_REQUIRE_GPU: ${GENESIS_REQUIRE_GPU:-1}
 
   portal:
@@ -128,56 +47,25 @@ services:
       context: .
       dockerfile: Dockerfile.portal
     image: ai_trading-ai-trading-portal:latest
-    init: true
     restart: always
-    deploy:
-      resources:
-        limits:
-          memory: 2G
+    ports:
+      - "${HOST_PORT:-8000}:8000"
+    env_file:
+      - docker-compose.env
+      - ../.trading_vault
     networks:
       - ai_trading_net
     depends_on:
-      redis:
-        condition: service_healthy
-      worker:
-        condition: service_started
-    ports:
-      - "${HOST_PORT:-8000}:8000"
-    shm_size: "2gb"
-    stop_grace_period: 45s
-    logging:
-      driver: json-file
-      options:
-        max-size: "50m"
-        max-file: "4"
+      redis: { condition: service_healthy }
+      worker: { condition: service_started }
     healthcheck:
-      test:
-        [
-          "CMD",
-          "python",
-          "-c",
-          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4).read()",
-        ]
-      interval: 20s
-      timeout: 8s
-      retries: 5
-      start_period: 180s
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
     volumes: *ai-trading-volumes
-    command:
-      - sh
-      - -c
-      - |
-        if [ "$${UVICORN_RELOAD:-0}" = "1" ]; then
-          exec python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload \
-            --reload-dir /app/app --reload-dir /app/core --reload-dir /app/agent
-        else
-          exec python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
-        fi
+    command: python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
     environment:
-      <<: *ai-trading-env
       AI_TRADING_PROCESS: portal
-      GENESIS_REQUIRE_GPU: ${PORTAL_GENESIS_REQUIRE_GPU:-0}
-      FINBERT_USE_CUDA: ${PORTAL_FINBERT_USE_CUDA:-0}
+      TZ: Europe/Amsterdam
+      PORTAL_GENESIS_REQUIRE_GPU: 0
 
   redis:
     image: redis:7-alpine
@@ -185,18 +73,49 @@ services:
     restart: unless-stopped
     networks:
       - ai_trading_net
-    ports:
-      - "${REDIS_HOST_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
-    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+      - ./_logs_hub:/app/logs
+    environment:
+      - TZ=Europe/Amsterdam
+    command: >
+      /bin/sh -c "apk add --no-cache tzdata && 
+      cp /usr/share/zoneinfo/Europe/Amsterdam /etc/localtime && 
+      redis-server --appendonly yes --logfile /app/logs/redis.log"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      # start_period: tijdens AOF/RDB-load mag Redis even "niet gezond" zijn zonder unhealthy te worden.
-      start_period: 90s
-      interval: 5s
-      timeout: 3s
-      retries: 10
+      interval: 10s
+
+  dashboard-validator:
+    image: mcr.microsoft.com/playwright/python:v1.58.0-jammy
+    container_name: ai-trading-dashboard-validator
+    # AFGEDWONGEN: Root-permissies voor Docker socket manipulatie
+    user: root
+    shm_size: '2gb'
+    restart: always
+    env_file:
+      - docker-compose.env
+      - ../.trading_vault
+    networks:
+      - ai_trading_net
+    volumes:
+      - ./app:/app
+      - ./_logs_hub:/app/logs
+      - ./core:/app/core
+      - ./requirements-validator.txt:/requirements-validator.txt:ro
+      - /usr/share/zoneinfo/Europe/Amsterdam:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: >
+      sh -c "pip install -r /requirements-validator.txt && playwright install chromium && 
+             python -u /app/tests/run_ui_tests.py"
+    environment:
+      - API_URL=http://portal:8000
+      - TZ=Europe/Amsterdam
+      - PYTHONUNBUFFERED=1
+      - DEBUG_MODE=true
+    depends_on:
+      portal: { condition: service_healthy }
 
 networks:
   ai_trading_net:

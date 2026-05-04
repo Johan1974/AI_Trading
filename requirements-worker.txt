@@ -16,3 +16,5 @@ ccxt
 gymnasium
 stable-baselines3
 requests
+psutil
+nvidia-ml-py

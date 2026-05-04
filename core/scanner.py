@@ -1,4 +1,6 @@
 """
+BESTANDSNAAM: /home/johan/AI_Trading/core/scanner.py
+FUNCTIE: Dynamic Elite-8 scanner voor Bitvavo EUR pairs (Pillars + Movers).
 Dynamic Elite-8 scanner for Bitvavo EUR pairs.
 
 Milestone: Historical Potential & Regime Filtering
@@ -305,7 +307,10 @@ class DynamicVolatilityScanner:
                 r["pillar_kind"] = "core"
                 anchors.append(r)
         anchors = _enrich_with_quality(self.base_url, anchors)
+        # Veilig de 4h-volatiliteit toevoegen zonder dat een API-fail de Anchors wist
+        anchors_vol = {r["market"]: r.get("move_pct_4h", 0.0) for r in _enrich_with_4h_volatility(self.base_url, anchors)}
         for a in anchors:
+            a["move_pct_4h"] = anchors_vol.get(a["market"], 0.0)
             a["selection_reason"] = f"Anchor: {a.get('selection_reason') or 'Core market'}"
 
         anchor_markets = {str(p["market"]).upper() for p in anchors}
@@ -353,6 +358,9 @@ class DynamicVolatilityScanner:
                 if not bool(rr.get("passes_quality")):
                     continue
                 rr.setdefault("move_pct_4h", 0.0)
+                vol_res = _enrich_with_4h_volatility(self.base_url, [rr])
+                if vol_res:
+                    rr["move_pct_4h"] = vol_res[0].get("move_pct_4h", 0.0)
                 rr["is_pillar"] = False
                 rr["pillar_kind"] = "fill"
                 rr["selection_reason"] = f"Fallback quality pick: {rr.get('selection_reason', 'quality pass')}"

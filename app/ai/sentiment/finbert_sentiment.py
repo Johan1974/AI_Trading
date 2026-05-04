@@ -1,7 +1,6 @@
 """
-Bestand: app/ai/sentiment/finbert_sentiment.py
-Relatief pad: ./app/ai/sentiment/finbert_sentiment.py
-Functie: Sentiment analyzer met HuggingFace Transformers FinBERT.
+BESTANDSNAAM: /home/johan/AI_Trading/app/ai/sentiment/finbert_sentiment.py
+FUNCTIE: Sentiment analyzer met HuggingFace Transformers FinBERT.
 """
 
 import os
@@ -44,7 +43,8 @@ class FinBertSentimentAnalyzer(SentimentAnalyzer):
         clean_texts = [t for t in texts if t and t.strip()]
         if not clean_texts:
             return {
-                "aggregate": SentimentResult(score=0.0, confidence=0.0, model_name=self.model_name),
+                # GHOST DATA PREVENTIE: 0.001 is leeg maar geïnitialiseerd. 0.0 = API crash.
+                "aggregate": SentimentResult(score=0.001, confidence=0.0, model_name=self.model_name),
                 "items": [],
             }
 

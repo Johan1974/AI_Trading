@@ -15,7 +15,15 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+try:
+    import psutil
+except ImportError:
+    psutil = None
 import torch
+
+# MEMORY FIX: Beperk PyTorch CPU-threads om RAM reserveringen te minimaliseren
+torch.set_num_threads(2)
+
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.vec_env import DummyVecEnv
@@ -175,7 +183,7 @@ class RLAgentService:
             pass
 
     def save_hourly_checkpoint(self, pair: str) -> None:
-        """Schrijft model-weights weg (PPO .zip) zonder de reward-ranglijst te verstoren."""
+        """Schrijft model-weights weg (PPO .zip) en roteert oude hourly checkpoints om schijfruimte te besparen."""
         if self.model is None:
             return
         pair = pair.upper()
@@ -184,6 +192,20 @@ class RLAgentService:
         try:
             self.model.save(str(out))
             print(f"[RL-CHECKPOINT] Hourly weights saved: {out}.zip")
+            
+            # --- Schijfruimte Optimalisatie: Roteer hourly checkpoints ---
+            prefix = f"{self._model_prefix(pair)}_hourly_"
+            hourly_files = sorted(self.model_dir.glob(f"{prefix}*.zip"), key=lambda p: p.stat().st_mtime, reverse=True)
+            
+            # Behoud maximaal de 3 meest recente hourly checkpoints per markt
+            max_hourly_keep = 3
+            if len(hourly_files) > max_hourly_keep:
+                for old_file in hourly_files[max_hourly_keep:]:
+                    try:
+                        old_file.unlink()
+                        print(f"[RL-CHECKPOINT] Oude hourly weights verwijderd ter optimalisatie: {old_file.name}")
+                    except Exception:
+                        pass
         except Exception as exc:
             print(f"[RL-CHECKPOINT] Save failed: {exc}")
 
@@ -321,15 +343,31 @@ class RLAgentService:
             best = sorted(rows, key=lambda x: float(x.get("reward_score", -1e18)), reverse=True)[0]
             best_model_path = Path(str(best.get("model_path", "")))
             if best_model_path.exists():
-                self.model = PPO.load(str(best_model_path.with_suffix("")), device=get_rl_ppo_device())
-                self.active_pair = pair
-                return True
+                try:
+                    loaded_model = PPO.load(str(best_model_path.with_suffix("")), device=get_rl_ppo_device())
+                    expected_shape = len(self.feature_names) + 5
+                    if loaded_model.observation_space.shape[0] != expected_shape:
+                        print(f"{datetime.now().astimezone().isoformat()} [AI-ENGINE][ERROR] Observation space mismatch! Model verwacht {loaded_model.observation_space.shape[0]} features, live agent verwacht {expected_shape}. Model {pair} wordt genegeerd en herbouwd.")
+                    else:
+                        self.model = loaded_model
+                        self.active_pair = pair
+                        return True
+                except Exception as e:
+                    print(f"{datetime.now().astimezone().isoformat()} [AI-ENGINE][ERROR] Fout bij laden best model {pair}: {e}")
         path = self._model_path(pair)
         zip_path = Path(f"{path}.zip")
         if zip_path.exists():
-            self.model = PPO.load(str(path), device=get_rl_ppo_device())
-            self.active_pair = pair
-            return True
+            try:
+                loaded_model = PPO.load(str(path), device=get_rl_ppo_device())
+                expected_shape = len(self.feature_names) + 5
+                if loaded_model.observation_space.shape[0] != expected_shape:
+                    print(f"{datetime.now().astimezone().isoformat()} [AI-ENGINE][ERROR] Observation space mismatch! Model verwacht {loaded_model.observation_space.shape[0]} features, live agent verwacht {expected_shape}. Model {pair} wordt genegeerd en herbouwd.")
+                else:
+                    self.model = loaded_model
+                    self.active_pair = pair
+                    return True
+            except Exception as e:
+                print(f"{datetime.now().astimezone().isoformat()} [AI-ENGINE][ERROR] Fout bij laden fallback model {pair}: {e}")
         return False
 
     def ensure_pretrained(
@@ -506,9 +544,9 @@ class RLAgentService:
     def _extract_feature_weighting(self) -> np.ndarray:
         if self.model is None:
             return np.ones(len(self.feature_names), dtype=float)
-        with torch.no_grad():
+        with torch.inference_mode():
             first_layer = self.model.policy.mlp_extractor.policy_net[0]
-            w = first_layer.weight.detach().cpu().numpy()
+            w = first_layer.weight.detach().cpu().numpy().astype(np.float32)
         # Observation includes 4 account features at the end; keep first N state features.
         base = np.mean(np.abs(w[:, : len(self.feature_names)]), axis=0)
         if np.sum(base) <= 1e-12:
@@ -529,6 +567,7 @@ class RLAgentService:
             "position": 0.0,
             "pnl_ratio": 0.0,
             "trade_ratio": 0.0,
+            "position_hours": 0.0,
         }
         obs_features = np.array([float(latest_row.get(k, 0.0)) for k in self.feature_names], dtype=np.float32)
         if not np.all(np.isfinite(obs_features)):
@@ -547,11 +586,20 @@ class RLAgentService:
                         float(acct.get("position", 0.0)),
                         float(acct.get("pnl_ratio", 0.0)),
                         float(acct.get("trade_ratio", 0.0)),
+                        float(acct.get("position_hours", 0.0)),
                     ],
                     dtype=np.float32,
                 ),
             ]
         )
+        
+        if np.isnan(obs).any() or np.all(obs == 0.0):
+            err_msg = f"Invalid observation space (NaN of all-zeros). Shape: {obs.shape}"
+            print(f"{datetime.now(UTC).isoformat()} [DATA-INTEGRITY][CRITICAL] {err_msg}")
+            raise ValueError(err_msg)
+        else:
+            print(f"{datetime.now(UTC).isoformat()} [DATA-INTEGRITY][OK] Valid obs shape {obs.shape} for decision.")
+
         with torch.no_grad():
             obs_t = torch.tensor(obs, dtype=torch.float32, device=self.model.device).unsqueeze(0)
             dist = self.model.policy.get_distribution(obs_t)

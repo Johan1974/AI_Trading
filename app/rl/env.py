@@ -6,6 +6,8 @@ Functie: Gymnasium trading omgeving; beloning via core.reward_function (PnL-%, d
 
 from __future__ import annotations
 
+from datetime import datetime
+from app.datetime_util import UTC
 import gymnasium as gym
 import numpy as np
 import pandas as pd
@@ -69,15 +71,20 @@ class BitvavoTradingEnv(gym.Env):
 
         # 0=HOLD, 1=BUY, 2=SELL
         self.action_space = spaces.Discrete(3)
-        obs_size = len(self.feature_cols) + 5
+        
+        self._reset_state()
+        sample_obs = self._build_observation()
+        obs_shape = sample_obs.shape[0]
+        
+        # ALIGNMENT CHECK: We verwachten exact 16 marktsignalen + 5 account variabelen = 21.
+        assert obs_shape == 21, f"Observation space mismatch! Verwacht 21 features, kreeg {obs_shape}."
+
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(obs_size,),
+            shape=(21,),
             dtype=np.float32,
         )
-
-        self._reset_state()
 
     def _reset_state(self) -> None:
         self.step_idx = 0
@@ -95,6 +102,18 @@ class BitvavoTradingEnv(gym.Env):
 
     def _equity(self) -> float:
         return float(self.balance_eur + self.position_btc * self._current_price())
+
+    def _close_position(self, price: float, fee_rate: float) -> None:
+        """Sluit de huidige positie en verwerkt de balans update en metrics."""
+        qty = self.position_btc
+        notional = qty * price
+        fee = notional * fee_rate
+        self.balance_eur += max(0.0, notional - fee)
+        self.position_btc = 0.0
+        self.entry_price = 0.0
+        self.position_peak_price = 0.0
+        self.position_hours = 0.0
+        self.trade_count += 1
 
     def _build_observation(self) -> np.ndarray:
         row = self.df.loc[self.step_idx, self.feature_cols].astype(float).to_numpy(dtype=np.float32)
@@ -119,7 +138,9 @@ class BitvavoTradingEnv(gym.Env):
             ],
             dtype=np.float32,
         )
-        return np.concatenate([row, account], axis=0).astype(np.float32)
+        obs = np.concatenate([row, account], axis=0).astype(np.float32)
+        print(f"{datetime.now().astimezone().isoformat()} [AI-ENGINE][INFO] _build_observation completed. Obs features: {obs.shape[0]} (Expected: 21)")
+        return obs
 
     def reset(self, *, seed: int | None = None, options: dict | None = None):
         super().reset(seed=seed)
@@ -147,15 +168,7 @@ class BitvavoTradingEnv(gym.Env):
             self.trade_count += 1
             executed_trade = True
         elif action == 2 and self.position_btc > 0:
-            qty = self.position_btc
-            notional = qty * price
-            fee = notional * fee_rate
-            self.balance_eur += max(0.0, notional - fee)
-            self.position_btc = 0.0
-            self.entry_price = 0.0
-            self.position_peak_price = 0.0
-            self.position_hours = 0.0
-            self.trade_count += 1
+            self._close_position(price, fee_rate)
             executed_trade = True
 
         if self.position_btc > 1e-12:
@@ -168,15 +181,7 @@ class BitvavoTradingEnv(gym.Env):
             
             sl_mult = 1.0 - (dynamic_sl_pct / 100.0)
             if price <= self.position_peak_price * sl_mult:
-                qty = self.position_btc
-                notional = qty * price
-                fee = notional * fee_rate
-                self.balance_eur += max(0.0, notional - fee)
-                self.position_btc = 0.0
-                self.entry_price = 0.0
-                self.position_peak_price = 0.0
-                self.position_hours = 0.0
-                self.trade_count += 1
+                self._close_position(price, fee_rate)
                 executed_trade = True
                 forced_stop_loss = True
 

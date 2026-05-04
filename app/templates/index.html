@@ -24,26 +24,34 @@
         background: #121212;
       }
       .panel-noir {
-        background: #1a1a1a !important;
-        border: 1px solid #2a2a2a !important;
-        border-radius: 6px;
-        position: relative;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+          background: #1a1a1a !important;
+          border: 1px solid #2a2a2a !important;
+          border-radius: 6px;
+          padding: 12px !important; /* Ruimte aan de binnenkant */
+          margin-bottom: 12px;
+          display: flex;
+          flex-direction: column;   /* Stapel alles netjes onder elkaar */
+          gap: 8px;                 /* Ruimte tussen label en getal */
+          height: auto !important;  /* Laat het kader meegroeien */
+          min-height: 80px;
+          box-shadow: 0 4px 6px rgba(0,0,0,0.3);
       }
       .cockpit-card-title, .cockpit-chart-titlebar {
         display: none !important;
       }
       .subtle-label {
-        position: absolute;
-        top: 8px;
-        left: 12px;
-        font-size: 10px;
-        color: #666;
-        text-transform: uppercase;
-        letter-spacing: 1px;
-        z-index: 10;
-        pointer-events: none;
-        font-weight: 600;
+          position: static !important; /* Haal hem uit de 'zweef-stand' */
+          font-size: 10px;
+          color: #666;
+          text-transform: uppercase;
+          letter-spacing: 1px;
+          font-weight: 600;
+      }
+      .executive-allocation-body {
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 16px;
+          color: #00ffcc;
+          word-break: break-all;
       }
       .cockpit-terminal-grid {
         display: grid;
@@ -175,6 +183,23 @@
       rel="stylesheet"
     />
     <link rel="stylesheet" href="/static/css/master_layout.css" />
+    <!-- De Browser Spion: Vangt front-end errors en stuurt ze naar de portal backend -->
+    <script>
+      window.addEventListener('error', function(event) {
+        fetch('/api/v1/log/browser', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({level: 'ERROR', message: event.message, stacktrace: event.error ? event.error.stack : '', url: window.location.href})
+        }).catch(() => {});
+      });
+      window.addEventListener('unhandledrejection', function(event) {
+        fetch('/api/v1/log/browser', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({level: 'ERROR', message: event.reason, stacktrace: '', url: window.location.href})
+        }).catch(() => {});
+      });
+    </script>
   </head>
   <body class="cockpit-body">
     <header class="cockpit-header" role="banner">
@@ -194,7 +219,7 @@
         <span id="headerPairDisplay" class="genesis-mono-strong" aria-live="polite">BTC-EUR</span>
         <select id="marketSelect" class="cockpit-select" aria-label="Bitvavo-markt"></select>
         <button type="button" id="refreshMarketsBtn" class="btn-outline btn-outline--icon" aria-label="Markten verversen">↻</button>
-        <span id="livePrice" class="cockpit-btc-price" aria-live="polite">BTC —</span>
+        <span id="btc-price" class="cockpit-btc-price" aria-live="polite">BTC —</span>
         <span id="headerEquity" hidden>-</span>
         <span class="cockpit-bal">
           Balans: <strong id="headerBalanceEuro">€—</strong>
@@ -264,63 +289,56 @@
           </div>
 
         <aside class="cockpit-ai-panel cockpit-reasoning-sidebar cockpit-terminal-rail">
-          
-          <section class="cockpit-terminal-extras panel-noir panel-noir-sidebar" aria-label="Paper- en systeemstatus">
-            <span class="subtle-label">Status</span>
-            <div class="portfolio-big neon-equity js-portfolio-equity">-</div>
-            <div class="portfolio-big neon-cash js-portfolio-cash">-</div>
-            <p class="js-portfolio-stats-rest"></p>
-            <p class="js-active-orders"></p>
-            <span class="js-sentiment-value"></span>
-            <div class="progress-bar js-sentiment-bar"></div>
-            <span class="js-sentiment-confidence"></span>
-            <p class="js-bot-status"></p>
-            <p class="js-balance-check"></p>
-            <ul class="risk-profile-list">
-              <li><span class="js-risk-profile-base"></span></li>
-              <li><span class="js-risk-profile-max"></span></li>
-              <li><span class="js-risk-profile-sl"></span></li>
-            </ul>
-            <span class="js-storage-usage-pct">-</span>
-            <div class="progress-bar storage-bar js-storage-usage-bar"></div>
-            <p class="js-storage-opt-stats"></p>
-            <p class="js-storage-health"></p>
-            <p class="js-live-updated-at"></p>
-          </section>
+  
+  <section class="panel-noir" aria-label="Status">
+    <span class="subtle-label">Status</span>
+    <div class="portfolio-big neon-equity js-portfolio-equity">-</div>
+    <div id="sentiment-value" class="executive-allocation-body" style="color: #00d4ff;">0.000</div>
+    <div class="progress-bar js-sentiment-bar"></div>
+  </section>
 
-          <div class="panel-noir panel-noir-sidebar">
-            <span class="subtle-label">Decision Reasoning</span>
-            <div id="brainReasoningBox" class="brain-reasoning cockpit-reasoning-primary" style="font-size: 13px; line-height: 1.4;">Nog geen RL-besluit beschikbaar.</div>
-            <p id="brainLastScanLine" class="cockpit-last-scan genesis-mono-strong" aria-live="polite" style="font-size: 11px; color: #888; margin-top: 8px;">Laatste scan: —</p>
-          </div>
+  <div class="panel-noir">
+    <span class="subtle-label">Market Stats</span>
+    <div class="metric" style="border-bottom-color: #2a2a2a;">
+        <span class="metric-label" style="font-size: 13px;">24h Change</span>
+        <span class="metric-value" id="market-24h-change" style="font-size: 13px;">--</span>
+    </div>
+    <div class="metric" style="border-bottom-color: #2a2a2a;">
+        <span class="metric-label" style="font-size: 13px;">4h Volatility</span>
+        <span class="metric-value" id="market-volatility" style="font-size: 13px;">--</span>
+    </div>
+    <div class="metric">
+        <span class="metric-label" style="font-size: 13px;">Scanner Reason</span>
+        <span class="metric-value" id="market-reason" style="font-size: 11px; text-align: right; max-width: 55%; color: #aaa;">--</span>
+    </div>
+  </div>
 
-          <div class="panel-noir panel-noir-sidebar executive-allocation-panel" aria-label="Equal-weight portfolio allocatie">
-            <span class="subtle-label">Allocatie</span>
-            <div id="executiveAllocationSnapshot" class="executive-allocation-body" style="font-size: 13px;">Laden…</div>
-          </div>
+  <div class="panel-noir">
+    <span class="subtle-label">Allocatie</span>
+    <div id="allocatie" class="executive-allocation-body">Laden...</div>
+  </div>
 
-          <div class="panel-noir panel-noir-sidebar">
-            <span class="subtle-label">Signal Mix</span>
-            <div class="mini-chart mini-chart--corr-inline" style="height: 60px;"><canvas id="terminalCorrelationChart"></canvas></div>
-            <table class="trade-table trade-table--compact cockpit-signal-mix-table cockpit-signal-mix-table--spaced" style="font-size: 12px; margin-top: 8px; width: 100%;">
-              <tbody>
-                <tr>
-                  <td style="color:#888;">Correlation</td>
-                  <td class="cockpit-metric-value js-corr-value" style="text-align:right;">-</td>
-                </tr>
-                <tr>
-                  <td style="color:#888;">News weight</td>
-                  <td class="cockpit-metric-value js-news-weight" style="text-align:right;">-</td>
-                </tr>
-                <tr>
-                  <td style="color:#888;">Price weight</td>
-                  <td class="cockpit-metric-value js-price-weight" style="text-align:right;">-</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-          
-        </aside>
+  <div class="panel-noir">
+    <span class="subtle-label">Signal Mix</span>
+    <table class="trade-table trade-table--compact cockpit-signal-mix-table" style="width: 100%; margin-top: 5px;">
+      <tbody>
+        <tr>
+          <td style="color:#666; font-size: 11px;">Correlation</td>
+          <td id="js-corr-value" style="text-align:right; font-weight: bold;">0.00</td>
+        </tr>
+        <tr>
+          <td style="color:#666; font-size: 11px;">News weight</td>
+          <td id="js-news-weight" style="text-align:right; font-weight: bold;">0.00</td>
+        </tr>
+        <tr>
+          <td style="color:#666; font-size: 11px;">Price weight</td>
+          <td id="js-price-weight" style="text-align:right; font-weight: bold;">0.00</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  
+</aside>
         </div>
       </div>
     </div>
@@ -363,15 +381,15 @@
               <tbody>
                 <tr>
                   <td>Correlation</td>
-                  <td class="cockpit-metric-value js-corr-value">-</td>
+                  <td class="cockpit-metric-value js-corr-value" id="weight-correlation">-</td>
                 </tr>
                 <tr>
                   <td>News weight</td>
-                  <td class="cockpit-metric-value js-news-weight">-</td>
+                  <td class="cockpit-metric-value js-news-weight" id="weight-news">-</td>
                 </tr>
                 <tr>
                   <td>Price weight</td>
-                  <td class="cockpit-metric-value js-price-weight">-</td>
+                  <td class="cockpit-metric-value js-price-weight" id="weight-price">-</td>
                 </tr>
               </tbody>
             </table>
@@ -452,6 +470,14 @@
                   <dt>Global steps</dt>
                   <dd><span id="brainTabStatSteps" class="brain-noir-stats__mono brain-noir-stats__mono--lg">—</span></dd>
                 </div>
+                <div class="brain-noir-stats__row brain-noir-stats__row--muted">
+                  <dt>RL Confidence</dt>
+                  <dd><span id="rl-confidence" class="brain-noir-stats__mono brain-noir-stats__mono--lg">—</span></dd>
+                </div>
+                <div class="brain-noir-stats__row brain-noir-stats__row--muted">
+                  <dt>Model Version</dt>
+                  <dd><span id="model-version" class="brain-noir-stats__mono brain-noir-stats__mono--lg">—</span></dd>
+                </div>
               </dl>
             </article>
           </div>
@@ -484,6 +510,7 @@
                 <dd>
                   <span id="ledgerPerfPnlEur" class="ledger-performance-kpi">—</span>
                   <span id="ledgerPerfPnlPct" class="ledger-performance-subkpi">—</span>
+                  <span id="pnl-total" style="display:none">—</span>
                 </dd>
               </div>
               <div class="ledger-performance-row">
@@ -492,7 +519,14 @@
               </div>
               <div class="ledger-performance-row">
                 <dt>Closed trades</dt>
-                <dd><span id="ledgerPerfClosed" class="ledger-performance-mono">—</span></dd>
+                <dd>
+                  <span id="ledgerPerfClosed" class="ledger-performance-mono">—</span>
+                  <span id="trade-count" style="display:none">—</span>
+                </dd>
+              </div>
+              <div class="ledger-performance-row">
+                <dt>Total Balance</dt>
+                <dd><span id="total-balance" class="ledger-performance-kpi">—</span></dd>
               </div>
               <div class="ledger-performance-row">
                 <dt>Grootste win</dt>
@@ -618,6 +652,11 @@
       src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"
     ></script>
     <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-    <script defer src="/static/js/terminal.js"></script>
+    <script defer src="/static/js/chart_utils.js"></script>
+    <script defer src="/static/js/app_core.js"></script>
+    <script defer src="/static/js/module_terminal.js"></script>
+    <script defer src="/static/js/module_ledger.js"></script>
+    <script defer src="/static/js/module_brain.js"></script>
+    <script defer src="/static/js/main.js"></script>
   </body>
 </html>

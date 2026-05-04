@@ -6,6 +6,8 @@ Functie: Redis pub/sub voor worker → portal (trading_updates + system_stats).
 
 from __future__ import annotations
 
+from datetime import datetime
+from app.datetime_util import UTC
 import json
 import os
 from typing import Any
@@ -23,11 +25,12 @@ def publish_trading_update(payload: dict[str, Any]) -> None:
     """Sync publish (worker-thread / request-context); faalt stil als REDIS_URL ontbreekt of Redis down."""
     if not _should_publish():
         return
-    url = str(os.getenv("REDIS_URL", "") or "").strip()
-    if not url:
-        return
+    host = os.getenv("REDIS_HOST", "redis")
     try:
         import redis
+
+        port = os.getenv("REDIS_PORT", "6379")
+        url = os.getenv("REDIS_URL", f"redis://{host}:{port}/0")
 
         r = redis.Redis.from_url(
             url,
@@ -40,18 +43,19 @@ def publish_trading_update(payload: dict[str, Any]) -> None:
         finally:
             r.close()
     except Exception as exc:
-        print(f"[REDIS] publish trading_updates mislukt: {exc}")
+        print(f"{datetime.now().astimezone().isoformat()} [COMM][REDIS][ERROR] Connection failed to host '{host}'. Retrying in 2s... Error: {exc}")
 
 
 def publish_system_stats_update(payload: dict[str, Any]) -> None:
     """Worker → portal: compact system_stats JSON (zelfde shape als `/ws/system-stats`)."""
     if not _should_publish():
         return
-    url = str(os.getenv("REDIS_URL", "") or "").strip()
-    if not url:
-        return
+    host = os.getenv("REDIS_HOST", "redis")
     try:
         import redis
+
+        port = os.getenv("REDIS_PORT", "6379")
+        url = os.getenv("REDIS_URL", f"redis://{host}:{port}/0")
 
         r = redis.Redis.from_url(
             url,
@@ -64,4 +68,4 @@ def publish_system_stats_update(payload: dict[str, Any]) -> None:
         finally:
             r.close()
     except Exception as exc:
-        print(f"[REDIS] publish system_stats mislukt: {exc}")
+        print(f"{datetime.now().astimezone().isoformat()} [COMM][REDIS][ERROR] Connection failed to host '{host}'. Retrying in 2s... Error: {exc}")

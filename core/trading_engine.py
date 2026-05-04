@@ -1,4 +1,6 @@
 """
+BESTANDSNAAM: /home/johan/AI_Trading/core/trading_engine.py
+FUNCTIE: Multi-asset elite execution loop. Itereert over actieve Elite-markten uit de scanner.
 Multi-asset elite execution loop: één sweep over alle actieve Elite-markten per interval,
 ongeacht de in de UI geselecteerde ticker (die blijft voor charts/UI).
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 import csv
 import io
 import os
+import psutil
 import shutil
 import subprocess
 import time
@@ -128,7 +129,7 @@ def _nvidia_smi_stats() -> dict[str, Any]:
 
 def _disk_usage_percent() -> float:
     """Schijf%: standaard container-root; zet SYSTEM_STATS_DISK_PATH=/hostfs + bind-mount host `/` voor echte host-schijf."""
-    import psutil
+
 
     path = str(os.getenv("SYSTEM_STATS_DISK_PATH", "/") or "/").strip() or "/"
     for candidate in (path, "/"):
@@ -145,7 +146,7 @@ def collect_system_stats() -> dict[str, Any]:
     ram_pct = 0.0
     disk_pct = 0.0
     try:
-        import psutil
+    
 
         # Eerste cpu_percent-call is vaak 0.0; warm-up + interval geeft een echte sample.
         _ = psutil.cpu_percent(interval=0.05)

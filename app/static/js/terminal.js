@@ -4,6 +4,31 @@
   Functie: Clientlogica voor immersive trading terminal met chart markers en live inzichten.
 */
 
+window.ChartUtils = window.ChartUtils || {
+    charts: {},
+    upsertChart(canvasId, config) {
+        const el = document.getElementById(canvasId);
+        if (!el) return null;
+        if (el.offsetParent === null) return null;
+        
+        if (this.charts[canvasId]) {
+            this.charts[canvasId].destroy();
+        }
+        if (typeof Chart !== "undefined") {
+            const ctx = el.getContext("2d");
+            this.charts[canvasId] = new Chart(ctx, config);
+            return this.charts[canvasId];
+        }
+        return null;
+    },
+    clearAllCharts() {
+        for (const id in this.charts) {
+            if (this.charts[id]) this.charts[id].destroy();
+        }
+        this.charts = {};
+    }
+};
+
 let selectedMarket = "BTC-EUR";
 let currentMarket = "BTC-EUR"; // Globale pointer voor externe compatibiliteit
 let selectedChartPair = "BTC-EUR";
@@ -63,6 +88,7 @@ let systemLogsBuffer = [];
 let lastLedgerCycleSeq = null;
 let rawChartLineData = [];
 let rawChartMarkers = [];
+let latestBrainStatsPayload = null;
 let markerRenderState = { thresholdPx: 34, hideText: false, sizeMode: "normal" };
 
 /** Donkere gridlijnen zodat witte assen en neon datasets contrast houden */
@@ -462,11 +488,44 @@ function shouldAutoScroll(consoleEl) {
 
 function appendSystemLogLine(line) {
   if (systemLogsMuted) return;
-  const consoleEl = document.getElementById("systemLogConsole");
-  if (!consoleEl) return;
+  let consoleEl = document.getElementById("systemLogConsole");
+  
+  // Auto-inject container als deze in de HTML dev-tab ontbreekt
+  if (!consoleEl) {
+      const hardwareTab = document.getElementById("tab-hardware");
+      if (!hardwareTab) return;
+      consoleEl = document.createElement("div");
+      consoleEl.id = "systemLogConsole";
+      consoleEl.style.flex = "1";
+      consoleEl.style.overflowY = "auto";
+      consoleEl.style.backgroundColor = "#0b0e11";
+      consoleEl.style.border = "2px solid #333";
+      consoleEl.style.borderRadius = "8px";
+      consoleEl.style.padding = "10px";
+      consoleEl.style.marginTop = "20px";
+      consoleEl.style.minHeight = "400px";
+      consoleEl.style.maxHeight = "600px";
+      hardwareTab.appendChild(consoleEl);
+  }
+
   const autoscroll = shouldAutoScroll(consoleEl);
   const div = document.createElement("div");
   div.className = `system-log-line ${classifyLogLine(line)}`;
+  
+  // Fallback styling voor het geval dev-tab CSS mist
+  div.style.fontFamily = "'JetBrains Mono', ui-monospace, monospace";
+  div.style.fontSize = "13px";
+  div.style.padding = "2px 4px";
+  div.style.borderBottom = "1px solid rgba(255,255,255,0.05)";
+  div.style.wordBreak = "break-all";
+  
+  const textUpper = String(line || "").toUpperCase();
+  if (textUpper.includes("ERROR") || textUpper.includes("CRITICAL")) div.style.color = "#ff3131";
+  else if (textUpper.includes("WARN")) div.style.color = "#ffb84d";
+  else if (textUpper.includes("SUCCESS") || textUpper.includes("OK")) div.style.color = "#39ff14";
+  else if (textUpper.includes("[RL-BRAIN]")) div.style.color = "#00f8ff";
+  else div.style.color = "#cccccc";
+
   div.textContent = formatSystemLogLineForDisplay(line);
   consoleEl.appendChild(div);
   while (consoleEl.children.length > MAX_SYSTEM_LOG_LINES) {
@@ -655,13 +714,15 @@ function normalizeBrainWsPayload(raw) {
       feature_weights_policy: d.fwp,
       rl_observation: d.rl,
       social_buzz: d.sb,
+      reasoning: d.reasoning,
+      generated_at: d.generated_at,
     };
   }
   return d;
 }
 
 function flushHeaderPriceTick() {
-  const lp = document.getElementById("livePrice");
+  const lp = document.getElementById("btc-price");
   if (!lp || lastBufferedPrice === null) return;
   const { n, mkt } = lastBufferedPrice;
   const prev = priceAtLastSecondTick;
@@ -734,11 +795,7 @@ function startCockpitHeartbeat() {
 }
 
 function connectBitvavoPriceStream() {
-  if (wsRef) {
-    try {
-      wsRef.close();
-    } catch (_) {}
-  }
+  if (wsRef && [WebSocket.OPEN, WebSocket.CONNECTING].includes(wsRef.readyState)) return;
   priceAtLastSecondTick = null;
   lastBufferedPrice = null;
   const mkt = String(selectedMarket || "BTC-EUR").toUpperCase();
@@ -1019,7 +1076,7 @@ async function refreshSentiment() {
     setClassText(".js-sentiment-confidence", conf.toFixed(3));
     const pct = Math.max(0, Math.min(100, ((score + 1) / 2) * 100));
     document.querySelectorAll(".js-sentiment-bar").forEach(el => el.style.width = `${pct}%`);
-    window.botMetrics.sentiment = { score, confidence, barPct: pct };
+    window.botMetrics.sentiment = { score, confidence: conf, barPct: pct };
     setLiveUpdatedAt();
   } catch (err) {
     console.warn("[sentiment] Fetch failed:", err);
@@ -1067,9 +1124,11 @@ async function refreshStorageHealth() {
 }
 
 function toEpochSeconds(dateText) {
-  const ms = new Date(dateText).getTime();
+  const dtStr = String(dateText).endsWith('Z') || String(dateText).includes('+') ? dateText : String(dateText) + 'Z';
+  const ms = new Date(dtStr).getTime();
   if (!Number.isFinite(ms) || ms <= 0) return null;
-  return Math.floor(ms / 1000);
+  // Forceer +2 uur (7200 seconden) offset voor de grafiek weergave zoals gevraagd
+  return Math.floor(ms / 1000) + 7200;
 }
 
 function createLineSeries(chart, options) {
@@ -1231,11 +1290,13 @@ function ensureChartAndSeries(host) {
         rightOffset: 20,
         timeVisible: true,
         secondsVisible: false,
+        barSpacing: 16,
         tickMarkFormatter: (time) => {
           try {
+            // Epoch is al handmatig met 7200s verhoogd (Time-Force)
             const dt = new Date(Number(time) * 1000);
-            const hh = String(dt.getHours()).padStart(2, "0");
-            const mm = String(dt.getMinutes()).padStart(2, "0");
+            const hh = String(dt.getUTCHours()).padStart(2, "0");
+            const mm = String(dt.getUTCMinutes()).padStart(2, "0");
             return `${hh}:${mm}`;
           } catch (_err) {
             return "";
@@ -1287,7 +1348,7 @@ function resizePriceChart(host) {
   priceChart.applyOptions({ width: w, height: h });
 }
 
-function buildOrUpdateChart(labels, prices, markers, whaleDangerZone = null) {
+function buildOrUpdateChart(labels, prices, markers, whaleDangerZone = null, isNewPair = false) {
   // Tab-Isolatie: Render overslaan als terminal niet zichtbaar is
   if (activeTab !== "terminal") return;
 
@@ -1310,6 +1371,16 @@ function buildOrUpdateChart(labels, prices, markers, whaleDangerZone = null) {
     return;
   }
   resizePriceChart(host);
+
+  let currentRange = null;
+  let isAtEnd = true;
+  if (priceChart && rawChartLineData.length > 0 && !isNewPair) {
+    currentRange = priceChart.timeScale().getVisibleLogicalRange();
+    if (currentRange) {
+      isAtEnd = currentRange.to >= rawChartLineData.length - 3;
+    }
+  }
+
   const lineData = labels
     .map((d, i) => ({ time: toEpochSeconds(d), value: Number(prices[i]) }))
     .filter((p) => p.time !== null && Number.isFinite(p.value))
@@ -1378,7 +1449,34 @@ function buildOrUpdateChart(labels, prices, markers, whaleDangerZone = null) {
       }
     }
   }
-  priceChart.timeScale().fitContent();
+
+  // Zoom persistentie & Scroll-beveiliging
+  if (isNewPair || !currentRange) {
+    // Forceer een standaard inzoom-niveau (laatste 120 candles) in plaats van alles plat te drukken
+    const totalBars = lineData.length;
+    if (totalBars > 120) {
+      priceChart.timeScale().setVisibleLogicalRange({
+        from: totalBars - 120,
+        to: totalBars + 2
+      });
+    } else {
+      priceChart.timeScale().fitContent();
+    }
+  } else {
+    if (!isAtEnd) {
+      // Gebruiker is terug aan het scrollen, behoud de exacte viewport (Geen auto-shift)
+      priceChart.timeScale().setVisibleLogicalRange(currentRange);
+    } else {
+      // Gebruiker is aan het einde, schuif viewport soepel mee met behoud van het zoomniveau
+      const rangeWidth = currentRange.to - currentRange.from;
+      const newMax = lineData.length;
+      priceChart.timeScale().setVisibleLogicalRange({
+        from: newMax - rangeWidth,
+        to: newMax + 2
+      });
+    }
+  }
+
   priceChart.applyOptions({
     timeScale: {
       rightOffset: 20,
@@ -1441,7 +1539,9 @@ async function refreshChart() {
 async function updateChart(newPair) {
   // Tab-Isolatie & Headless check
   if (headlessMode || activeTab !== "terminal") return;
-  selectedChartPair = String(newPair || selectedMarket || "BTC-EUR").toUpperCase();
+  const newChartPair = String(newPair || selectedMarket || "BTC-EUR").toUpperCase();
+  const isNewPair = (newChartPair !== selectedChartPair) || !priceChart;
+  selectedChartPair = newChartPair;
   const predictionEl = document.getElementById("prediction");
   const skel = document.getElementById("priceChartSkeleton");
   if (skel) skel.classList.add("is-visible");
@@ -1449,19 +1549,6 @@ async function updateChart(newPair) {
     predictionEl.textContent = `Laden van ${selectedChartPair} data...`;
   }
   try {
-    // Senior Fix: Forceer Refresh - Grafiek instantie verwijderen en container volledig leegmaken
-    const host = document.getElementById("priceChart");
-    if (host) {
-      if (priceChart && typeof priceChart.remove === 'function') {
-        priceChart.remove();
-      }
-      priceChart = null;
-      priceSeries = null;
-      markerSeries = null;
-      whaleDangerPriceLineHandle = null;
-      priceSeriesIsCandle = false;
-      host.innerHTML = "";
-    }
     const res = await fetch(
       `/api/v1/history?pair=${encodeURIComponent(selectedChartPair)}&lookback_days=180&interval=${encodeURIComponent(chartInterval || CHART_CANDLE_INTERVAL)}`
     );
@@ -1479,7 +1566,8 @@ async function updateChart(newPair) {
       data.labels || [],
       data.prices || [],
       data.markers || [],
-      data.whale_danger_zone || null
+      data.whale_danger_zone || null,
+      isNewPair
     );
   } catch (_err) {
     if (predictionEl) predictionEl.textContent = `Laden van ${selectedChartPair} data mislukt.`;
@@ -1657,7 +1745,7 @@ async function refreshNewsInsights() {
     title: i.title || i.text,
     summary: i.summary || "",
     url: i.url || "",
-    source: i.source,
+    source: (typeof i.source === "object" ? i.source.name : i.source) || "News",
     ts: i.published_at,
     published_at: i.published_at,
     ticker_tag: i.coin,
@@ -1694,7 +1782,7 @@ async function refreshNewsInsights() {
     affected_tickers: [ln.symbol || "MKT"],
     is_social_stub: true,
   }));
-  renderNewsStream(window.botMetrics.domIds.terminalNewsStream, mapped);
+  renderNewsStream("terminalNewsStream", mapped);
   renderIntelligenceTicker([...scannerTickerItems, ...socialTickerItems, ...mapped]);
   renderTickerTape(items);
 }
@@ -1722,7 +1810,7 @@ function renderTickerTrack(trackId, items) {
 }
 
 function renderTickerTape(items) {
-  renderTickerTrack(window.botMetrics.domIds.tickerTrack, items);
+  renderTickerTrack("tickerTrack", items);
 }
 
 function applyActivityResponse(data) {
@@ -1985,8 +2073,13 @@ function stopSystemStatsSocket() {
     systemStatsReconnectTimer = null;
   }
   if (systemStatsSocket) {
+    const sock = systemStatsSocket;
     try {
-      systemStatsSocket.close();
+      if (sock.readyState === WebSocket.OPEN) {
+        sock.close();
+      } else if (sock.readyState === WebSocket.CONNECTING) {
+        sock.onopen = () => sock.close();
+      }
     } catch (_) {}
     systemStatsSocket = null;
   }
@@ -2019,29 +2112,6 @@ function connectSystemStatsSocket() {
       systemStatsSocket.close();
     } catch (_) {}
   };
-}
-
-function upsertChart(current, canvasId, config) {
-  const el = document.getElementById(canvasId);
-  if (!el) return current;
-
-  // Voorkom CPU-verspilling: render niet als het canvas (of de tab) verborgen is (display: none)
-  if (el.offsetParent === null) {
-    return current;
-  }
-
-  const normalizedConfig = {
-    ...config,
-    options: highContrastChartOptions(config.options || {}),
-  };
-  if (!current) {
-    const ctx = el.getContext("2d");
-    return new Chart(ctx, normalizedConfig);
-  }
-  current.data = normalizedConfig.data;
-  current.options = normalizedConfig.options;
-  current.update();
-  return current;
 }
 
 const BRAIN_NEON_LOSS_POLICY = "#00f8ff";
@@ -2213,9 +2283,14 @@ function paintBrainTabCharts(monitorData, fiData) {
   if (calibrationEl) {
     const mk = String(fi.market || selectedMarket || selectedChartPair || "BTC-EUR").toUpperCase();
     const calibrating = Boolean(fi.calibrating) || steps < 10 || !hasFeatures;
-    calibrationEl.textContent = calibrating
-      ? `Bezig met kalibreren... (${mk})`
-      : `Strategy actief voor ${mk} (Global steps: ${steps}).`;
+    const isTraining = Boolean(stats.is_training_active);
+    const trainingBadge = isTraining 
+        ? `<span style="color:#39ff14; text-shadow: 0 0 5px #39ff14; margin-left:8px;">[TRAINING: ACTIVE]</span>` 
+        : `<span style="color:#888; margin-left:8px;" title="Zet RL_BACKGROUND_TRAIN=1 in je vault om continue te leren">[TRAINING: PAUSED]</span>`;
+        
+    calibrationEl.innerHTML = calibrating
+      ? `Bezig met kalibreren... (${mk}) ${trainingBadge}`
+      : `Strategy actief voor ${mk} ${trainingBadge}`;
   }
   const socialStrip = document.getElementById("socialBuzzStrip");
   if (socialStrip) {
@@ -2283,10 +2358,10 @@ function paintBrainTabCharts(monitorData, fiData) {
       },
     },
   };
-  upsertChart("brainTabTrainingLossChart", lossCfg);
+  if (window.ChartUtils) window.ChartUtils.upsertChart("brainTabTrainingLossChart", lossCfg);
 
   const featCfg = featureWeightsGroupedBarConfig(mergedFw, rawObs, fi);
-  upsertChart("brainTabFeatureChart", featCfg);
+  if (window.ChartUtils) window.ChartUtils.upsertChart("brainTabFeatureChart", featCfg);
 
   const normRewards =
     Array.isArray(monitor.reward_normalized) && monitor.reward_normalized.length
@@ -2333,25 +2408,30 @@ function paintBrainTabCharts(monitorData, fiData) {
       },
     },
   };
-  upsertChart("brainTabRewardChart", rewardCfg);
+  if (window.ChartUtils) window.ChartUtils.upsertChart("brainTabRewardChart", rewardCfg);
 
   const entropySeries = Array.isArray(monitor.policy_entropy) ? monitor.policy_entropy : [];
   const lastEntropy = entropySeries.length ? entropySeries[entropySeries.length - 1] : null;
-  const lrEl = document.getElementById("brainTabStatLR");
-  const entEl = document.getElementById("brainTabStatEntropy");
-  const exEl = document.getElementById("brainTabStatExplore");
-  const discEl = document.getElementById("brainTabStatDiscount");
-  const batchEl = document.getElementById("brainTabStatBatch");
-  const stEl = document.getElementById("brainTabStatSteps");
-  if (lrEl) lrEl.textContent = Math.max(BRAIN_MIN_LR, Number(stats.learning_rate || 0)).toExponential(2);
-  if (entEl) {
-    entEl.textContent =
-      lastEntropy !== null && Number.isFinite(Number(lastEntropy)) ? Number(lastEntropy).toFixed(4) : "—";
-  }
-  if (exEl) exEl.textContent = `${Math.max(BRAIN_MIN_EPS_PCT, Number(stats.exploration_rate_pct || 0)).toFixed(2)}%`;
-  if (discEl) discEl.textContent = Number(stats.discount_factor || 0.99).toFixed(3);
-  if (batchEl) batchEl.textContent = String(Number(stats.batch_size || 128).toFixed(0));
-  if (stEl) stEl.textContent = Number(stats.global_step_count || 0).toLocaleString();
+  
+  const flashText = (elId, text) => {
+    const el = document.getElementById(elId);
+    if (!el) return;
+    const old = el.getAttribute("data-val");
+    if (old !== null && old !== text) {
+      el.style.color = "#39ff14";
+      el.style.textShadow = "0 0 10px #39ff14";
+      setTimeout(() => { el.style.color = ""; el.style.textShadow = ""; }, 1500);
+    }
+    el.textContent = text;
+    el.setAttribute("data-val", text);
+  };
+
+  flashText("brainTabStatLR", Math.max(BRAIN_MIN_LR, Number(stats.learning_rate || 0)).toExponential(2));
+  flashText("brainTabStatEntropy", lastEntropy !== null && Number.isFinite(Number(lastEntropy)) ? Number(lastEntropy).toFixed(4) : "—");
+  flashText("brainTabStatExplore", `${Math.max(BRAIN_MIN_EPS_PCT, Number(stats.exploration_rate_pct || 0)).toFixed(2)}%`);
+  flashText("brainTabStatDiscount", Number(stats.discount_factor || 0.99).toFixed(3));
+  flashText("brainTabStatBatch", String(Number(stats.batch_size || 128).toFixed(0)));
+  flashText("brainTabStatSteps", Number(stats.global_step_count || 0).toLocaleString());
 }
 
 function applyBrainDataPayload(raw) {
@@ -2366,6 +2446,24 @@ function applyBrainDataPayload(raw) {
   data = normalizeBrainWsPayload(data);
   if (!data || data.__ws === "hb") return;
   if (data.topic !== "brain_stats" && data.topic !== "brain_data") return;
+  
+  if (data.generated_at) {
+      window.__lastEngineTickIso = data.generated_at;
+      updateLastScanLabel();
+  }
+  if (data.reasoning) {
+      const net = (data.training_monitor && data.training_monitor.network_logs) ? data.training_monitor.network_logs : {};
+      const latestKl = (net.approx_kl || []).slice(-1)[0];
+      const latestValueLoss = (net.value_loss || []).slice(-1)[0];
+      const reasoningText = data.reasoning + 
+        (latestKl !== undefined || latestValueLoss !== undefined
+          ? `\nNetwork health: approx_kl=${Number(latestKl || 0).toFixed(6)}, value_loss=${Number(latestValueLoss || 0).toFixed(6)}.`
+          : "");
+      const rb = document.getElementById("brainReasoningBox");
+      window.botMetrics.reasoningText = reasoningText;
+      if (rb) rb.innerHTML = formatBrainReasoningHtml(reasoningText);
+  }
+
   paintBrainTabCharts(data.training_monitor, {
     feature_weights: data.feature_weights || {},
     rl_observation: data.rl_observation || {},
@@ -2382,8 +2480,13 @@ function stopBrainStatsSocket() {
     brainStatsReconnectTimer = null;
   }
   if (brainStatsSocket) {
+    const sock = brainStatsSocket;
     try {
-      brainStatsSocket.close();
+      if (sock.readyState === WebSocket.OPEN) {
+        sock.close();
+      } else if (sock.readyState === WebSocket.CONNECTING) {
+        sock.onopen = () => sock.close();
+      }
     } catch (_) {}
     brainStatsSocket = null;
   }
@@ -2395,6 +2498,10 @@ function connectBrainStatsSocket() {
   const wsUrl = `${protocol}://${window.location.host}/ws/brain-stats`;
   brainStatsSocket = new WebSocket(wsUrl);
   brainStatsSocket.onmessage = (event) => {
+    if (document.hidden || activeTab !== "aibrain") {
+      latestBrainStatsPayload = event.data;
+      return;
+    }
     try {
       const data = normalizeBrainWsPayload(event.data);
       if (!data) return;
@@ -2449,8 +2556,9 @@ async function refreshHistoryTrades() {
   const body = document.getElementById("cockpitLedgerBody");
   if (!body) return;
   try {
+    // Expliciet ophalen van ALLE markten, ongeacht de geselecteerde grafiek
     const res = await fetch(
-      `/api/v1/trades?limit=${LEDGER_ROUNDTRIP_FETCH_LIMIT}&view=roundtrip`
+      `/api/v1/trades?limit=${LEDGER_ROUNDTRIP_FETCH_LIMIT}&view=roundtrip&market=all`
     );
     const data = await res.json();
     if (!res.ok) {
@@ -2532,12 +2640,18 @@ async function refreshLedgerTab() {
  * en canvas overlaps te voorkomen tijdens tab-wissels.
  */
 function clearAllCharts() {
-  const destroyChart = (chart, canvasId) => {
-    if (chart && typeof chart.destroy === 'function') {
-      chart.destroy();
-    }
-    // DOM Cleanup: Verwijder het element fysiek om context-ghosting te voorkomen
-    if (canvasId) {
+  if (window.ChartUtils && typeof window.ChartUtils.clearAllCharts === 'function') {
+      window.ChartUtils.clearAllCharts();
+  }
+
+  const chartIds = [
+      "equityCurveChart", "winLossChart", "sentimentOutcomeChart",
+      "brainTabTrainingLossChart", "brainTabRewardChart", "brainTabFeatureChart",
+      "brainBenchmarkChart", "brainCorrelationChart", "brainEpisodeChart",
+      "brainEntropyChart", "brainLossChart", "brainNewsLagChart",
+      "terminalBenchmarkChart", "terminalCorrelationChart"
+  ];
+  chartIds.forEach(canvasId => {
       const oldCanvas = document.getElementById(canvasId);
       if (oldCanvas && oldCanvas.parentElement) {
         const wrapper = oldCanvas.parentElement;
@@ -2547,22 +2661,7 @@ function clearAllCharts() {
         oldCanvas.remove();
         wrapper.appendChild(newCanvas);
       }
-    }
-    return null;
-  };
-
-  equityCurveChart = destroyChart(equityCurveChart, "equityCurveChart");
-  winLossChart = destroyChart(winLossChart, "winLossChart");
-  sentimentOutcomeChart = destroyChart(sentimentOutcomeChart, "sentimentOutcomeChart");
-  brainTabTrainingLossChart = destroyChart(brainTabTrainingLossChart, "brainTabTrainingLossChart");
-  brainTabRewardChart = destroyChart(brainTabRewardChart, "brainTabRewardChart");
-  brainTabFeatureChart = destroyChart(brainTabFeatureChart, "brainTabFeatureChart");
-  brainBenchmarkChart = destroyChart(brainBenchmarkChart, "brainBenchmarkChart");
-  brainCorrelationChart = destroyChart(brainCorrelationChart, "brainCorrelationChart");
-  brainEpisodeChart = destroyChart(brainEpisodeChart, "brainEpisodeChart");
-  brainEntropyChart = destroyChart(brainEntropyChart, "brainEntropyChart");
-  brainLossChart = destroyChart(brainLossChart, "brainLossChart");
-  brainNewsLagChart = destroyChart(brainNewsLagChart, "brainNewsLagChart");
+  });
 
   // Lightweight charts cleanup
   const priceHost = document.getElementById("priceChart");
@@ -2591,8 +2690,10 @@ async function refreshSystemLogsSnapshot() {
     const res = await fetch("/api/v1/system/logs?limit=200");
     const data = await res.json();
     if (!res.ok) return;
-    const consoleEl = document.getElementById("systemLogConsole");
-    consoleEl.innerHTML = "";
+    let consoleEl = document.getElementById("systemLogConsole");
+    if (consoleEl) {
+        consoleEl.innerHTML = "";
+    }
     for (const line of data.lines || []) {
       appendSystemLogLine(line);
     }
@@ -2646,7 +2747,14 @@ function stopSystemLogsSocket() {
     systemLogsReconnectTimer = null;
   }
   if (systemLogsSocket) {
-    try { systemLogsSocket.close(); } catch (_) {}
+    const sock = systemLogsSocket;
+    try {
+      if (sock.readyState === WebSocket.OPEN) {
+        sock.close();
+      } else if (sock.readyState === WebSocket.CONNECTING) {
+        sock.onopen = () => sock.close();
+      }
+    } catch (_) {}
     systemLogsSocket = null;
   }
 }
@@ -2682,6 +2790,11 @@ async function refreshBrainLab() {
     const rb = document.getElementById("brainReasoningBox");
     window.botMetrics.reasoningText = reasoningText;
     if (rb) rb.innerHTML = formatBrainReasoningHtml(reasoningText);
+
+    if (reasoningData && reasoningData.generated_at) {
+        window.__lastEngineTickIso = reasoningData.generated_at;
+        updateLastScanLabel();
+    }
 
     const fw = withAmbientSignalWeights(fiData.feature_weights || {}, fiData.rl_observation || {});
     const featureChartConfig = featureWeightsGroupedBarConfig(fw, fiData.rl_observation || {}, {
@@ -2732,7 +2845,7 @@ async function refreshBrainLab() {
       },
     };
     if (document.getElementById("brainRewardChart")) {
-      upsertChart(
+      if (window.ChartUtils) window.ChartUtils.upsertChart(
         "brainRewardChart",
         rewardCfg
       );
@@ -2754,7 +2867,7 @@ async function refreshBrainLab() {
       options: lineOpts,
     };
     if (document.getElementById("brainNewsLagChart")) {
-      upsertChart(
+      if (window.ChartUtils) window.ChartUtils.upsertChart(
         "brainNewsLagChart",
         lagCfg
       );
@@ -2776,7 +2889,7 @@ async function refreshBrainLab() {
       options: lineOpts,
     };
     if (document.getElementById("brainEpisodeChart")) {
-      upsertChart(
+      if (window.ChartUtils) window.ChartUtils.upsertChart(
         "brainEpisodeChart",
         epCfg
       );
@@ -2798,7 +2911,7 @@ async function refreshBrainLab() {
       options: lineOpts,
     };
     if (document.getElementById("brainEntropyChart")) {
-      upsertChart(
+      if (window.ChartUtils) window.ChartUtils.upsertChart(
         "brainEntropyChart",
         entCfg
       );
@@ -2821,23 +2934,14 @@ async function refreshBrainLab() {
       options: lineOpts,
     };
     if (document.getElementById("brainLossChart")) {
-      upsertChart("brainLossChart", lossCfg);
+      if (window.ChartUtils) window.ChartUtils.upsertChart("brainLossChart", lossCfg);
     }
 
     const stats = monitorData.stats || {};
-    const lrText = Number(stats.learning_rate || 0).toExponential(2);
-    const stepText = Number(stats.global_step_count || 0).toLocaleString();
-    const exText = `${Number(stats.exploration_rate_pct || 0).toFixed(2)}%`;
-    const lrEl = document.getElementById("brainTabStatLR");
-    if (lrEl) lrEl.textContent = lrText;
-    const scEl = document.getElementById("brainTabStatSteps");
-    if (scEl) scEl.textContent = stepText;
-    const exEl = document.getElementById("brainTabStatExplore");
-    if (exEl) exEl.textContent = exText;
     window.botMetrics.trainingStats = {
-      learningRate: lrText,
-      steps: stepText,
-      exploration: exText,
+      learningRate: Number(stats.learning_rate || 0).toExponential(2),
+      steps: Number(stats.global_step_count || 0).toLocaleString(),
+      exploration: `${Number(stats.exploration_rate_pct || 0).toFixed(2)}%`,
     };
 
     const benchmark = monitorData.benchmark || {};
@@ -2859,24 +2963,18 @@ async function refreshBrainLab() {
       },
       options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } },
     };
-    upsertChart(
-      window.botMetrics.domIds.brainBenchmarkChart,
-      benchCfg
-    );
-    if (cockpitMetricEl("terminalBenchmarkChart")) {
-      terminalBenchmarkChart = upsertChart(
-        terminalBenchmarkChart,
-        window.botMetrics.domIds.terminalBenchmarkChart,
-        benchCfg
-      );
+    if (window.ChartUtils) {
+        window.ChartUtils.upsertChart("brainBenchmarkChart", benchCfg);
+        window.ChartUtils.upsertChart("terminalBenchmarkChart", benchCfg);
     }
+
     const benchRows =
       `<tr><td>RL Agent</td><td>${Number(benchmark.rl_pnl_pct || 0).toFixed(3)}%</td></tr>` +
       `<tr><td>Buy & Hold</td><td>${Number(benchmark.buy_hold_pnl_pct || 0).toFixed(3)}%</td></tr>` +
       `<tr><td>Alpha</td><td>${Number(benchmark.alpha_pct || 0).toFixed(3)}%</td></tr>`;
-    const body = cockpitMetricEl("brainBenchmarkBody");
+    const body = document.getElementById("brainBenchmarkBody");
     if (body) body.innerHTML = benchRows;
-    const tBenchBody = cockpitMetricEl("terminalBenchmarkBody");
+    const tBenchBody = document.getElementById("terminalBenchmarkBody");
     if (tBenchBody) tBenchBody.innerHTML = benchRows;
 
     const corr = monitorData.correlation || {};
@@ -2902,8 +3000,10 @@ async function refreshBrainLab() {
       },
       options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } },
     };
-    upsertChart("brainCorrelationChart", corrCfg);
-    upsertChart("terminalCorrelationChart", corrCfg);
+    if (window.ChartUtils) {
+        window.ChartUtils.upsertChart("brainCorrelationChart", corrCfg);
+        window.ChartUtils.upsertChart("terminalCorrelationChart", corrCfg);
+    }
     setClassText(".js-corr-value", corrValue.toFixed(4));
     setClassText(".js-news-weight", newsWeight.toFixed(4));
     setClassText(".js-price-weight", priceWeight.toFixed(4));
@@ -2992,19 +3092,18 @@ function renderLedgerPerformanceSummary(data) {
       avg_hold_hours: 0,
     };
   }
-  const eurEl = document.getElementById("ledgerPerfPnlEur");
+  const eurEl = document.getElementById("ledgerPerfPnlEur") || document.getElementById("pnl-total");
   const pctEl = document.getElementById("ledgerPerfPnlPct");
   const wrEl = document.getElementById("ledgerPerfWinRate");
-  const clEl = document.getElementById("ledgerPerfClosed");
+  const clEl = document.getElementById("ledgerPerfClosed") || document.getElementById("trade-count");
   const mwEl = document.getElementById("ledgerPerfMaxWin");
   const mlEl = document.getElementById("ledgerPerfMaxLoss");
   const hdEl = document.getElementById("ledgerPerfHold");
-  if (!eurEl) return;
   const pnlEur = Number(ps.total_pnl_eur ?? data.wallet?.realized_pnl_eur ?? 0);
   const pnlPct = Number(ps.total_pnl_pct ?? data.wallet?.realized_pnl_pct ?? 0);
   const sign = pnlEur >= 0 ? "+" : "";
-  eurEl.textContent = `${sign}€${Math.abs(pnlEur).toLocaleString("nl-NL", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-  pctEl.textContent = `(${sign}${pnlPct.toFixed(2)}%)`;
+  if (eurEl) eurEl.textContent = `${sign}€${Math.abs(pnlEur).toLocaleString("nl-NL", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  if (pctEl) pctEl.textContent = `(${sign}${pnlPct.toFixed(2)}%)`;
   const wins = Number(ps.wins ?? wl.wins ?? 0);
   const losses = Number(ps.losses ?? wl.losses ?? 0);
   const closed = Number(ps.closed_trades ?? wins + losses);
@@ -3035,73 +3134,79 @@ async function refreshPerformanceAnalytics() {
     const equity = data.equity_curve || [];
     const equityLabels = equity.map((r) => (r.ts || "").slice(11, 19));
     const equityValues = equity.map((r) => Number(r.equity || 0));
-    upsertChart("equityCurveChart", {
-      type: "line",
-      data: {
-        labels: equityLabels,
-        datasets: [
-          {
-            label: "Equity",
-            data: equityValues,
-            borderColor: "#39ff14",
-            borderWidth: 3,
-            pointRadius: 0,
+    if (window.ChartUtils) {
+        window.ChartUtils.upsertChart("equityCurveChart", {
+          type: "line",
+          data: {
+            labels: equityLabels,
+            datasets: [
+              {
+                label: "Equity",
+                data: equityValues,
+                borderColor: "#39ff14",
+                borderWidth: 3,
+                pointRadius: 0,
+              },
+            ],
           },
-        ],
-      },
-      options: noirLedgerLineBarOptions(),
-    });
+          options: noirLedgerLineBarOptions(),
+        });
+    }
 
     const wl = data.analytics?.win_loss_ratio || {};
-    upsertChart("winLossChart", {
-      type: "doughnut",
-      data: {
-        labels: ["Wins", "Losses"],
-        datasets: [
-          {
-            data: [Number(wl.wins || 0), Number(wl.losses || 0)],
-            backgroundColor: ["#39ff14", "#ff3131"],
+    if (window.ChartUtils) {
+        window.ChartUtils.upsertChart("winLossChart", {
+          type: "doughnut",
+          data: {
+            labels: ["Wins", "Losses"],
+            datasets: [
+              {
+                data: [Number(wl.wins || 0), Number(wl.losses || 0)],
+                backgroundColor: ["#39ff14", "#ff3131"],
+              },
+            ],
           },
-        ],
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: {
-          legend: {
-            display: true,
-            position: "bottom",
-            labels: {
-              color: CHART_AXIS_WHITE,
-              font: { size: 13, weight: "700", family: "'JetBrains Mono', ui-monospace, monospace" },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: {
+                display: true,
+                position: "bottom",
+                labels: {
+                  color: CHART_AXIS_WHITE,
+                  font: { size: 13, weight: "700", family: "'JetBrains Mono', ui-monospace, monospace" },
+                },
+              },
+              tooltip: {
+                backgroundColor: "#000000",
+                titleColor: CHART_AXIS_WHITE,
+                bodyColor: CHART_AXIS_WHITE,
+                borderColor: CHART_AXIS_WHITE,
+                borderWidth: 1,
+              },
             },
           },
-          tooltip: {
-            backgroundColor: "#000000",
-            titleColor: CHART_AXIS_WHITE,
-            bodyColor: CHART_AXIS_WHITE,
-            borderColor: CHART_AXIS_WHITE,
-            borderWidth: 1,
-          },
-        },
-      },
-    });
+        });
+    }
 
     const svo = data.analytics?.sentiment_vs_outcome || [];
-    upsertChart("sentimentOutcomeChart", {
-      type: "bar",
-      data: {
-        labels: svo.map((r) => r.bucket),
-        datasets: [
-          {
-            label: "Avg PnL EUR",
-            data: svo.map((r) => Number(r.avg_pnl_eur || 0)),
-            backgroundColor: ["#39ff14", "#f8d04f", "#ff3131"],
+    if (window.ChartUtils) {
+        window.ChartUtils.upsertChart("sentimentOutcomeChart", {
+          type: "bar",
+          data: {
+            labels: svo.map((r) => r.bucket),
+            datasets: [
+              {
+                label: "Avg PnL EUR",
+                data: svo.map((r) => Number(r.avg_pnl_eur || 0)),
+                backgroundColor: ["#39ff14", "#f8d04f", "#ff3131"],
+              },
+            ],
           },
-        ],
-      },
-      options: noirLedgerLineBarOptions(),
-    });
+          options: noirLedgerLineBarOptions(),
+        });
+    }
 
     renderLedgerPerformanceSummary(data);
     renderTradeHistory(data.recent_actions || []);
@@ -3144,7 +3249,7 @@ function renderTradeHistory(trades) {
 
 async function refreshTradesTable() {
   try {
-    const res = await fetch(`/api/v1/trades?limit=${SIDEBAR_TRADES_FETCH_LIMIT}&view=events`);
+    const res = await fetch(`/api/v1/trades?limit=${SIDEBAR_TRADES_FETCH_LIMIT}&view=events&market=all`);
     const data = await res.json();
     if (!res.ok) return;
     const rows = (data.trades || []).slice(0, 5).map((t) => ({
@@ -3174,14 +3279,31 @@ async function postBotAction(path) {
 
 async function runPaperTrade() {
   const pair = String(selectedMarket || document.getElementById("marketSelect")?.value || "BTC-EUR").toUpperCase();
+  const btn = document.getElementById("paperBtn");
+  const originalText = btn ? btn.textContent : "Paper";
+  
+  if (btn) {
+      btn.textContent = "Bezig...";
+      btn.disabled = true;
+  }
+  
   try {
     const res = await fetch(`/paper/run?ticker=${encodeURIComponent(pair)}`, { method: "POST" });
     if (!res.ok) {
       console.warn("[paper/run] Server returned error", res.status);
+      if (btn) { btn.textContent = "Fout!"; setTimeout(() => { btn.textContent = originalText; btn.disabled = false; }, 2000); }
       return;
     }
     const data = await res.json();
-    document.getElementById("prediction").textContent = JSON.stringify(data, null, 2);
+    const pEl = document.getElementById("prediction");
+    if (pEl) {
+        if (data.status === "command_sent") {
+            pEl.innerHTML = `<span style="color:#39ff14">${data.message}</span>`;
+        } else {
+            pEl.textContent = JSON.stringify(data, null, 2);
+        }
+    }
+    
     await refreshSentiment();
     await refreshNewsInsights();
     await refreshActivity();
@@ -3189,38 +3311,50 @@ async function runPaperTrade() {
     await refreshHistoryTrades();
     await refreshTradesTable();
     await refreshPerformanceAnalytics();
+    await refreshBrainLab();
+    
+    if (btn) {
+        btn.textContent = "Succes!";
+        setTimeout(() => { btn.textContent = originalText; btn.disabled = false; }, 2000);
+    }
   } catch (err) {
     console.warn("[paper/run] Fetch failed:", err);
     const pEl = document.getElementById("prediction");
     if (pEl) pEl.textContent = "Fout bij uitvoeren paper trade (Network error).";
+    if (btn) {
+        btn.textContent = "Fout!";
+        setTimeout(() => { btn.textContent = originalText; btn.disabled = false; }, 2000);
+    }
   }
 }
 
-document.getElementById("ledgerFooterToggle")?.addEventListener("click", () => {
-  const footer = document.getElementById("liveLedgerFooter");
-  const icon = document.getElementById("ledgerFooterIcon");
-  if (!footer) return;
-  footer.classList.toggle("is-collapsed");
-  const isCol = footer.classList.contains("is-collapsed");
-  if (icon) icon.textContent = isCol ? "▲ Uitklappen" : "▼ Inklappen";
-});
+document.addEventListener("DOMContentLoaded", () => {
+  document.getElementById("ledgerFooterToggle")?.addEventListener("click", () => {
+    const footer = document.getElementById("liveLedgerFooter");
+    const icon = document.getElementById("ledgerFooterIcon");
+    if (!footer) return;
+    footer.classList.toggle("is-collapsed");
+    const isCol = footer.classList.contains("is-collapsed");
+    if (icon) icon.textContent = isCol ? "▲ Uitklappen" : "▼ Inklappen";
+  });
 
-document.getElementById("paperBtn").addEventListener("click", runPaperTrade);
-document.getElementById("marketSelect").addEventListener("change", selectMarketFromDropdown);
-document.getElementById("refreshMarketsBtn").addEventListener("click", refreshMarkets);
-document.getElementById("pauseBtn").addEventListener("click", () => postBotAction("/bot/pause"));
-document.getElementById("resumeBtn").addEventListener("click", () => postBotAction("/bot/resume"));
-document.getElementById("panicBtn").addEventListener("click", () => postBotAction("/bot/panic"));
-document.getElementById("newsModalClose").addEventListener("click", closeNewsModal);
-document.getElementById("btn-terminal")?.addEventListener("click", () => switchTab("terminal"));
-document.getElementById("btn-aibrain")?.addEventListener("click", () => switchTab("aibrain"));
-document.getElementById("btn-ledger")?.addEventListener("click", () => switchTab("ledger"));
-document.getElementById("btn-hardware")?.addEventListener("click", () => switchTab("hardware"));
-document.getElementById("systemLogPauseBtn").addEventListener("click", toggleSystemLogPause);
-document.getElementById("systemLogClearBtn").addEventListener("click", clearSystemLogConsole);
-document.getElementById("systemLogMuteBtn").addEventListener("click", toggleSystemLogMute);
-document.getElementById("newsModal").addEventListener("click", (event) => {
-  if (event.target.id === "newsModal") closeNewsModal();
+  document.getElementById("paperBtn")?.addEventListener("click", runPaperTrade);
+  document.getElementById("marketSelect")?.addEventListener("change", selectMarketFromDropdown);
+  document.getElementById("refreshMarketsBtn")?.addEventListener("click", refreshMarkets);
+  document.getElementById("pauseBtn")?.addEventListener("click", () => postBotAction("/bot/pause"));
+  document.getElementById("resumeBtn")?.addEventListener("click", () => postBotAction("/bot/resume"));
+  document.getElementById("panicBtn")?.addEventListener("click", () => postBotAction("/bot/panic"));
+  document.getElementById("newsModalClose")?.addEventListener("click", closeNewsModal);
+  document.getElementById("btn-terminal")?.addEventListener("click", () => switchTab("terminal"));
+  document.getElementById("btn-aibrain")?.addEventListener("click", () => switchTab("aibrain"));
+  document.getElementById("btn-ledger")?.addEventListener("click", () => switchTab("ledger"));
+  document.getElementById("btn-hardware")?.addEventListener("click", () => switchTab("hardware"));
+  document.getElementById("systemLogPauseBtn")?.addEventListener("click", toggleSystemLogPause);
+  document.getElementById("systemLogClearBtn")?.addEventListener("click", clearSystemLogConsole);
+  document.getElementById("systemLogMuteBtn")?.addEventListener("click", toggleSystemLogMute);
+  document.getElementById("newsModal")?.addEventListener("click", (event) => {
+    if (event.target.id === "newsModal") closeNewsModal();
+  });
 });
 
 window.setChartInterval = async function setChartInterval(next) {
@@ -3240,7 +3374,7 @@ window.setChartInterval = async function setChartInterval(next) {
  * Fase 3: zware endpoints (trades/ledger + performance analytics).
  * Fase 4: chart + nieuws + brain + WebSockets.
  */
-async function runSequencedStartup() {
+window.runSequencedStartup = async function runSequencedStartup() {
   updateSystemPauseButton();
   updateSystemMuteButton();
   cockpitLedgerStatusParts.markets = "Markten: ophalen…";
@@ -3280,13 +3414,15 @@ async function runSequencedStartup() {
   switchTab("terminal");
 }
 
-(async () => {
-  try {
-    await runSequencedStartup();
-  } catch (err) {
-    console.error("[startup] sequenced loader failed:", err);
-  }
-})();
+document.addEventListener("DOMContentLoaded", () => {
+  (async () => {
+    try {
+      await runSequencedStartup();
+    } catch (err) {
+      console.error("[startup] sequenced loader failed:", err);
+    }
+  })();
+});
 
 /**
  * Staggered intervals — Geïsoleerd per actieve tab om achtergrond-renders te stoppen.
@@ -3358,9 +3494,8 @@ scheduleStaggered(() => {
 }, 6000, 3000);
 
 // === KERN: HARDE TAB ISOLATIE & EXCLUSIEVE ENDPOINTS ===
-let activePollers = {};
 
-function switchTab(tabName) {
+window.switchTab = function switchTab(tabName) {
   activeTab = tabName;
 
   // 1. Verberg alle tabs en reset knoppen
@@ -3401,22 +3536,17 @@ function switchTab(tabName) {
 
   // 3. Cleanup: Stop alle lopende processen van andere tabs
   clearAllCharts(); // voorkomt ghosting tussen tabs
-  Object.values(activePollers).forEach(clearInterval);
-  activePollers = {};
 
   // Stop WebSockets op basis van tab (strikte data-scheiding)
   if (tabName !== "hardware") stopSystemLogsSocket();
-  if (tabName !== "terminal") {
-    if (wsRef) { try { wsRef.close(); } catch(e){} wsRef = null; }
-    if (tradingUpdatesSocket) { try { tradingUpdatesSocket.close(); } catch(e){} tradingUpdatesSocket = null; }
-  }
+  if (tabName !== "aibrain") stopBrainStatsSocket();
 
-  // 4. Start exclusieve endpoints per view
+  // 4. Start exclusieve endpoints per view direct (polling wordt door scheduleStaggered afgehandeld)
   if (tabName === "terminal") {
     connectBitvavoPriceStream();
     connectTradingUpdatesSocket();
-    fetchTerminalSnapshot();
-    activePollers.terminal = setInterval(fetchTerminalSnapshot, 3000);
+    refreshActivity();
+    refreshNewsInsights();
     setTimeout(() => updateChart(selectedChartPair || selectedMarket), 100);
   }
   else if (tabName === "aibrain") {
@@ -3426,57 +3556,18 @@ function switchTab(tabName) {
       if (data) enqueueCockpitWsRender(() => applyBrainDataPayload(data));
       latestBrainStatsPayload = null; // Consumeer
     }
-    fetchAILogic();
-    activePollers.aibrain = setInterval(fetchAILogic, 3000);
+    connectBrainStatsSocket();
+    refreshBrainLab();
   }
   else if (tabName === "ledger") {
-    fetchLedger();
-    activePollers.ledger = setInterval(fetchLedger, 5000);
+    refreshHistoryTrades();
+    refreshPerformanceAnalytics();
   }
   else if (tabName === "hardware") {
-    fetchHardwareStats();
-    activePollers.hardware = setInterval(fetchHardwareStats, 2000);
+    connectSystemStatsSocket(); // Nodig voor ring meters in de header
     connectSystemLogsSocket();
     refreshSystemLogsSnapshot();
   }
 
   initHintPortals();
-}
-
-// Geïsoleerde Fetch Functies (Endpoint Correctie)
-async function fetchTerminalSnapshot() {
-  try {
-    const res = await fetch('/api/v1/snapshot');
-    if (!res.ok) return;
-    const data = await res.json();
-    if (data && data.tenant) applyActivityResponse(data.tenant);
-  } catch (e) { console.error("[Terminal] Snapshot fetch failed", e); }
-}
-
-async function fetchAILogic() {
-  try {
-    const res = await fetch('/api/v1/ai_logic');
-    if (!res.ok) return;
-    const data = await res.json();
-    const reasoningBox = document.getElementById('brainReasoningBox');
-    if (reasoningBox) reasoningBox.innerHTML = formatBrainReasoningHtml(data.reasoning || "Geen reasoning beschikbaar.");
-    const weightsBox = document.getElementById('brainWeightsBox');
-    if (weightsBox) weightsBox.innerText = JSON.stringify(data.feature_weights || {}, null, 2);
-  } catch (e) { console.error("[AI Brain] Logic fetch failed", e); }
-}
-
-async function fetchHardwareStats() {
-  try {
-    const res = await fetch('/api/v1/system_stats');
-    if (!res.ok) return;
-    const data = await res.json();
-    applySystemStatsPayload(data);
-  } catch (e) { console.error("[Hardware] Stats fetch failed", e); }
-}
-
-async function fetchLedger() {
-  try {
-    await refreshHistoryTrades();
-    await refreshPerformanceAnalytics();
-  } catch (e) { console.error("[Ledger] Fetch failed", e); }
 }

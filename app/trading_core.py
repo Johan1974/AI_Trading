@@ -1,14 +1,35 @@
-"""Trading stack: markt/ML/paper engine — geen FastAPI/Jinja2 (worker + HTTP-shell importeren dit)."""
+"""
+BESTANDSNAAM: /home/johan/AI_Trading/app/trading_core.py
+FUNCTIE: Trading stack: markt/ML/paper engine — geen FastAPI/Jinja2 (worker + HTTP-shell importeren dit).
+"""
 
 import asyncio
 import io
+import base64
+from collections import deque
 import logging
 import os
 import time
 import json
+import logging
 import shutil
 import requests
 import warnings
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.image import MIMEImage
+from email.utils import formatdate, make_msgid
+try:
+    import psutil
+except ImportError:
+    psutil = None
+try:
+    import pynvml
+except ImportError:
+    pynvml = None
+import logging
+from logging.handlers import RotatingFileHandler
 from datetime import datetime, timedelta
 
 from app.datetime_util import UTC
@@ -131,18 +152,20 @@ def _genesis_log_torch_device() -> None:
 
     if importlib.util.find_spec("torch") is None:
         if _process_role() == "portal":
-            print("[DEVICE] Portal (slim image): geen torch — GPU-log overgeslagen.")
+            print(f"{datetime.now(TZ).isoformat()} [DEVICE] Portal (slim image): geen torch — GPU-log overgeslagen.")
         return
     try:
         import torch
 
-        if torch.cuda.is_available():
+        cuda_ok = torch.cuda.is_available()
+        
+        if cuda_ok:
             name = str(torch.cuda.get_device_name(0) or "CUDA GPU")
-            print(f"[DEVICE] Using device: cuda:0 ({name})")
+            print(f"{datetime.now(TZ).isoformat()} [DEVICE] CUDA Status: OK (Using {name})")
         else:
-            print("[DEVICE] Using device: cpu (CUDA niet beschikbaar)")
+            print(f"{datetime.now(TZ).isoformat()} [CRITICAL] CUDA NOT FOUND! Falling back to CPU. (This violates the Constitution!)")
     except Exception as exc:
-        print(f"[DEVICE] Torch device-check mislukt: {exc}")
+        print(f"{datetime.now(TZ).isoformat()} [DEVICE] Torch device-check mislukt: {exc}")
 
 
 def _genesis_require_gpu_or_raise() -> None:
@@ -153,6 +176,11 @@ def _genesis_require_gpu_or_raise() -> None:
     if flag not in ("1", "true", "yes", "on"):
         _genesis_log_torch_device()
         return
+        
+    if _PORTAL_SLIM:
+        _genesis_log_torch_device()
+        return
+        
     import torch
 
     if not torch.cuda.is_available():
@@ -165,6 +193,97 @@ def _process_role() -> str:
     return str(os.getenv("AI_TRADING_PROCESS", "all") or "all").strip().lower()
 
 
+# --- Rate Limiting & Notification Management ---
+
+STORAGE_ROOT = Path(__file__).parent.parent / "storage"
+STORAGE_STATS_PATH = STORAGE_ROOT / "stats.json"
+
+LOGS_DIR = Path("/app/logs") if Path("/.dockerenv").exists() else Path.cwd() / "_logs_hub"
+LOGS_DIR.mkdir(parents=True, exist_ok=True)
+HEALTH_LOG_PATH = LOGS_DIR / "system_health.log"
+NOTIF_LOG_PATH = LOGS_DIR / "notification_errors.log"
+
+health_logger = logging.getLogger("system_health")
+health_logger.setLevel(logging.INFO)
+if not health_logger.handlers:
+    health_handler = RotatingFileHandler(HEALTH_LOG_PATH, maxBytes=50*1024*1024, backupCount=7)
+    health_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
+    health_logger.addHandler(health_handler)
+
+notif_logger = logging.getLogger("notification_errors")
+notif_logger.setLevel(logging.INFO)
+if not notif_logger.handlers:
+    notif_handler = RotatingFileHandler(NOTIF_LOG_PATH, maxBytes=50*1024*1024, backupCount=7)
+    notif_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
+    notif_logger.addHandler(notif_handler)
+
+TELEGRAM_QUEUE: asyncio.Queue[str] = asyncio.Queue(maxsize=100)
+TELEGRAM_TRADE_BUFFER: list[str] = []
+TELEGRAM_BATCH_TASK: asyncio.Task[Any] | None = None
+
+async def _telegram_sender_worker():
+    """Verwerkt de Telegram-wachtrij en respecteert de 1 bericht/seconde limiet."""
+    while True:
+        try:
+            message = await TELEGRAM_QUEUE.get()
+            try:
+                sent = False
+                for method_name in ("send", "notify", "send_message", "send_msg", "send_text"):
+                    if hasattr(TELEGRAM, method_name):
+                        getattr(TELEGRAM, method_name)(message)
+                        sent = True
+                        break
+                if not sent:
+                    raise AttributeError("TelegramNotifier mist standard send methods")
+            except Exception as inner_e:
+                # Fail-safe via directe HTTP requests API als TelegramNotifier lokaal crasht
+                bot_token = os.getenv("TELEGRAM_TOKEN")
+                chat_id = os.getenv("TELEGRAM_CHAT_ID")
+                if bot_token and chat_id:
+                    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+                    requests.post(url, json={"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}, timeout=5)
+                else:
+                    print(f"[COMM][TELEGRAM] Kon bericht niet versturen, HTTP fallback ontbreekt keys: {inner_e}")
+            await asyncio.sleep(1.1)  # Respecteer Telegram's 1 bericht/sec limiet met een kleine buffer
+            TELEGRAM_QUEUE.task_done()
+        except Exception as e:
+            notif_logger.error(f"[COMM][TELEGRAM][CRITICAL] Telegram worker gefaald: {e}")
+            await asyncio.sleep(5)
+
+def _queue_telegram_message(message: str):
+    """Voegt een bericht toe aan de rate-limited Telegram wachtrij."""
+    try:
+        TELEGRAM_QUEUE.put_nowait(message)
+    except asyncio.QueueFull:
+        health_logger.warning(f"[RATE-LIMIT-HIT] Telegram wachtrij vol. Bericht wordt genegeerd: {message[:100]}...")
+
+async def _batch_and_send_telegram_trades():
+    """Wacht 10 seconden, bundelt dan de trade-notificaties en verstuurt ze."""
+    global TELEGRAM_TRADE_BUFFER, TELEGRAM_BATCH_TASK
+    await asyncio.sleep(10)  # Batching window
+
+    if TELEGRAM_TRADE_BUFFER:
+        summary_lines = ["*TRADING ACTIVITY BATCH*"]
+        summary_lines.extend(TELEGRAM_TRADE_BUFFER)
+        summary_message = "\n\n".join(summary_lines)
+        _queue_telegram_message(summary_message)
+        TELEGRAM_TRADE_BUFFER.clear()
+    
+    TELEGRAM_BATCH_TASK = None
+
+EMAIL_TIMESTAMPS_PATH = STORAGE_ROOT / "email_timestamps.json"
+
+def _get_recent_email_timestamps(period_hours: int = 24) -> list[float]:
+    if not EMAIL_TIMESTAMPS_PATH.exists():
+        return []
+    try:
+        timestamps = json.loads(EMAIL_TIMESTAMPS_PATH.read_text())
+        now = time.time()
+        cutoff = now - (period_hours * 3600)
+        return [ts for ts in timestamps if ts > cutoff]
+    except Exception:
+        return []
+
 def _probe_torch_cuda_available() -> bool:
     try:
         import torch
@@ -173,70 +292,58 @@ def _probe_torch_cuda_available() -> bool:
     except Exception:
         return False
 
-_FINBERT = LazyFinBertSentimentAnalyzer()
-SIGNAL_ENGINE = SignalEngine(sentiment=_FINBERT)
-_max_trade_frac = float(os.getenv("RISK_MAX_TRADE_EQUITY_PCT", "10")) / 100.0
-RISK_MANAGER = RiskManager(max_budget_fraction_per_trade=max(0.001, min(1.0, _max_trade_frac)))
-CORE_RISK = CoreRiskManager()
-MARKET_SCANNER = MarketScanner(min_volume_eur=float(os.getenv("MIN_24H_VOLUME_EUR", "500000")))
-NEWS_MAPPING = NewsMappingService(sentiment=_FINBERT)
-FEAR_GREED = FearGreedService()
-WHALE_WATCHER = WhaleWatcherService()
-CMC_SERVICE = CoinMarketCapService(ttl_seconds=1200)
-MACRO_CALENDAR = MacroCalendarService()
-NEWS_SERVICE = CryptoCompareNewsService(ttl_seconds=60)
-RSS_ENGINE = RssEngineService()
-NEWS_ENGINE = NewsEngineService(
-    api_service=NEWS_SERVICE,
-    rss_service=RSS_ENGINE,
-    freshness_minutes=15,
-)
-PAPER_MANAGER = PaperTradeManager(
-    PaperConfig(
-        starting_balance_eur=float(os.getenv("PAPER_START_BALANCE_EUR", "10000")),
-        fee_rate=0.0015,
-        db_path=os.getenv("TRADE_HISTORY_DB_PATH", "data/trade_history.db"),
-    )
-)
-RL_AGENT = RLAgentService(model_dir=os.getenv("RL_MODEL_DIR", "artifacts/rl"))
-if not _PORTAL_SLIM:
+# --- FRESH START POLICY: Directory Guard & Cleanup ---
+_marker = Path("/tmp/logs_cleared.marker")
+if not _marker.exists():
+    _role = _process_role()
+    # Worker wist de gedeelde logs. Portal wist enkel zijn eigen domein.
+    # Zo voorkomen we race-conditions en blijft de .sqlite database intact!
+    _patterns = ["*.log*"] if _role != "portal" else ["portal_api.log*", "browser_console.log*"]
+    for _pattern in _patterns:
+        for _p in LOGS_DIR.glob(_pattern):
+            try:
+                _p.unlink()
+            except Exception:
+                pass
     try:
-        merge_historical_training_into_agent(RL_AGENT)
+        _marker.touch(exist_ok=True)
     except Exception:
         pass
-TRADER = Trader(
-    TraderConfig(
-        initial_capital_eur=float(os.getenv("PAPER_START_BALANCE_EUR", "10000")),
-        lookback_days=int(os.getenv("LOOKBACK_DAYS", "400")),
-        model_dir=os.getenv("RL_MODEL_DIR", "artifacts/rl"),
-    ),
-    agent_service=RL_AGENT,
-)
-MAIN_ENGINE = TradingEngine(
-    run_cycle=lambda ticker, lookback_days: _run_paper_cycle_sync(ticker=ticker, lookback_days=lookback_days),
-    online_update=lambda pair, lookback_days, timesteps, cmc: RL_AGENT.online_update(
-        pair=pair,
-        lookback_days=max(1, int(lookback_days // 16) or 1),
-        total_timesteps=timesteps,
-        cmc_metrics=cmc,
-    ),
-    state=STATE,
-    cmc_service=CMC_SERVICE,
-    news_service=NEWS_SERVICE,
-    rss_engine=RSS_ENGINE,
-    interval_minutes=int(os.getenv("ENGINE_LOOP_MINUTES", "1")),
-    episode_hours=int(os.getenv("RL_EPISODE_HOURS", "24")),
-)
-TELEGRAM = TelegramNotifier(
-    token=os.getenv("TELEGRAM_TOKEN"),
-    chat_id=os.getenv("TELEGRAM_CHAT_ID"),
-    enabled=True,
-)
-_storage_env = str(os.getenv("AI_TRADING_STORAGE_ROOT", "")).strip()
-STORAGE_ROOT = Path(_storage_env) if _storage_env else (Path.cwd() / "storage")
-STORAGE_STATS_PATH = STORAGE_ROOT / "stats.json"
-LOGS_DIR = STORAGE_ROOT / "logs"
-BOT_LOG_PATH = LOGS_DIR / "bot_execution.log"
+# -----------------------------------------------------
+
+if _process_role() == "portal":
+    BOT_LOG_PATH = LOGS_DIR / "portal_api.log"
+else:
+    BOT_LOG_PATH = LOGS_DIR / "worker_execution.log"
+
+# CIRCULAR BUFFER: Flight Recorder configuratie (Exact 5MB)
+BLACKBOX_LOG_PATH = LOGS_DIR / "blackbox.log"
+
+# --- FRESH START POLICY: Log Headers ---
+_ts_now = datetime.now().astimezone().isoformat()
+_header = f"=== SYSTEM RESTART: [{_ts_now}] - NIEUWE SESSIE GESTART ===\n"
+for _lp in (BOT_LOG_PATH, BLACKBOX_LOG_PATH):
+    try:
+        with _lp.open("a", encoding="utf-8") as _f:
+            _f.write(_header)
+    except Exception:
+        pass
+# ---------------------------------------
+
+blackbox_logger = logging.getLogger("blackbox")
+blackbox_logger.setLevel(logging.INFO)
+if not blackbox_logger.handlers:
+    handler = RotatingFileHandler(BLACKBOX_LOG_PATH, maxBytes=50*1024*1024, backupCount=7)
+    handler.setFormatter(logging.Formatter('%(message)s'))
+    blackbox_logger.addHandler(handler)
+
+bot_logger = logging.getLogger("bot_execution")
+bot_logger.setLevel(logging.INFO)
+if not bot_logger.handlers:
+    bot_handler = RotatingFileHandler(BOT_LOG_PATH, maxBytes=50*1024*1024, backupCount=7)
+    bot_handler.setFormatter(logging.Formatter('%(message)s'))
+    bot_logger.addHandler(bot_handler)
+
 TEE_INSTALLED = False
 JARVIS_REPORTER: AITradingPerformanceIntegrityReporter | None = None
 RESTART_MAIL_TASK: asyncio.Task[Any] | None = None
@@ -326,14 +433,24 @@ def _jarvis_live_financials_snapshot() -> dict[str, Any]:
     if not api_key or not api_secret:
         return {"enabled": True, "available": False, "reason": "missing_live_keys"}
     try:
-        client = BitvavoClient(api_key=api_key, api_secret=api_secret)
-        balances = client.get_balance()
+        import socket
+        old_timeout = socket.getdefaulttimeout()
+        socket.setdefaulttimeout(5.0)
+        try:
+            client = BitvavoClient(api_key=api_key, api_secret=api_secret)
+            balances = client.get_balance()
+        finally:
+            socket.setdefaulttimeout(old_timeout)
+            
         eur_available = 0.0
-        for row in balances:
-            if str(row.get("symbol", "")).upper() == "EUR":
-                eur_available = float(row.get("available") or 0.0)
-                break
-        return {"enabled": True, "available": True, "eur_available": eur_available, "balances_count": len(balances)}
+        if isinstance(balances, list):
+            for row in balances:
+                if isinstance(row, dict) and str(row.get("symbol", "")).upper() == "EUR":
+                    eur_available = float(row.get("available") or 0.0)
+                    break
+            return {"enabled": True, "available": True, "eur_available": eur_available, "balances_count": len(balances)}
+        else:
+            return {"enabled": True, "available": False, "reason": str(balances)}
     except Exception as exc:
         return {"enabled": True, "available": False, "reason": str(exc)}
 
@@ -417,13 +534,116 @@ def _portfolio_distribution_snapshot() -> list[dict[str, Any]]:
         out.append({"asset": market, "qty": qty, "weight_pct": (pos_val / max(1.0, equity)) * 100.0})
     return out
 
+_peak_summary = {"cpu_max": 0.0, "ram_max": 0.0, "gpu_util_max": 0.0, "gpu_temp_max": 0.0, "last_reset": time.time()}
+
+async def _resource_watchdog_and_heartbeat_loop() -> None:
+    """Bewaakt pieken in container resourcegebruik en logt een periodieke heartbeat."""
+    global _peak_summary
+    container_name = f"ai-trading-{_process_role()}"
+    loop_count = 0
+    
+    while True:
+        try:
+            cpu = psutil.cpu_percent(interval=None) if psutil else 0.0
+            ram = psutil.virtual_memory().percent if psutil else 0.0
+            
+            now = time.time()
+            if now - _peak_summary["last_reset"] > 600:
+                _peak_summary = {"cpu_max": 0.0, "ram_max": 0.0, "gpu_util_max": 0.0, "gpu_temp_max": 0.0, "last_reset": now}
+                
+            if cpu > _peak_summary["cpu_max"]: _peak_summary["cpu_max"] = cpu
+            if ram > _peak_summary["ram_max"]: _peak_summary["ram_max"] = ram
+            
+            if pynvml:
+                try:
+                    pynvml.nvmlInit()
+                    for i in range(pynvml.nvmlDeviceGetCount()):
+                        handle = pynvml.nvmlDeviceGetHandleByIndex(i)
+                        temp = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
+                        mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                        util = pynvml.nvmlDeviceGetUtilizationRates(handle)
+                        vram_util = (mem.used / mem.total) * 100.0 if mem.total > 0 else 0.0
+                        
+                        if temp > _peak_summary["gpu_temp_max"]: _peak_summary["gpu_temp_max"] = temp
+                        if util.gpu > _peak_summary["gpu_util_max"]: _peak_summary["gpu_util_max"] = util.gpu
+                        
+                        if temp > 80.0:
+                            msg = f"GPU Temperature Overload: {temp}°C op GPU {i}"
+                            print(f"{datetime.now(TZ).isoformat()} [CRITICAL][RESOURCE] {msg}")
+                            _log_to_browser_console("ERROR", msg)
+                        if vram_util > 90.0:
+                            msg = f"GPU Memory Overload: {vram_util:.1f}% op GPU {i}"
+                            print(f"{datetime.now(TZ).isoformat()} [CRITICAL][RESOURCE] {msg}")
+                            _log_to_browser_console("ERROR", msg)
+                except Exception:
+                    pass
+            
+            try:
+                perf_path = LOGS_DIR / "performance.json"
+                perf_path.write_text(json.dumps(_peak_summary, indent=2))
+            except Exception:
+                pass
+                
+            loop_count += 1
+            if loop_count >= 6:  # 6 * 10s = 60s
+                last_order = STATE.get("last_order", {})
+                last_ts = (last_order.get("order", {}).get("timestamp", "Never") if isinstance(last_order, dict) else "Never") or "Never"
+                print(f"{datetime.now(TZ).isoformat()} [HB][STATUS] Worker: Active | Redis: Connected | Last Trade: {last_ts} | Resource Peak: {_peak_summary['cpu_max']}%")
+                
+                worker_ram_mb = psutil.Process().memory_info().rss / (1024 * 1024) if psutil else 0.0
+                print(f"{datetime.now(TZ).isoformat()} [MEM-TRACE] Huidig Worker proces RAM-gebruik: {worker_ram_mb:.2f} MB | Systeem RAM: {ram}%")
+                loop_count = 0
+                
+        except Exception as exc:
+            print(f"{datetime.now(TZ).isoformat()} [RESOURCE-WATCHDOG][ERROR] {exc}")
+            
+        await asyncio.sleep(10)
 
 def _append_bot_log_line(text: str) -> None:
-    LOGS_DIR.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now(UTC).isoformat()
-    with BOT_LOG_PATH.open("a", encoding="utf-8") as fh:
-        fh.write(f"[{ts}] {text.rstrip()}\n")
+    global TELEGRAM_BATCH_TASK
+    ts = datetime.now(TZ).isoformat()
+    line = f"[{ts}] {text.rstrip()}"
+    blackbox_logger.info(line)
 
+    upper_line = line.upper()
+    is_trade = "[TRADE-OPEN]" in upper_line or "[TRADE-CLOSE]" in upper_line
+    is_critical = "[CRITICAL]" in upper_line
+
+    if not is_trade and not is_critical:
+        return
+
+    # --- Telegram Alert Filter & Batching ---
+    if is_trade:
+        clean_text = text.rstrip().replace("✅", "").strip()
+        TELEGRAM_TRADE_BUFFER.append(clean_text)
+        if TELEGRAM_BATCH_TASK is None or TELEGRAM_BATCH_TASK.done():
+            TELEGRAM_BATCH_TASK = start_background_task(_batch_and_send_telegram_trades())
+        return
+
+    if is_critical:
+        # Cooldown: Max 1 notificatie per 5 minuten voor identieke foutmeldingen.
+        key = "telegram_alert_" + text[:50]
+        now = time.time()
+        last_sent = ALERT_LAST_SENT_AT.get(key, 0)
+        
+        if now - last_sent > 300:  # 5 minuten
+            clean_text = text.rstrip().replace("🚨", "").strip()
+            alert_msg = f"🚨 *SYSTEM*\n\n⚠️ {clean_text}"
+            _queue_telegram_message(alert_msg)
+            ALERT_LAST_SENT_AT[key] = now
+        else:
+            health_logger.info(f"[RATE-LIMIT-HIT] Telegram cooldown active for critical alert: {text[:100]}...")
+
+def _log_to_browser_console(level: str, msg: str) -> None:
+    """Brug om kritieke backend resource fouten in het frontend/browser log te injecteren."""
+    try:
+        ts = datetime.now(TZ).isoformat()
+        line = f"{ts} [BROWSER][{level}] [WORKER-SYNC] {msg}\n"
+        target_log = LOGS_DIR / "browser_console.log"
+        with target_log.open("a", encoding="utf-8") as fh:
+            fh.write(line)
+    except Exception:
+        pass
 
 class _TeeTextStream(io.TextIOBase):
     def __init__(self, base: Any) -> None:
@@ -438,12 +658,16 @@ class _TeeTextStream(io.TextIOBase):
         while "\n" in self._buffer:
             line, self._buffer = self._buffer.split("\n", 1)
             if line.strip():
+                ts = datetime.now(TZ).isoformat()
+                bot_logger.info(f"[{ts}] {line.strip()}")
                 _append_bot_log_line(line)
         return len(text)
 
     def flush(self) -> None:
         self._base.flush()
         if self._buffer.strip():
+            ts = datetime.now(TZ).isoformat()
+            bot_logger.info(f"[{ts}] {self._buffer.strip()}")
             _append_bot_log_line(self._buffer)
             self._buffer = ""
 
@@ -531,6 +755,67 @@ async def _background_rss_poller() -> None:
 
 _install_stdout_stderr_tee()
 
+# ALL ENGINE INSTANTIATIONS MOVED AFTER TEE INSTALL
+# This ensures any initialization/model load crashes are immediately caught in portal_api.log!
+_FINBERT = LazyFinBertSentimentAnalyzer()
+SIGNAL_ENGINE = SignalEngine(sentiment=_FINBERT)
+_max_trade_frac = float(os.getenv("RISK_MAX_TRADE_EQUITY_PCT", "10")) / 100.0
+RISK_MANAGER = RiskManager(max_budget_fraction_per_trade=max(0.001, min(1.0, _max_trade_frac)))
+CORE_RISK = CoreRiskManager()
+MARKET_SCANNER = MarketScanner(min_volume_eur=float(os.getenv("MIN_24H_VOLUME_EUR", "500000")))
+NEWS_MAPPING = NewsMappingService(sentiment=_FINBERT)
+FEAR_GREED = FearGreedService()
+WHALE_WATCHER = WhaleWatcherService()
+CMC_SERVICE = CoinMarketCapService(ttl_seconds=1200)
+MACRO_CALENDAR = MacroCalendarService()
+NEWS_SERVICE = CryptoCompareNewsService(ttl_seconds=60)
+RSS_ENGINE = RssEngineService()
+NEWS_ENGINE = NewsEngineService(
+    api_service=NEWS_SERVICE,
+    rss_service=RSS_ENGINE,
+    freshness_minutes=15,
+)
+PAPER_MANAGER = PaperTradeManager(
+    PaperConfig(
+        starting_balance_eur=float(os.getenv("PAPER_START_BALANCE_EUR", "10000")),
+        fee_rate=0.0015,
+        db_path=os.getenv("TRADE_HISTORY_DB_PATH", "data/trade_history.db"),
+    )
+)
+RL_AGENT = RLAgentService(model_dir=os.getenv("RL_MODEL_DIR", "artifacts/rl"))
+if not _PORTAL_SLIM:
+    try:
+        merge_historical_training_into_agent(RL_AGENT)
+    except Exception:
+        pass
+TRADER = Trader(
+    TraderConfig(
+        initial_capital_eur=float(os.getenv("PAPER_START_BALANCE_EUR", "10000")),
+        lookback_days=int(os.getenv("LOOKBACK_DAYS", "400")),
+        model_dir=os.getenv("RL_MODEL_DIR", "artifacts/rl"),
+    ),
+    agent_service=RL_AGENT,
+)
+MAIN_ENGINE = TradingEngine(
+    run_cycle=lambda ticker, lookback_days: _run_paper_cycle_sync(ticker=ticker, lookback_days=lookback_days),
+    online_update=lambda pair, lookback_days, timesteps, cmc: RL_AGENT.online_update(
+        pair=pair,
+        lookback_days=max(1, int(lookback_days // 16) or 1),
+        total_timesteps=timesteps,
+        cmc_metrics=cmc,
+    ),
+    state=STATE,
+    cmc_service=CMC_SERVICE,
+    news_service=NEWS_SERVICE,
+    rss_engine=RSS_ENGINE,
+    interval_minutes=int(os.getenv("ENGINE_LOOP_MINUTES", "1")),
+    episode_hours=int(os.getenv("RL_EPISODE_HOURS", "24")),
+)
+TELEGRAM = TelegramNotifier(
+    token=os.getenv("TELEGRAM_TOKEN"),
+    chat_id=os.getenv("TELEGRAM_CHAT_ID"),
+    enabled=str(os.getenv("TELEGRAM_ENABLED", "1")).strip().lower() in ("1", "true", "yes", "on"),
+)
 
 def _env_flag(name: str, default: bool = False) -> bool:
     raw = os.getenv(name)
@@ -852,19 +1137,25 @@ def _resolve_execution_price(ticker: str, fallback_price: float) -> float:
     if "-" not in upper:
         return fallback_price
     try:
+        t0 = time.time()
         resp = requests.get(
             "https://api.bitvavo.com/v2/ticker/price",
             params={"market": upper},
             timeout=10,
         )
+        elapsed_ms = (time.time() - t0) * 1000
+        if elapsed_ms > 500:
+            print(f"{datetime.now().astimezone().isoformat()} [COMM][BITVAVO][TIMEOUT] Request took > {elapsed_ms:.0f}ms. Potential lag detected.")
         if resp.status_code != 200:
+            print(f"{datetime.now().astimezone().isoformat()} [EXCHANGE-API][ERROR] Bitvavo /v2/ticker/price HTTP {resp.status_code}: {resp.text}")
             return fallback_price
         payload = resp.json()
         if isinstance(payload, dict):
             return float(payload.get("price") or fallback_price)
         if isinstance(payload, list) and payload:
             return float(payload[0].get("price") or fallback_price)
-    except Exception:
+    except Exception as exc:
+        print(f"{datetime.now().astimezone().isoformat()} [EXCHANGE-API][CRITICAL] Bitvavo /v2/ticker/price netwerkfout: {exc}")
         return fallback_price
     return fallback_price
 
@@ -991,7 +1282,7 @@ def _fetch_history_series(pair: str, lookback_days: int, interval: str = "5m") -
                         continue
                     parsed.append((ts, close))
                 parsed.sort(key=lambda x: x[0])  # Chronological old -> new for stable X-axis.
-                labels = [datetime.utcfromtimestamp(ts / 1000).isoformat() for ts, _ in parsed]
+                labels = [datetime.utcfromtimestamp(ts / 1000).replace(tzinfo=UTC).isoformat() for ts, _ in parsed]
                 prices = [px for _, px in parsed]
                 return labels, prices
 
@@ -1252,8 +1543,25 @@ async def _scanner_hourly_refresh_loop() -> None:
 
 async def _rl_multi_inference_loop() -> None:
     interval_sec = max(20, int(os.getenv("RL_MULTI_INFER_INTERVAL_SEC", "60") or 60))
+    # Concurrency Cap: Maximaal 2 munten tegelijk verwerken om RAM-explosies (DataFrames) te voorkomen
+    sem = asyncio.Semaphore(2)
     while True:
         try:
+            # RESOURCE WATCHDOG: Soft Limit Guard
+            ram_pct = psutil.virtual_memory().percent if psutil else 0.0
+            if ram_pct > 85.0:
+                msg = f"RAM Overload ({ram_pct}%) - Emergency cooling active."
+                print(f"{datetime.now().astimezone().isoformat()} [CRITICAL][RESOURCE] {msg}")
+                _log_to_browser_console("ERROR", msg)
+                import gc
+                gc.collect()
+                await asyncio.sleep(5)
+                continue
+            elif ram_pct > 70.0:
+                msg = f"{ram_pct}% RAM during Model_Inference"
+                print(f"{datetime.now().astimezone().isoformat()} [MEM-TRACE] WARNING: {msg}")
+                _log_to_browser_console("WARN", msg)
+
             active_pairs = [
                 str(m.get("market", "")).upper()
                 for m in (STATE.get("active_markets") or [])
@@ -1264,25 +1572,33 @@ async def _rl_multi_inference_loop() -> None:
                 continue
 
             async def infer_pair(tp: str) -> tuple[str, dict[str, Any]]:
-                end_dt = datetime.now(UTC)
-                start_dt = end_dt - timedelta(days=max(30, int(STATE.get("lookback_days", 400) or 400)))
-                candles = await asyncio.to_thread(
-                    fetch_bitvavo_historical_candles,
-                    tp,
-                    "1h",
-                    start_dt,
-                    end_dt,
-                )
-                rl_frame = await asyncio.to_thread(
-                    build_rl_training_frame,
-                    candles,
-                    tp,
-                    "crypto",
-                    os.getenv("CRYPTOCOMPARE_KEY"),
-                    os.getenv("CRYPTOCOMPARE_KEY"),
-                    _refresh_cmc_metrics(),
-                )
-                last = rl_frame.iloc[-1].to_dict()
+                async with sem:
+                    end_dt = datetime.now(UTC)
+                    start_dt = end_dt - timedelta(days=max(30, int(STATE.get("lookback_days", 400) or 400)))
+                    candles = await asyncio.to_thread(
+                        fetch_bitvavo_historical_candles,
+                        tp,
+                        "1h",
+                        start_dt,
+                        end_dt,
+                    )
+                    rl_frame = await asyncio.to_thread(
+                        build_rl_training_frame,
+                        candles,
+                        tp,
+                        "crypto",
+                        os.getenv("CRYPTOCOMPARE_KEY"),
+                        os.getenv("CRYPTOCOMPARE_KEY"),
+                        _refresh_cmc_metrics(),
+                    )
+                    last = rl_frame.iloc[-1].to_dict()
+                    
+                    # MEMORY FIX: Gooi gigantische DataFrames direct weg vóór de PyTorch inference
+                    del candles
+                    del rl_frame
+                    import gc
+                    gc.collect()
+
                 last, _social_note = _apply_social_overlay_for_decide(last, tp)
                 acct = STATE.get("paper_portfolio", {})
                 equity = float(acct.get("equity", 10000.0) or 10000.0)
@@ -1316,15 +1632,22 @@ async def _rl_multi_inference_loop() -> None:
                         _tc2,
                     )
                 )
+
                 return tp, decision
 
             results = await asyncio.gather(*[infer_pair(tp) for tp in active_pairs], return_exceptions=True)
             out: dict[str, Any] = {}
             for item in results:
                 if isinstance(item, Exception):
+                    print(f"{datetime.now().astimezone().isoformat()} [AI-ENGINE][ERROR] Inferentie fout tijdens RL-Multi loop. Context: {item}")
                     continue
                 tp, decision = item
                 out[tp] = decision
+                
+                # Zorg dat de actieve UI-markt direct globaal in State komt
+                if tp == str(STATE.get("selected_market") or "BTC-EUR").upper():
+                    STATE["rl_last_decision"] = decision.__dict__ if hasattr(decision, "__dict__") else decision
+                    
             STATE["rl_multi_decisions"] = out
             shared = STATE.get("rl_shared_buffer")
             if not isinstance(shared, list):
@@ -1782,8 +2105,31 @@ async def _worker_portal_snapshot_loop() -> None:
     interval_sec = max(1.0, float(os.getenv("PORTAL_SNAPSHOT_INTERVAL_SEC", "2") or 2))
     while True:
         try:
+            # Direct hardware poll om 0.0% te voorkomen
+            live_gpu_temp = 0.0
+            live_gpu_util = 0.0
+            if pynvml:
+                try:
+                    pynvml.nvmlInit()
+                    handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+                    live_gpu_temp = float(pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU))
+                    util = pynvml.nvmlDeviceGetUtilizationRates(handle)
+                    live_gpu_util = float(util.gpu)
+                except Exception:
+                    pass
+            
+            cpu_load = psutil.cpu_percent(interval=None) if psutil else 0.0
+            
             wire = _brain_ws_wire_payload()
-            extras = {"brain_ws": json.loads(json.dumps(wire, default=str))}
+            stats = compact_system_stats(get_system_stats())
+            if live_gpu_temp > 0: stats["gpu_temp_max"] = live_gpu_temp
+            if live_gpu_util > 0: stats["gpu_util_pct"] = live_gpu_util
+            if cpu_load > 0: stats["cpu_pct"] = cpu_load
+            
+            extras = {
+                "brain_ws": json.loads(json.dumps(wire, default=str)),
+                "system_stats": stats
+            }
             write_worker_portal_snapshot(extras=extras)
         except Exception as exc:
             print(f"[PORTAL-SNAP] worker write mislukt: {exc}")
@@ -1847,6 +2193,55 @@ async def _portal_system_stats_redis_subscribe_loop() -> None:
                 except Exception:
                     pass
 
+async def _worker_command_listener_loop() -> None:
+    """Luistert naar commando's van de portal via Redis (bijv. Paper trade forceer, Bot pauze)."""
+    host = str(os.getenv("REDIS_HOST", "redis")).strip()
+    port = str(os.getenv("REDIS_PORT", "6379")).strip()
+    url = str(os.getenv("REDIS_URL", f"redis://{host}:{port}/0")).strip()
+    if "localhost" in url or "127.0.0.1" in url:
+        url = f"redis://{host}:{port}/0"
+        
+    while True:
+        try:
+            import redis.asyncio as aioredis
+            client = aioredis.from_url(url, decode_responses=True)
+            async with client.pubsub() as pubsub:
+                await pubsub.subscribe("worker_commands")
+                print(f"{datetime.now(UTC).isoformat()} [WORKER] Luistert naar portal commando's via Redis 'worker_commands'...")
+                async for message in pubsub.listen():
+                    if message.get("type") == "message":
+                        raw = message.get("data")
+                        if not raw:
+                            continue
+                        try:
+                            cmd = json.loads(raw)
+                            action = cmd.get("action")
+                            if action == "paper_run":
+                                ticker = cmd.get("ticker", "BTC-EUR")
+                                lb = cmd.get("lookback_days", 400)
+                                loop = asyncio.get_running_loop()
+                                fut = loop.create_future()
+                                try:
+                                    PAPER_RUN_QUEUE.put_nowait((ticker, lb, "default", fut))
+                                    print(f"{datetime.now(UTC).isoformat()} [WORKER] Commando ontvangen: Paper run voor {ticker}")
+                                except asyncio.QueueFull:
+                                    print(f"{datetime.now(UTC).isoformat()} [WORKER] Commando genegeerd: PAPER_RUN_QUEUE is vol.")
+                            elif action == "bot_pause":
+                                STATE["bot_status"] = "paused"
+                                print(f"{datetime.now(UTC).isoformat()} [WORKER] Commando ontvangen: Bot gepauzeerd.")
+                            elif action == "bot_resume":
+                                STATE["bot_status"] = "running"
+                                print(f"{datetime.now(UTC).isoformat()} [WORKER] Commando ontvangen: Bot hervat.")
+                            elif action == "bot_panic":
+                                STATE["bot_status"] = "panic_stop"
+                                print(f"{datetime.now(UTC).isoformat()} [WORKER] Commando ontvangen: PANIC STOP!")
+                        except Exception as e:
+                            print(f"{datetime.now(UTC).isoformat()} [WORKER] Fout bij verwerken commando: {e}")
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            print(f"{datetime.now(UTC).isoformat()} [WORKER] Command listener netwerkfout: {e}")
+            await asyncio.sleep(5)
 
 def _system_stats_payload_for_websocket() -> dict[str, Any]:
     if _process_role() == "portal":
@@ -1868,10 +2263,242 @@ async def _portal_snapshot_poll_loop() -> None:
         await asyncio.sleep(interval_sec)
 
 
+def _preventive_cleanup() -> None:
+    """Verwijdert tijdelijke bestanden en comprimeert oude logs/data om schijfruimte te sparen."""
+    import shutil
+    import gzip
+    try:
+        print(f"{datetime.now().astimezone().isoformat()} [CLEANUP][INFO] Start preventive cleanup en compressie...")
+        root = Path.cwd()
+        for p in root.rglob("__pycache__"):
+            if p.is_dir():
+                shutil.rmtree(p, ignore_errors=True)
+        now = time.time()
+        for ext in ("*.tmp", "*.bak", "*.backup"):
+            for p in root.rglob(ext):
+                if p.is_file() and (now - p.stat().st_mtime) > 172800:
+                    try:
+                        p.unlink()
+                        print(f"{datetime.now().astimezone().isoformat()} [CLEANUP][INFO] Verwijderd: {p.name}")
+                    except Exception:
+                        pass
+
+        # --- Auto-Compressie voor inactieve platte data ---
+        target_dirs = [root / "storage", root / "artifacts", root / "logs", root / "_logs_hub"]
+        active_files = {
+            "worker_execution.log", "portal_api.log", "system_health.log", 
+            "blackbox.log", "redis.log", "stats.json", "email_timestamps.json"
+        }
+        
+        for d in target_dirs:
+            if not d.exists():
+                continue
+            for p in d.rglob("*"):
+                if not p.is_file():
+                    continue
+                
+                # Filters: negeer al gecomprimeerde of direct actieve bestanden
+                if p.suffix == ".gz" or p.name in active_files:
+                    continue
+                    
+                # Pak alleen log-, data- en tekstbestanden (ook de .log.1, .log.2 via regex)
+                is_target = p.suffix in (".json", ".csv", ".log", ".txt") or ".log." in p.name
+                if not is_target:
+                    continue
+                    
+                # Comprimeer bestanden die de afgelopen 24 uur (86400 sec) niet zijn aangepast
+                if (now - p.stat().st_mtime) > 86400:
+                    try:
+                        gz_path = p.with_name(p.name + ".gz")
+                        if not gz_path.exists():
+                            with p.open('rb') as f_in, gzip.open(gz_path, 'wb') as f_out:
+                                shutil.copyfileobj(f_in, f_out)
+                            p.unlink()
+                            print(f"{datetime.now().astimezone().isoformat()} [CLEANUP][INFO] Gecomprimeerd om ruimte te besparen: {p.name}")
+                    except Exception:
+                        pass
+
+    except Exception as e:
+        print(f"{datetime.now().astimezone().isoformat()} [CLEANUP][ERROR] Cleanup gefaald: {e}")
+
+def build_html_audit_report(title_prefix: str = "AI Trading System Audit") -> str:
+    now_local = datetime.now(TZ)
+    
+    # --- 1. Live Data Fetching (GPU & Redis) ---
+    live_gpu_temp = 0.0
+    live_gpu_util = 0.0
+    if pynvml:
+        try:
+            pynvml.nvmlInit()
+            handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+            live_gpu_temp = float(pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU))
+            util = pynvml.nvmlDeviceGetUtilizationRates(handle)
+            live_gpu_util = float(util.gpu)
+        except Exception:
+            pass
+            
+    btc_price = 0.0
+    try:
+        import redis
+        host = str(os.getenv("REDIS_HOST", "redis")).strip()
+        port = str(os.getenv("REDIS_PORT", "6379")).strip()
+        url = str(os.getenv("REDIS_URL", f"redis://{host}:{port}/0")).strip()
+        if "localhost" in url or "127.0.0.1" in url:
+            url = f"redis://{host}:{port}/0"
+        r = redis.Redis.from_url(url, decode_responses=True)
+        data_str = r.hget("worker_snapshot", "data")
+        if data_str:
+            data = json.loads(data_str)
+            if data is not None and isinstance(data, dict):
+                for m in data.get("tenant", {}).get("active_markets", []):
+                    if str(m.get("market", "")) == "BTC-EUR":
+                        btc_price = float(m.get("last_price", 0.0))
+                        break
+    except Exception as e:
+        print(f"[AUDIT] Kon BTC-EUR niet uit Redis ophalen: {e}")
+        
+    print(f"[REPORT] Live data verzameld: GPU {live_gpu_temp}C, BTC {btc_price}")
+
+    # --- Data Collection ---
+    perf_path = LOGS_DIR / "performance.json"
+    try:
+        perf_data = json.loads(perf_path.read_text()) if perf_path.exists() else {}
+    except Exception as json_err:
+        print(f"[AUDIT] Kon performance.json niet lezen (overslaan): {json_err}")
+        perf_data = {}
+    analytics = PAPER_MANAGER.analytics()
+    summary = analytics.get("performance_summary", {})
+    
+    wallet = STATE.get("paper_portfolio") or PAPER_MANAGER.wallet
+    wallet_d = wallet if isinstance(wallet, dict) else {}
+    equity = float(wallet_d.get("equity", 10000.0) or 10000.0)
+    active_trades_count = sum(len(lots) for lots in wallet_d.get("open_lots_by_market", {}).values() if isinstance(lots, list))
+
+    # --- Top/Bottom Trades ---
+    all_trades = PAPER_MANAGER.round_trip_ledger(limit=5000)
+    closed_trades = [t for t in all_trades if t.get('exit_price') is not None and t.get('pnl_eur') is not None]
+    
+    sorted_by_pnl = sorted(closed_trades, key=lambda t: float(t.get('pnl_eur', 0.0)), reverse=True)
+    
+    top_wins = sorted_by_pnl[:3]
+    top_losses = sorted_by_pnl[-3:]
+    top_losses.reverse()
+
+    def format_trade_rows(trades, is_win):
+        rows_html = ""
+        if not trades:
+            return '<div class="metric"><span class="metric-label">Geen trades gevonden.</span></div>'
+        
+        for trade in trades:
+            pnl_eur = float(trade.get('pnl_eur', 0.0))
+            pnl_pct = float(trade.get('pnl_pct', 0.0))
+            color_class = 'positive' if is_win else 'negative'
+            rows_html += f'''<div class="metric"><span class="metric-label">{trade.get('market', 'N/A')}</span><span class="metric-value {color_class}">€{pnl_eur:.2f} ({pnl_pct:.2f}%)</span></div>'''
+        return rows_html
+
+    top_wins_html = format_trade_rows(top_wins, is_win=True)
+    top_losses_html = format_trade_rows(top_losses, is_win=False)
+
+    html_content = f"""
+    <!DOCTYPE html>
+    <html lang="nl">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>{title_prefix}</title>
+        <style>
+            body {{ font-family: 'Inter', -apple-system, Arial, sans-serif; margin: 0; padding: 20px; background-color: #f4f7f6; color: #333; line-height: 1.5; }}
+            .container {{ max-width: 900px; margin: auto; }}
+            .header {{ text-align: center; margin-bottom: 30px; }}
+            .header h1 {{ margin: 0; font-size: 26px; color: #222; font-weight: 700; }}
+            .dashboard {{ display: flex; flex-wrap: wrap; gap: 20px; }}
+            .column {{ flex: 1; min-width: 300px; }}
+            .card {{ background-color: #ffffff; border-radius: 10px; padding: 25px; box-shadow: 0 4px 10px rgba(0,0,0,0.05); margin-bottom: 20px; }}
+            .card h2 {{ font-size: 18px; margin-top: 0; border-bottom: 1px solid #eaeaea; padding-bottom: 12px; margin-bottom: 15px; color: #444; font-weight: 600; }}
+            .metric {{ display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid #f1f1f1; font-size: 15px; }}
+            .metric:last-child {{ border-bottom: none; }}
+            .metric-label {{ color: #666; }}
+            .metric-value {{ font-weight: 600; color: #111; }}
+            .badge-sync {{ background-color: #d4edda; color: #155724; padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; letter-spacing: 0.5px; }}
+            .positive {{ color: #28a745; }}
+            .negative {{ color: #dc3545; }}
+            .footer {{ text-align: center; margin-top: 20px; font-size: 12px; color: #888; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>{title_prefix}</h1>
+            </div>
+            <div class="dashboard">
+                <div class="column">
+                    <div class="card">
+                        <h2>System Health</h2>
+                        <div class="metric"><span class="metric-label">Max CPU Piek (10min)</span><span class="metric-value">{perf_data.get('cpu_max', 0.0):.1f}%</span></div>
+                        <div class="metric"><span class="metric-label">Max RAM Piek (10min)</span><span class="metric-value">{perf_data.get('ram_max', 0.0):.1f}%</span></div>
+                        <div class="metric"><span class="metric-label">Live GPU Load</span><span class="metric-value">{live_gpu_util if live_gpu_util > 0 else perf_data.get('gpu_util_max', 0.0):.1f}%</span></div>
+                        <div class="metric"><span class="metric-label">Live GPU Temp</span><span class="metric-value">{live_gpu_temp if live_gpu_temp > 0 else perf_data.get('gpu_temp_max', 0.0):.1f}°C</span></div>
+                        <div class="metric"><span class="metric-label">BTC-EUR Prijs</span><span class="metric-value">€{btc_price:.2f}</span></div>
+                        <div class="metric"><span class="metric-label">Timezone Sync</span><span class="metric-value"><span class="badge-sync">✓ Synchronized</span></span></div>
+                    </div>
+                    <div class="card">
+                        <h2>Top 3 Verliezen (Ledger)</h2>
+                        {top_losses_html}
+                    </div>
+                </div>
+                <div class="column">
+                    <div class="card">
+                        <h2>Market Performance</h2>
+                        <div class="metric"><span class="metric-label">Totaal PnL Ledger</span><span class="metric-value {'positive' if summary.get('total_pnl_eur', 0) >= 0 else 'negative'}">€{summary.get('total_pnl_eur', 0):.2f}</span></div>
+                        <div class="metric"><span class="metric-label">Win Rate</span><span class="metric-value">{summary.get('win_rate_pct', 0):.1f}%</span></div>
+                        <div class="metric"><span class="metric-label">Paper Equity</span><span class="metric-value">€{equity:.2f}</span></div>
+                        <div class="metric"><span class="metric-label">Actieve Trades</span><span class="metric-value">{active_trades_count}</span></div>
+                    </div>
+                    <div class="card">
+                        <h2>Top 3 Winsten (Ledger)</h2>
+                        {top_wins_html}
+                    </div>
+                </div>
+            </div>
+            <div class="footer">
+                Gegenereerd op {now_local.strftime('%d-%m-%Y om %H:%M:%S')} (Europe/Amsterdam)
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
+    try:
+        (LOGS_DIR / "latest_audit_report.html").write_text(html_content, encoding="utf-8")
+    except Exception as e:
+        print(f"[AUDIT] Kon HTML audit rapport niet opslaan in logs: {e}")
+
+    return html_content
+
 async def _run_full_trading_startup() -> None:
     global JARVIS_REPORTER, RESTART_MAIL_TASK
-    _genesis_require_gpu_or_raise()
+    
+    set_current_tenant("default")
+
+    # 1. Start communicatiekanalen als EERSTE, zodat we fouten direct naar Telegram kunnen sturen
+    start_background_task(_telegram_sender_worker())
+    _queue_telegram_message("🚀 *SYSTEM*\n\nAI Trading Bot initialization started. Verifying hardware and state...")
+    
+    try:
+        _genesis_require_gpu_or_raise()
+        if _probe_torch_cuda_available():
+            msg = "✅ GPU ENGINE ENGAGED"
+            print(f"{datetime.now(TZ).isoformat()} [HEALTH] {msg}")
+            _queue_telegram_message(f"✅ *SYSTEM*\n\n{msg}")
+    except Exception as e:
+        _queue_telegram_message(f"🚨 *SYSTEM*\n\nFATAL STARTUP ERROR: {e}")
+        await asyncio.sleep(2) # Geef de sender tijd om het bericht te pushen
+        raise e
+        
     _startup_cuda_flag = _probe_torch_cuda_available()
+
+    await asyncio.to_thread(_preventive_cleanup)
+
     # Markten vóór MAIN_ENGINE.start(): anders opent de UI met lege /markets/active en blijft chart/ticker leeg
     # tot de achtergrond-thread klaar is (race met lange engine-startup).
     try:
@@ -1879,11 +2506,42 @@ async def _run_full_trading_startup() -> None:
     except Exception as exc:
         print(f"[STARTUP] Eerste active-markets refresh mislukt: {exc}")
         STATE["active_markets"] = []
+    start_background_task(_resource_watchdog_and_heartbeat_loop())
     start_background_task(_background_startup_network_bundle())
     _bootstrap_state_after_markets_refresh()
-    start_background_task(_background_log_pruner())
+
+    # --- Delayed Startup Audit Email ---
+    async def _send_startup_audit_email_after_warmup():
+        print(f"{datetime.now(TZ).isoformat()} [STARTUP] Wacht 15 sec op systeem metrics voor audit e-mail...")
+        # Wacht 15 seconden zodat de resource-watchdog en andere loops de eerste data kunnen verzamelen.
+        await asyncio.sleep(15)
+        try:
+            def _build_and_send():
+                print(f"{datetime.now(TZ).isoformat()} [STARTUP][MAIL] Audit Report genereren...")
+                report_text = build_text_audit_report("🚀 Bot Startup - System Audit")
+                
+                print(f"{datetime.now(TZ).isoformat()} [STARTUP][MAIL] Rapport gegenereerd. Verzenden via SMTP...")
+                return send_email(
+                    subject="Server Status Report",
+                    body=report_text,
+                    is_html=False,
+                    is_priority=True,
+                    force_send=True
+                )
+            
+            success = await asyncio.to_thread(_build_and_send)
+            if success:
+                print(f"{datetime.now(TZ).isoformat()} [STARTUP] ✅ Audit e-mail succesvol verzonden.")
+            else:
+                print(f"{datetime.now(TZ).isoformat()} [STARTUP] ❌ Audit e-mail mislukt (zie notificatie logs).")
+        except Exception as email_err:
+            import traceback
+            err_msg = f"[STARTUP] Harde crash bij startup audit email: {email_err}\n{traceback.format_exc()}"
+            print(f"{datetime.now(TZ).isoformat()} {err_msg}")
+            notif_logger.error(err_msg)
+    start_background_task(_send_startup_audit_email_after_warmup())
+
     start_background_task(_background_rss_poller())
-    start_background_task(_gpu_cuda_heartbeat())
     start_background_task(_predict_queue_worker())
     start_background_task(_paper_run_queue_worker())
     start_background_task(_run_genesis_and_prepare_rl())
@@ -1896,8 +2554,44 @@ async def _run_full_trading_startup() -> None:
     start_background_task(_daily_auto_calibration_loop())
     if str(os.getenv("RL_BACKGROUND_TRAIN", "0")).strip().lower() in ("1", "true", "yes", "on"):
         start_background_task(_rl_background_training_loop())
+
+    # --- Daily Email Audit ---
+    async def daily_audit_email_loop():
+        while True:
+            await asyncio.sleep(60)  # Check elke minuut
+            now_local = datetime.now(TZ)
+            # Trigger elke dag om 09:00 lokale tijd
+            if now_local.hour != 9 or now_local.minute != 0:
+                continue
+
+            try:
+                def _build_and_send_daily():
+                    report_text = build_text_audit_report("AI Trading System Audit")
+                    sub = f"Server Status Report - {now_local.strftime('%Y-%m-%d')}"
+                    return send_email(
+                        subject=sub, 
+                        body=report_text, 
+                        is_html=False, 
+                        is_priority=True
+                    ), sub
+                    
+                success, subject = await asyncio.to_thread(_build_and_send_daily)
+                if success:
+                    print(f"{datetime.now(TZ).isoformat()} [AUDIT] ✅ Dagelijkse HTML audit e-mail verzonden: {subject}")
+                else:
+                    print(f"{datetime.now(TZ).isoformat()} [AUDIT] ❌ Dagelijkse HTML audit e-mail mislukt of geblokkeerd.")
+            except Exception as e:
+                import traceback
+                print(f"{datetime.now(TZ).isoformat()} [AUDIT][ERROR] Kon dagelijkse audit niet uitvoeren: {e}\n{traceback.format_exc()}")
+            
+            # Wacht langer dan een minuut om dubbele verzending te voorkomen
+            await asyncio.sleep(70)
+
+    start_background_task(daily_audit_email_loop())
+    start_background_task(_telegram_sender_worker())
+
     await MAIN_ENGINE.start()
-    TELEGRAM.send_start()
+    _queue_telegram_message("✅ *SYSTEM*\n\nAI Trading Bot engines fully operational. Listening for signals...")
     if RESTART_MAIL_TASK is None or RESTART_MAIL_TASK.done():
         RESTART_MAIL_TASK = asyncio.create_task(
             daily_restart_report_loop(
@@ -1945,18 +2639,42 @@ async def _run_full_trading_startup() -> None:
     if _process_role() == "worker":
         start_background_task(_worker_portal_snapshot_loop())
         start_background_task(_worker_system_stats_redis_loop())
+        start_background_task(_worker_command_listener_loop())
 
 
 async def _portal_startup_only() -> None:
     _genesis_require_gpu_or_raise()
+    set_current_tenant("default")
     try:
         await asyncio.to_thread(_refresh_active_markets_cache)
     except Exception as exc:
         print(f"[STARTUP] Eerste active-markets refresh mislukt: {exc}")
         STATE["active_markets"] = []
+    start_background_task(_resource_watchdog_and_heartbeat_loop())
     start_background_task(_portal_snapshot_poll_loop())
     start_background_task(_portal_system_stats_redis_subscribe_loop())
     _bootstrap_state_after_markets_refresh()
+
+    # Watchdog Integration
+    if not _probe_torch_cuda_available():
+        msg = "🚨 GPU DISCONNECTED - BOT STOPPED."
+        print(f"[CRITICAL][DEVICE] {msg}")
+        try:
+            sent = False
+            for method_name in ("send", "notify", "send_message", "send_msg", "send_text"):
+                if hasattr(TELEGRAM, method_name):
+                    getattr(TELEGRAM, method_name)(msg)
+                    sent = True
+                    break
+            if not sent:
+                bot_token = os.getenv("TELEGRAM_TOKEN")
+                chat_id = os.getenv("TELEGRAM_CHAT_ID")
+                if bot_token and chat_id:
+                    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+                    requests.post(url, json={"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"}, timeout=5)
+        except Exception as e:
+            print(f"[TELEGRAM] Kon startup-notificatie niet versturen, maar bot start door: {e}")
+
     # Geen _predict_queue_worker: portal mist ML-stack; /predict → 503.
     # Geen _health_watchdog_loop: die vergelijkt last_engine_cycle met worker-ticks; op portal is STATE
     # pas na snapshot-sync vers en anders triggert os._exit (vals positieve stall + Telegram).
@@ -1984,6 +2702,7 @@ def _publish_trading_redis_activity(kind: str, ticker: str) -> None:
             "fear_greed": STATE.get("fear_greed"),
             "risk_profile": risk_profile_dict(CORE_RISK, PAPER_MANAGER.config.starting_balance_eur),
             "elite_ai_signals": _elite_ai_signals_payload(),
+            "system_stats": compact_system_stats(get_system_stats()),
             "allocation_snapshot": allocation_snapshot(
                 STATE.get("paper_portfolio") or PAPER_MANAGER.wallet,
                 float((STATE.get("paper_portfolio") or PAPER_MANAGER.wallet).get("equity", 10000.0) or 10000.0)
@@ -2213,12 +2932,17 @@ def _orderbook_spread_slippage_bps(ticker: str, quote_notional_eur: float) -> tu
     if "-" not in market:
         return 0.0, 0.0
     try:
+        t0 = time.time()
         resp = requests.get(
             "https://api.bitvavo.com/v2/book",
             params={"market": market, "depth": 50},
             timeout=8,
         )
+        elapsed_ms = (time.time() - t0) * 1000
+        if elapsed_ms > 500:
+            print(f"{datetime.now().astimezone().isoformat()} [COMM][BITVAVO][TIMEOUT] Request took > {elapsed_ms:.0f}ms. Potential lag detected.")
         if resp.status_code != 200:
+            print(f"{datetime.now().astimezone().isoformat()} [EXCHANGE-API][ERROR] Bitvavo /v2/book HTTP {resp.status_code}: {resp.text}")
             return 0.0, 0.0
         data = resp.json()
         bids = data.get("bids", []) if isinstance(data, dict) else []
@@ -2250,9 +2974,86 @@ def _orderbook_spread_slippage_bps(ticker: str, quote_notional_eur: float) -> tu
         vwap = weighted_px_sum / notional_consumed
         slippage_bps = 0.0 if mid <= 0 else max(0.0, ((vwap - mid) / mid) * 10000.0)
         return max(0.0, spread_bps), max(0.0, slippage_bps)
-    except Exception:
+    except Exception as exc:
+        print(f"{datetime.now().astimezone().isoformat()} [EXCHANGE-API][CRITICAL] Bitvavo /v2/book netwerkfout: {exc}")
         return 0.0, 0.0
 
+
+def send_email(subject: str, body: str, is_html: bool = False, is_priority: bool = False, force_send: bool = False) -> bool:
+    """
+    Verstuurt een e-mail, met respect voor de harde limiet (max 10 per 24u).
+    De dagelijkse audit (priority) telt mee voor de limiet maar wordt nooit geblokkeerd, tenzij de absolute hard-cap vol is.
+    Met force_send=True wordt de limiet volledig genegeerd (handig voor opstartmails).
+    """
+    email_enabled = str(os.getenv("EMAIL_ENABLED", "1")).strip().lower() in ("1", "true", "yes", "on")
+    if not email_enabled:
+        notif_logger.info(f"--- EMAIL DISABLED --- Subject: '{subject}' genegeerd wegens EMAIL_ENABLED=0")
+        return False
+        
+    notif_logger.info(f"--- START send_email --- Subject: '{subject}'")
+    
+    recent_sends = _get_recent_email_timestamps()
+    
+    # Verhoogde limieten: 10 reguliere mails / 20 priority mails per 24u
+    MAX_EMAILS = 10
+    if not force_send:
+        notif_logger.info("Rate limit check wordt uitgevoerd.")
+        if not is_priority and len(recent_sends) >= MAX_EMAILS:
+            health_logger.warning(f"[RATE-LIMIT-HIT] Email '{subject}' geblokkeerd; limiet van {MAX_EMAILS}/24u bereikt.")
+            notif_logger.warning(f"Email geblokkeerd door reguliere rate limit ({len(recent_sends)}/{MAX_EMAILS}).")
+            return False
+        elif is_priority and len(recent_sends) >= (MAX_EMAILS * 2):
+            health_logger.warning(f"[RATE-LIMIT-HIT] Priority email '{subject}' geblokkeerd; absolute hard-cap bereikt.")
+            notif_logger.warning(f"Email geblokkeerd door priority hard-cap ({len(recent_sends)}/{MAX_EMAILS*2}).")
+            return False
+
+    try:
+        smtp_server = os.getenv("PRIVATE_SMTP")
+        smtp_port = int(os.getenv("PRIVATE_PORT", "587"))
+        smtp_user = os.getenv("PRIVATE_EMAIL", "")
+        smtp_pass = os.getenv("PRIVATE_PASS")
+        
+        notif_logger.info(f"Config geladen: server={smtp_server}:{smtp_port}, user={smtp_user}")
+        
+        if not smtp_server or not smtp_user or not smtp_pass:
+            notif_logger.error("SMTP configuratie ontbreekt in vault (SMTP/USER/PASS leeg).")
+            return False
+
+        # Dit is EXACT het format dat om 15:46 succesvol door de filter kwam.
+        msg = MIMEMultipart("alternative") if is_html else MIMEMultipart()
+        msg['From'] = smtp_user
+        msg['To'] = smtp_user
+        msg['Subject'] = subject
+        msg['Date'] = formatdate(localtime=True)
+        msg['Message-ID'] = make_msgid()
+
+        if is_html:
+            fallback_text = "AI Trading System Audit.\n\nBekijk deze e-mail in een mail-app die HTML weergave ondersteunt om de actuele tabellen te zien."
+            msg.attach(MIMEText(fallback_text, 'plain', 'utf-8'))
+            msg.attach(MIMEText(body, 'html', 'utf-8'))
+        else:
+            msg.attach(MIMEText(body, 'plain', 'utf-8'))
+            
+        notif_logger.info(f"Setup SMTP verbinding met {smtp_server} op poort {smtp_port}...")
+        with smtplib.SMTP(smtp_server, smtp_port, timeout=60) as server:
+            server.set_debuglevel(1)
+            server.starttls()
+            server.login(smtp_user, smtp_pass)
+            server.send_message(msg)
+            
+        notif_logger.info(f"SUCCES: Mailserver heeft bericht '{subject}' geaccepteerd.")
+        print(f"{datetime.now(TZ).isoformat()} [COMM][EMAIL][SUCCESS] ✅ Mailserver reageerde met 250 OK! Email '{subject}' is geaccepteerd.")
+        
+        timestamps = recent_sends + [time.time()]
+        EMAIL_TIMESTAMPS_PATH.write_text(json.dumps(timestamps[-10:], indent=2))
+        return True
+    except Exception as e:
+        import traceback
+        tb_str = traceback.format_exc()
+        error_message = f"FATALE FOUT in send_email: {e}\n{tb_str}"
+        notif_logger.error(error_message)
+        print(error_message) # Ook naar console voor directe zichtbaarheid
+        return False
 
 def _read_storage_stats() -> dict[str, Any]:
     if not STORAGE_STATS_PATH.exists():
@@ -2290,9 +3091,19 @@ def _brain_ws_payload() -> dict[str, Any]:
     obs = STATE.get("rl_last_observation")
     obs_d = obs if isinstance(obs, dict) else {}
     fw_bar = bar_values_from_obs_and_weights(fw_policy, obs_d)
+        
+        tm = RL_AGENT.training_monitor()
+        if isinstance(tm, dict):
+            stats = tm.get("stats", {})
+            if isinstance(stats, dict):
+                stats["is_training_active"] = str(os.getenv("RL_BACKGROUND_TRAIN", "0")).strip().lower() in ("1", "true", "yes", "on")
+                tm["stats"] = stats
+                
     return {
         "topic": "brain_stats",
-        "training_monitor": RL_AGENT.training_monitor(),
+        "reasoning": decision.get("reasoning", "Wachten op eerste besluit (RL inferentie)..."),
+        "generated_at": decision.get("generated_at", ""),
+            "training_monitor": tm,
         "feature_weights": fw_bar,
         "feature_weights_policy": fw_policy,
         "rl_observation": obs_d,
@@ -2309,7 +3120,7 @@ def _brain_ws_wire_payload() -> dict[str, Any]:
     focus = str(STATE.get("selected_market") or os.getenv("DEFAULT_TICKER", "BTC-EUR")).upper()
     inner = _brain_ws_payload()
     lite = elite_lite_rows(focus, _elite_ai_signals_payload(), list(STATE.get("active_markets") or []))
-    return build_brain_ws_wire_payload(
+    wire = build_brain_ws_wire_payload(
         focus_market=focus,
         training_monitor=inner.get("training_monitor") or {},
         feature_weights=inner.get("feature_weights") or {},
@@ -2318,3 +3129,6 @@ def _brain_ws_wire_payload() -> dict[str, Any]:
         social_buzz=inner.get("social_buzz") or {},
         lite_elite=lite,
     )
+    wire["reasoning"] = inner.get("reasoning", "Wachten op eerste besluit (RL inferentie)...")
+    wire["generated_at"] = inner.get("generated_at", "")
+    return wire

@@ -1,7 +1,6 @@
 """
-Bestand: app/services/risk.py
-Relatief pad: ./app/services/risk.py
-Functie: Past eenvoudige risk-regels toe op modeluitvoer (signaal, SL/TP en sizing).
+BESTANDSNAAM: /home/johan/AI_Trading/app/services/risk.py
+FUNCTIE: Past eenvoudige risk-regels toe op modeluitvoer (signaal, SL/TP en sizing).
 """
 
 from dataclasses import dataclass

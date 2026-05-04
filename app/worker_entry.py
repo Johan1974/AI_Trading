@@ -1,7 +1,6 @@
 """
-Worker-proces: trading/AI-bootstrap zonder FastAPI of Jinja2.
-
-Start: ``python -m app.worker_entry`` (docker-compose worker service).
+BESTANDSNAAM: /home/johan/AI_Trading/app/worker_entry.py
+FUNCTIE: Worker-proces: trading/AI-bootstrap zonder FastAPI of Jinja2 (docker-compose worker service).
 """
 
 from __future__ import annotations

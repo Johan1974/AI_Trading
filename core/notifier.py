@@ -1,5 +1,6 @@
 """
-System-audit: primair Telegram; optionele volledige SMTP-mail bij SYSTEM_ALERTS_EMAIL_ENABLED=1.
+BESTANDSNAAM: /home/johan/AI_Trading/core/notifier.py
+FUNCTIE: System-audit: primair Telegram; optionele volledige SMTP-mail bij SYSTEM_ALERTS_EMAIL_ENABLED=1.
 """
 
 from __future__ import annotations
@@ -16,7 +17,6 @@ from pathlib import Path
 from typing import Any
 
 import requests
-from app.datetime_util import UTC
 import pytz
 
 from core.auditor import format_startup_or_daily_audit_telegram
@@ -40,11 +40,13 @@ def _env_truthy(name: str) -> bool:
 
 
 def system_alerts_email_enabled() -> bool:
-    """Volledige HTML-e-mail voor restart/Jarvis/urgent alleen als expliciet ingeschakeld (backup)."""
-    return _env_truthy("SYSTEM_ALERTS_EMAIL_ENABLED")
+    """Volledige HTML-e-mail voor restart/Jarvis/urgent (mits EMAIL_ENABLED=1)."""
+    return _env_truthy("EMAIL_ENABLED")
 
 
 def telegram_configured() -> bool:
+    if str(os.getenv("TELEGRAM_ENABLED", "1")).strip().lower() not in ("1", "true", "yes", "on"):
+        return False
     token = str(os.getenv("TELEGRAM_TOKEN", "") or os.getenv("TELEGRAM_BOT_TOKEN", "")).strip()
     chat_id = str(os.getenv("TELEGRAM_CHAT_ID", "")).strip()
     return bool(token and chat_id)
@@ -52,6 +54,8 @@ def telegram_configured() -> bool:
 
 def send_telegram_message(text: str, *, disable_notification: bool = False) -> bool:
     """Ruwe Telegram-send via bot API (HTML). Zelfde env als TelegramNotifier."""
+    if str(os.getenv("TELEGRAM_ENABLED", "1")).strip().lower() not in ("1", "true", "yes", "on"):
+        return False
     token = str(os.getenv("TELEGRAM_TOKEN", "") or os.getenv("TELEGRAM_BOT_TOKEN", "")).strip()
     chat_id = str(os.getenv("TELEGRAM_CHAT_ID", "")).strip()
     if not token or not chat_id:
@@ -183,7 +187,6 @@ def send_restart_report(
         print("[NOTIFIER] Restart report email skipped: SMTP config incompleet (SYSTEM_ALERTS_EMAIL_ENABLED=1).")
         return tg_ok
 
-    ts_utc = datetime.now(UTC).isoformat()
     ts_local = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S %Z")
     gpu_text = "CUDA AVAILABLE" if bool(cuda_available) else "CUDA UNAVAILABLE"
     tenant_isolation = "PASS"
@@ -295,7 +298,6 @@ def send_restart_report(
     <tr><th align="left">Execution Engine</th><td>Helsinki Node</td></tr>
     <tr><th align="left">Trigger</th><td>{escape(trigger.upper())}</td></tr>
     <tr><th align="left">Generated (local)</th><td>{escape(ts_local)}</td></tr>
-    <tr><th align="left">Generated (UTC)</th><td>{escape(ts_utc)}</td></tr>
   </table>
   <h4>Equal-weight allocatie (Executive)</h4>
   <table border="1" cellspacing="0" cellpadding="6">

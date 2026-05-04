@@ -1,7 +1,6 @@
 """
-Bestand: core/reward_function.py
-Relatief pad: ./core/reward_function.py
-Functie: Gecentraliseerde RL-beloning: PnL-% t.o.v. vorige stap, exponentiële drawdown-straf (>2% onder HWM),
+BESTANDSNAAM: /home/johan/AI_Trading/core/reward_function.py
+FUNCTIE: Gecentraliseerde RL-beloning: PnL-% t.o.v. vorige stap, exponentiële drawdown-straf (>2% onder HWM),
          transactiewrijving, consistency-bonus (HOLD + whales + winstpositie), en optionele stop-loss-shock.
 """
 

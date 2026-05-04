@@ -1,12 +1,37 @@
-# Bestand: .gitignore
-# Relatief pad: ./.gitignore
-# Functie: Sluit gegenereerde lokale bestanden uit van versiebeheer.
-
+# --- PYTHON BALLAST ---
+__pycache__/
 .venv/
 venv/
-__pycache__/
 *.py[cod]
-bot.log
-logs/*.log
-.env
+.pytest_cache/
+
+# --- DATA & STORAGE (Niet in Git) ---
 storage/
+data/
+artifacts/rl/*.zip
+artifacts/rl/*.pth
+artifacts/rl/*.onnx
+*.db
+*.sqlite
+
+# --- LOGS & DIAGNOSTIEK ---
+_logs_hub/
+logs/
+*.log
+performance.json
+assistant_focus.json
+
+# --- BEVEILIGING (HET HEILIGDOM) ---
+# We negeren standaard ALLE .env bestanden...
+.env
+.env.*
+.trading_vault
+../.trading_vault
+
+# ...BEHALVE de docker-compose.env (deze mag wel naar Git)
+!docker-compose.env
+
+# --- IDE & OS ---
+.vscode/
+.idea/
+.DS_Store

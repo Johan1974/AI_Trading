@@ -170,6 +170,10 @@ Default thresholds:
 - `composite < -0.20` -> `SELL`
 - anders -> `HOLD`
 
+## Timezone Policy (Verplicht)
+
+Het systeem gebruikt **altijd en uitsluitend** de tijdzone **Europe/Amsterdam** (Amsterdam tijd). Geen enkele andere tijdzone is toegestaan in de configuratie, code of containers. Amsterdam is te allen tijde de default voor logging, cronjobs, UI-weergave, notificaties en Docker-synchronisatie.
+
 ## RiskManager beleid
 
 Actieve riskregels vóór execution:
