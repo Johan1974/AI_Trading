@@ -1,0 +1,19 @@
+models:
+  - title: Helsinki Trading AI
+    provider: ollama
+    model: qwen2.5-coder:3b
+    baseUrl: http://127.0.0.1:11434
+
+tabAutocompleteModel:
+  title: Autocomplete
+  provider: ollama
+  model: qwen2.5-coder:3b
+
+embeddingsProvider:
+  provider: ollama
+  model: qwen2.5-coder:3b
+
+customCommands:
+  - name: audit
+    description: Trading-specifieke audit
+    prompt: Analyseer de geselecteerde code en zoek naar latency-fouten of problemen met de Bitvavo-executie.
