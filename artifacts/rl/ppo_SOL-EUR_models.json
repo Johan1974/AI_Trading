@@ -1,7 +1,17 @@
 [
   {
+    "timestamp": "20260512T212636Z",
+    "reward_score": -244.9827,
+    "model_path": "artifacts/rl/ppo_SOL-EUR_20260512T212636Z.zip"
+  },
+  {
     "timestamp": "20260512T003203Z",
     "reward_score": -387.27206,
     "model_path": "artifacts/rl/ppo_SOL-EUR_20260512T003203Z.zip"
+  },
+  {
+    "timestamp": "20260512T210722Z",
+    "reward_score": -477.391812,
+    "model_path": "artifacts/rl/ppo_SOL-EUR_20260512T210722Z.zip"
   }
 ]
