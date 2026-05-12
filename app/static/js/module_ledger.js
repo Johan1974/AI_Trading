@@ -295,8 +295,9 @@ window.ModuleLedger = {
         }
         const ctx = esc(String(t.ledger_context || "—").slice(0, 120));
         const stake = this._ledgerStakeEur(t);
-        const winEur = closed ? this._ledgerWinstEurClosed(t) : null;
+        const winEur = closed ? this._ledgerWinstEurClosed(t) : (Number.isFinite(Number(t.live_pnl_eur)) ? Number(t.live_pnl_eur) : null);
         const inlegCell = stake != null && Number.isFinite(stake) ? esc(this._fmtEur(stake)) : "—";
+        const winstCls = !closed && winEur != null ? (winEur >= 0 ? " positive" : " negative") : "";
         const winstCell = winEur != null && Number.isFinite(winEur) ? esc(this._fmtEur(winEur)) : "—";
         const statusCol = this._statusTdHtml(t, esc, closed);
 
@@ -308,7 +309,7 @@ window.ModuleLedger = {
             `<td class="cockpit-ledger-mono">${slHtml}</td>` +
             `<td class="cockpit-ledger-mono">${hasExit && exitPx != null && Number.isFinite(exitPx) ? exitPx.toFixed(4) : "—"}</td>` +
             `<td class="cockpit-ledger-mono">${inlegCell}</td>` +
-            `<td class="cockpit-ledger-mono">${winstCell}</td>` +
+            `<td class="cockpit-ledger-mono${winstCls}">${winstCell}</td>` +
             statusCol +
             `<td class="cockpit-ledger-mono">${esc(dur)}</td>` +
             `<td class="${pctCls} cockpit-ledger-mono">${pct.toFixed(2)}%</td>` +

@@ -160,6 +160,7 @@ services:
       context: .
       dockerfile: Dockerfile.dashboard-validator
     image: ai-trading-validator:latest
+    profiles: ["manual"]
     container_name: ai-trading-validator
     # AFGEDWONGEN: Root-permissies voor Docker socket manipulatie
     user: root
@@ -196,10 +197,81 @@ services:
 
 
 
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ai-trading-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    networks:
+      - ai_trading_net
+    volumes:
+      - ollama_models:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices: [{driver: nvidia, count: 1, capabilities: [gpu]}]
+    environment:
+      TZ: Europe/Amsterdam
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  ollama-janitor:
+    image: python:3.12-slim
+    container_name: ai-trading-ollama-janitor
+    restart: unless-stopped
+    networks:
+      - ai_trading_net
+    depends_on:
+      ollama: { condition: service_healthy }
+    environment:
+      TZ: Europe/Amsterdam
+      OLLAMA_HOST: http://ollama:11434
+      VRAM_LIMIT_BYTES: "8053063680"
+      JANITOR_INTERVAL: "30"
+    command:
+      - python3
+      - -c
+      - |
+        import urllib.request, json, time, os
+        HOST = os.getenv("OLLAMA_HOST", "http://ollama:11434")
+        LIMIT = int(os.getenv("VRAM_LIMIT_BYTES", "8053063680"))
+        INTERVAL = int(os.getenv("JANITOR_INTERVAL", "30"))
+        def call(path, data=None):
+            req = urllib.request.Request(
+                HOST + path,
+                data=json.dumps(data).encode() if data else None,
+                headers={"Content-Type": "application/json"} if data else {},
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return json.loads(resp.read())
+        print(f"[janitor] start — limit {LIMIT//1024**2}MB VRAM, poll {INTERVAL}s", flush=True)
+        while True:
+            time.sleep(INTERVAL)
+            try:
+                models = (call("/api/ps") or {}).get("models") or []
+                total = sum(int(m.get("size_vram") or 0) for m in models)
+                if total > LIMIT:
+                    for m in sorted(models, key=lambda x: x.get("expires_at", "")):
+                        name = m["name"]
+                        call("/api/generate", {"model": name, "keep_alive": 0})
+                        freed = int(m.get("size_vram") or 0)
+                        total -= freed
+                        print(f"[janitor] unloaded {name} ({freed//1024**2}MB) → {total//1024**2}MB remain", flush=True)
+                        if total <= LIMIT:
+                            break
+            except Exception as exc:
+                print(f"[janitor] {exc}", flush=True)
+
 networks:
   ai_trading_net:
     driver: bridge
 
 volumes:
   redis_data:
+  ollama_models:
   
