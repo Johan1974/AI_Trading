@@ -9,10 +9,31 @@ FUNCTIE: Zelfstandige PPO-trainer container entry point. Draait onafhankelijk va
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import time
+from pathlib import Path
 
 from app.datetime_util import UTC  # noqa: F401 — timezone.utc wrapper voor Python 3.10
+
+_OVERRIDES_FILE = Path(os.getenv("OVERRIDES_FILE", "data/optimizer_overrides.json"))
+
+
+def _apply_optimizer_overrides(rl_agent) -> None:
+    if not _OVERRIDES_FILE.exists():
+        return
+    try:
+        overrides = json.loads(_OVERRIDES_FILE.read_text())
+    except Exception:
+        return
+    changed = {}
+    if "learning_rate" in overrides and rl_agent.model is not None:
+        new_lr = float(overrides.pop("learning_rate"))
+        rl_agent.model.lr_schedule = lambda _: new_lr
+        changed["learning_rate"] = new_lr
+    if changed:
+        _OVERRIDES_FILE.write_text(json.dumps(overrides, indent=2))
+        print(f"[TRAINER] optimizer override toegepast: {changed}", flush=True)
 
 
 async def _trainer_loop() -> None:
@@ -36,6 +57,7 @@ async def _trainer_loop() -> None:
     last_checkpoint = 0.0
 
     while True:
+        _apply_optimizer_overrides(rl_agent)
         t0 = time.monotonic()
         try:
             sem = asyncio.Semaphore(conc)

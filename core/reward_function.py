@@ -7,8 +7,11 @@ FUNCTIE: Gecentraliseerde RL-beloning: PnL-% t.o.v. vorige stap, exponentiële d
 
 from __future__ import annotations
 
+import json
 import math
 import os
+import time
+from pathlib import Path
 
 
 def _f(name: str, default: str) -> float:
@@ -16,6 +19,24 @@ def _f(name: str, default: str) -> float:
         return float(os.getenv(name, default))
     except (TypeError, ValueError):
         return float(default)
+
+
+_OVERRIDES_FILE = Path(os.getenv("OVERRIDES_FILE", "data/optimizer_overrides.json"))
+_overrides_cache: dict = {}
+_overrides_ts: float = 0.0
+_OVERRIDES_TTL = 60.0  # herscan elke 60s
+
+
+def _pnl_scale() -> float:
+    global _overrides_cache, _overrides_ts
+    if time.monotonic() - _overrides_ts > _OVERRIDES_TTL:
+        try:
+            if _OVERRIDES_FILE.exists():
+                _overrides_cache = json.loads(_OVERRIDES_FILE.read_text())
+        except Exception:
+            pass
+        _overrides_ts = time.monotonic()
+    return float(_overrides_cache.get("pnl_scale") or REWARD_PNL_SCALE)
 
 
 # Schaal: staprendement (fraction) → reward (ordergelijk aan eerdere EUR/alpha-mix).
@@ -71,7 +92,7 @@ def compute_trading_step_reward(
 
     le = max(float(last_equity), 1.0)
     step_return_frac = (float(equity) - float(last_equity)) / le
-    pnl_reward = step_return_frac * REWARD_PNL_SCALE
+    pnl_reward = step_return_frac * _pnl_scale()
 
     peak = max(float(equity_peak), 1e-9)
     dd_ratio = max(0.0, (peak - float(equity)) / peak)

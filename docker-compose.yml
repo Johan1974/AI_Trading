@@ -197,6 +197,32 @@ services:
 
 
 
+  optimizer:
+    build:
+      context: .
+      dockerfile: Dockerfile.optimizer
+    image: ai-trading-optimizer:latest
+    container_name: ai-trading-optimizer
+    restart: unless-stopped
+    networks:
+      - ai_trading_net
+    depends_on:
+      redis:  { condition: service_healthy }
+      ollama: { condition: service_healthy }
+    volumes:
+      - ./data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      TZ: Europe/Amsterdam
+      REDIS_URL: redis://redis:6379/0
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_MODEL: qwen2.5-coder:7b
+      OVERRIDES_FILE: /app/data/optimizer_overrides.json
+      REPORT_FILE: /app/data/optimization_report.txt
+      OPTIMIZER_POLL_SEC: "300"
+      VRAM_TOTAL_BYTES: "8589934592"
+      VRAM_HEADROOM_BYTES: "1073741824"
+
   ollama:
     image: ollama/ollama:latest
     container_name: ai-trading-ollama
