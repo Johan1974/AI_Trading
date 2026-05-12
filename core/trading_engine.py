@@ -1,11 +1,12 @@
 """
-BESTANDSNAAM: /home/johan/AI_Trading/core/trading_engine.py
+BESTANDSNAAM: core/trading_engine.py
 FUNCTIE: Multi-asset elite execution loop. Itereert over actieve Elite-markten uit de scanner.
 Multi-asset elite execution loop: één sweep over alle actieve Elite-markten per interval,
 ongeacht de in de UI geselecteerde ticker (die blijft voor charts/UI).
 
-Strikt één actieve paper-positie per ticker: BUY-blokkade en logging gebeuren in de paper-cycle
-(`_run_paper_cycle_sync`) via `has_active_paper_position_for_ticker` op de wallet (SQLite wallet_state).
+Strikt paper-BUY-limiet (Bitvavo: alleen *-EUR): één open positie per **exact paar** én max. één per **basis** (coin),
+via ``has_active_paper_position_for_ticker`` / ``has_active_paper_position_for_base_currency`` in
+``_run_paper_cycle_sync``, ``paper_buy_blocked_if_open_position`` en ``PaperTradeManager.process_signal``.
 """
 
 from __future__ import annotations
@@ -23,8 +24,54 @@ from app.services.rss_engine import RssEngineService
 from core.risk_management import allocation_snapshot, elite_equal_weight_enabled
 
 SKIP_BUY_ACTIVE_POSITION_LOG = (
-    "SKIP BUY: {ticker} already has an active position. No overlapping trades allowed."
+    "[SKIP] Trade geweigerd: er staat al een positie open voor {ticker}"
 )
+
+
+def paper_base_currency_from_market(market: str) -> str:
+    """Basisvaluta van een paar, bv. ``BTC-EUR`` → ``BTC``."""
+    m = str(market or "").strip().upper().replace("/", "-")
+    if not m:
+        return ""
+    return m.split("-", 1)[0].strip() if "-" in m else m
+
+
+def has_active_paper_position_for_base_currency(wallet: dict[str, Any] | None, market: str) -> bool:
+    """
+    True als er ergens al open qty/lots zijn voor **dezelfde basis** (max 1 open trade per coin).
+    Bitvavo gebruikt EUR-quote; deze check vangt o.a. dubbele wallet-keys / inconsistente marktstrings.
+    """
+    if not isinstance(wallet, dict):
+        return False
+    base = paper_base_currency_from_market(market)
+    if not base:
+        return False
+
+    def _key_base(mk_raw: str) -> str:
+        m = str(mk_raw or "").strip().upper().replace("/", "-")
+        return m.split("-", 1)[0].strip() if "-" in m else m
+
+    pbm = wallet.get("position_by_market") if isinstance(wallet.get("position_by_market"), dict) else {}
+    for k, qv in pbm.items():
+        if _key_base(str(k)) != base:
+            continue
+        if float(qv or 0.0) > 1e-12:
+            return True
+
+    obm = wallet.get("open_lots_by_market") if isinstance(wallet.get("open_lots_by_market"), dict) else {}
+    for k, lots in obm.items():
+        if _key_base(str(k)) != base:
+            continue
+        if not isinstance(lots, list):
+            continue
+        for lot in lots:
+            if isinstance(lot, dict) and float(lot.get("qty", 0.0) or 0.0) > 1e-12:
+                return True
+
+    sym_u = str(wallet.get("position_symbol") or "").strip().upper().replace("/", "-")
+    if sym_u and _key_base(sym_u) == base and float(wallet.get("position_qty", 0.0) or 0.0) > 1e-12:
+        return True
+    return False
 
 
 def has_active_paper_position_for_ticker(wallet: dict[str, Any] | None, ticker: str) -> bool:
@@ -34,19 +81,28 @@ def has_active_paper_position_for_ticker(wallet: dict[str, Any] | None, ticker: 
     """
     if not isinstance(wallet, dict):
         return False
-    mku = str(ticker or "").strip().upper()
+    mku = str(ticker or "").strip().upper().replace("/", "-")
     if not mku:
         return False
     pbm = wallet.get("position_by_market") if isinstance(wallet.get("position_by_market"), dict) else {}
     if float(pbm.get(mku, 0.0) or 0.0) > 1e-12:
         return True
+    for k, q in pbm.items():
+        if str(k).strip().upper().replace("/", "-") == mku and float(q or 0.0) > 1e-12:
+            return True
     obm = wallet.get("open_lots_by_market") if isinstance(wallet.get("open_lots_by_market"), dict) else {}
     lots = obm.get(mku)
+    if not isinstance(lots, list):
+        for k, v in obm.items():
+            if str(k).strip().upper().replace("/", "-") == mku and isinstance(v, list):
+                lots = v
+                break
     if isinstance(lots, list):
         for lot in lots:
             if isinstance(lot, dict) and float(lot.get("qty", 0.0) or 0.0) > 1e-12:
                 return True
-    if str(wallet.get("position_symbol") or "").strip().upper() == mku and float(wallet.get("position_qty", 0.0) or 0.0) > 1e-12:
+    sym_u = str(wallet.get("position_symbol") or "").strip().upper().replace("/", "-")
+    if sym_u == mku and float(wallet.get("position_qty", 0.0) or 0.0) > 1e-12:
         return True
     return False
 
@@ -131,7 +187,7 @@ class TradingEngine:
         while True:
             try:
                 print(f"[ENGINE] Elite sweep | torch_device={_torch_device_tag()}")
-                pairs = elite_execution_pairs(self._state)
+                pairs = list(dict.fromkeys(elite_execution_pairs(self._state)))
                 lookback = int(self._state.get("lookback_days", 400) or 400)
                 crypto_key = str(self._state.get("cryptocompare_key") or os.getenv("CRYPTOCOMPARE_KEY") or "")
                 cmc_key = str(

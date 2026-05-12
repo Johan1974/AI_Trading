@@ -1,14 +1,17 @@
 """
-BESTANDSNAAM: /home/johan/AI_Trading/app/trading_core.py
+BESTANDSNAAM: app/trading_core.py
 FUNCTIE: Trading stack: markt/ML/paper engine — geen FastAPI/Jinja2 (worker + HTTP-shell importeren dit).
 """
 
 import asyncio
 import io
 import base64
+import zlib
+import threading
 from collections import deque
 import logging
 import os
+import re
 import time
 import json
 import logging
@@ -33,12 +36,21 @@ from logging.handlers import RotatingFileHandler
 from datetime import datetime, timedelta
 
 from app.datetime_util import UTC
+import math
 from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Test-trade vriendelijke defaults (override in .env). Portal zet dezelfde keys in main.py vóór import.
+if os.getenv("JUDGE_SIGNAL_THRESHOLD") is None:
+    os.environ["JUDGE_SIGNAL_THRESHOLD"] = "0.08"
+if os.getenv("EXPECTED_RETURN_SIGNAL_THRESHOLD_PCT") is None:
+    os.environ["EXPECTED_RETURN_SIGNAL_THRESHOLD_PCT"] = "0.35"
+if os.getenv("RISK_MAX_SPREAD_BPS_FOR_TRADING") is None:
+    os.environ["RISK_MAX_SPREAD_BPS_FOR_TRADING"] = "90"
 
 _PORTAL_SLIM = str(os.getenv("AI_TRADING_PROCESS", "") or "").strip().lower() == "portal"
 
@@ -79,6 +91,7 @@ from app.redis_bridge import (
     publish_trading_update,
 )
 from app.services.state import STATE, append_event, current_tenant_id, set_current_tenant
+from app.services.prediction_ui import prediction_signal_allowed_by_rl, tenant_rl_decision_for_symbol, trade_confidence_threshold_01
 from app.settings import LIVE_MODE, validate_mode_configuration
 from app.services.system_stats import collect_system_stats, get_system_stats
 from app.services.telegram_notifier import TelegramNotifier
@@ -91,7 +104,7 @@ from core.notifier import (
     send_watchdog_recovery_telegram,
 )
 from core.trading_logic import MIN_BUY_CONFIDENCE, MIN_HOLD_MINUTES, should_block_sell_for_min_hold
-from core.scanner import DynamicVolatilityScanner
+from core.scanner import DynamicVolatilityScanner, _base_from_market
 from core.news_engine import apply_social_overlay_to_rl_row, refresh_social_momentum_state
 from core.social_engine import (
     build_trade_decision_context,
@@ -99,11 +112,11 @@ from core.social_engine import (
     refresh_whale_radar_state,
 )
 from core.trading_engine import (
-    SKIP_BUY_ACTIVE_POSITION_LOG,
     TradingEngine,
     has_active_paper_position_for_ticker,
 )
 from core.risk_manager import RiskManager as CoreRiskManager, risk_profile_dict
+from core.worker_execution import calculate_order_size_for_signal, paper_buy_blocked_if_open_position
 from core.risk_management import (
     SKIP_MAX_PORTFOLIO_ALLOCATION_LOG,
     allocation_snapshot,
@@ -121,7 +134,7 @@ if not _PORTAL_SLIM:
     from agent.trader import Trader, TraderConfig
     from app.ai.sentiment.finbert_sentiment import LazyFinBertSentimentAnalyzer
     from app.rl.agent_rl import RLAgentService, get_rl_ppo_device
-    from app.rl.data import build_rl_training_frame, fetch_bitvavo_historical_candles
+    from app.rl.data import build_rl_training_frame, fetch_bitvavo_historical_candles, patch_last_row_live_orderbook
 else:
     from app.portal_stubs import (
         PortalNeutralSentiment as LazyFinBertSentimentAnalyzer,
@@ -193,6 +206,110 @@ def _process_role() -> str:
     return str(os.getenv("AI_TRADING_PROCESS", "all") or "all").strip().lower()
 
 
+# --- NVML (één init; hergebruik handles) — voorkomt zware nvmlInit()-spam op hot paths ---
+_nvml_lock = threading.Lock()
+_nvml_initialized = False
+_nvml_handles: dict[int, Any] = {}
+
+
+def _nvml_ensure_initialized() -> bool:
+    global _nvml_initialized
+    if not pynvml:
+        return False
+    with _nvml_lock:
+        if _nvml_initialized:
+            return True
+        try:
+            pynvml.nvmlInit()
+            _nvml_initialized = True
+            return True
+        except Exception:
+            return False
+
+
+def _nvml_device_handle(device_index: int = 0) -> Any | None:
+    if not _nvml_ensure_initialized():
+        return None
+    di = int(device_index)
+    with _nvml_lock:
+        if di not in _nvml_handles:
+            try:
+                _nvml_handles[di] = pynvml.nvmlDeviceGetHandleByIndex(di)
+            except Exception:
+                return None
+        return _nvml_handles.get(di)
+
+
+def _nvml_device_count() -> int:
+    if not _nvml_ensure_initialized():
+        return 0
+    try:
+        return int(pynvml.nvmlDeviceGetCount())
+    except Exception:
+        return 0
+
+
+def _nvml_gpu_overlay_for_system_stats(device_index: int = 0) -> dict[str, Any]:
+    """GPU-velden in dezelfde vorm als ``collect_system_stats()`` (merge met ``collect_system_stats_light_no_gpu``)."""
+    z = {
+        "gpu_util_pct": 0.0,
+        "gpu_mem_util_pct": 0.0,
+        "gpu_util_effective": 0.0,
+        "vram_used_mb": 0.0,
+        "vram_total_mb": 0.0,
+        "gpu_ok": False,
+        "gpu_name": "",
+        "gpu_index": -1,
+    }
+    h = _nvml_device_handle(device_index)
+    if h is None or not pynvml:
+        return z
+    try:
+        name = str(pynvml.nvmlDeviceGetName(h) or "")
+        util = pynvml.nvmlDeviceGetUtilizationRates(h)
+        sm = max(0.0, min(100.0, float(util.gpu)))
+        memu = max(0.0, min(100.0, float(util.memory)))
+        mem_info = pynvml.nvmlDeviceGetMemoryInfo(h)
+        used_mb = float(mem_info.used) / (1024.0 * 1024.0)
+        tot_mb = float(mem_info.total) / (1024.0 * 1024.0)
+        eff = max(0.0, min(100.0, max(sm, memu)))
+        if eff < 1.0:
+            eff = 1.0
+        z.update(
+            {
+                "gpu_util_pct": round(sm, 1),
+                "gpu_mem_util_pct": round(memu, 1),
+                "gpu_util_effective": round(eff, 1),
+                "vram_used_mb": round(used_mb, 1),
+                "vram_total_mb": round(tot_mb, 1),
+                "gpu_ok": True,
+                "gpu_name": name.strip(),
+                "gpu_index": int(device_index),
+            }
+        )
+        return z
+    except Exception:
+        return z
+
+
+def _compact_worker_portal_system_stats() -> dict[str, Any]:
+    """Worker portal-snapshot: TTL-cache van ``get_system_stats()`` + NVML-overlay (één ``nvmlInit``; GPU uit NVML i.p.v. dubbel polling)."""
+    raw = dict(get_system_stats())
+    nv = _nvml_gpu_overlay_for_system_stats(0)
+    if nv.get("gpu_ok"):
+        raw.update(nv)
+    comp = compact_system_stats(raw)
+    h0 = _nvml_device_handle(0)
+    if h0 is not None and pynvml:
+        try:
+            t = float(pynvml.nvmlDeviceGetTemperature(h0, pynvml.NVML_TEMPERATURE_GPU))
+            if t > 0.0:
+                comp["gpu_temp_max"] = round(t, 1)
+        except Exception:
+            pass
+    return comp
+
+
 # --- Rate Limiting & Notification Management ---
 
 STORAGE_ROOT = Path(__file__).parent.parent / "storage"
@@ -200,8 +317,84 @@ STORAGE_STATS_PATH = STORAGE_ROOT / "stats.json"
 
 LOGS_DIR = Path("/app/logs") if Path("/.dockerenv").exists() else Path.cwd() / "_logs_hub"
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
+
+# stdout-tee geeft vaak al ``2026-..T...+hh:mm [TAG]`` door; voorkom dubbele prefix in blackbox.
+_BOT_LOG_LEADING_ISO_TS = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\s+"
+)
+
+
+def _mem_trace_global_log_due(*, kind: str, cooldown_sec: int) -> bool:
+    """
+    Cross-process: maximaal één MEM-TRACE van dit type per cooldown (korte flock + system_state).
+    Vermindert dubbele CRITICAL-regels bij meerdere Uvicorn-workers.
+    """
+    cd = max(30, int(cooldown_sec))
+    try:
+        import fcntl
+    except ImportError:
+        fcntl = None  # type: ignore[assignment]
+    try:
+        from app.services.reporting import mark_notification_sent, notification_cooldown_due
+
+        key = f"mem_trace_{kind}_debounce"
+        if fcntl is None:
+            if not notification_cooldown_due(key=key, cooldown_sec=cd):
+                return False
+            mark_notification_sent(key=key)
+            return True
+        fh = (LOGS_DIR / "mem_trace_cluster.flock").open("a+")
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            if not notification_cooldown_due(key=key, cooldown_sec=cd):
+                return False
+            mark_notification_sent(key=key)
+            return True
+        finally:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            except Exception:
+                pass
+            try:
+                fh.close()
+            except Exception:
+                pass
+    except Exception:
+        return True
+
+
 HEALTH_LOG_PATH = LOGS_DIR / "system_health.log"
 NOTIF_LOG_PATH = LOGS_DIR / "notification_errors.log"
+STARTUP_AUDIT_EMAIL_MARKER_PATH = LOGS_DIR / "startup_audit_last_sent_utc.txt"
+
+
+def _startup_audit_email_due() -> bool:
+    """
+    Anti-spam guard: startup audit mail maximaal 1x per interval.
+    Beperkt dubbele mails tijdens restart-loops.
+    """
+    # Default 30 min anti-spam tijdens crash/restart loops.
+    min_sec = max(60, int(os.getenv("STARTUP_AUDIT_EMAIL_MIN_INTERVAL_SEC", "1800") or 1800))
+    now = datetime.now(UTC)
+    try:
+        if STARTUP_AUDIT_EMAIL_MARKER_PATH.is_file():
+            raw = STARTUP_AUDIT_EMAIL_MARKER_PATH.read_text(encoding="utf-8").strip()
+            if raw:
+                last = datetime.fromisoformat(raw)
+                if last.tzinfo is None:
+                    last = last.replace(tzinfo=UTC)
+                if (now - last).total_seconds() < float(min_sec):
+                    return False
+    except Exception:
+        return True
+    return True
+
+
+def _mark_startup_audit_email_sent() -> None:
+    try:
+        STARTUP_AUDIT_EMAIL_MARKER_PATH.write_text(datetime.now(UTC).isoformat(), encoding="utf-8")
+    except Exception:
+        pass
 
 health_logger = logging.getLogger("system_health")
 health_logger.setLevel(logging.INFO)
@@ -292,6 +485,39 @@ def _probe_torch_cuda_available() -> bool:
     except Exception:
         return False
 
+
+def _resolve_compute_device_with_retry() -> str:
+    """
+    Probeer CUDA 1x te herstellen; val daarna stabiel terug op CPU.
+    """
+    try:
+        import torch
+    except Exception:
+        return "cpu"
+
+    if torch.cuda.is_available():
+        return "cuda"
+
+    # Eenmalige recovery-poging vóór fallback.
+    print(f"{datetime.now(TZ).isoformat()} [DEVICE] CUDA unavailable — attempting single driver re-init...")
+    try:
+        if hasattr(torch.cuda, "init"):
+            torch.cuda.init()
+        if hasattr(torch.cuda, "empty_cache"):
+            torch.cuda.empty_cache()
+    except Exception as exc:
+        print(f"{datetime.now(TZ).isoformat()} [DEVICE] CUDA re-init failed: {exc}")
+    time.sleep(1.5)
+    return "cuda" if torch.cuda.is_available() else "cpu"
+
+
+def _apply_cpu_fallback_runtime() -> None:
+    """Forceer CPU-inference paden zodat worker doorloopt bij GPU-uitval."""
+    os.environ["RL_PPO_DEVICE"] = "cpu"
+    os.environ["FINBERT_USE_CUDA"] = "0"
+    STATE["compute_device"] = "cpu"
+    print(f"{datetime.now(TZ).isoformat()} [DEVICE] Running in CPU fallback mode (inference continues).")
+
 # --- FRESH START POLICY: Directory Guard & Cleanup ---
 _marker = Path("/tmp/logs_cleared.marker")
 if not _marker.exists():
@@ -362,7 +588,31 @@ AUTO_OPT_SCORE_HISTORY: list[float] = []
 AUTO_OPT_BEST_SETTINGS: dict[str, Any] = {}
 ALERT_LAST_SENT_AT: dict[str, str] = {}
 # Default > elite sweep interval (~60s) to avoid false positives; raise further if FinBERT/PPO blocks the loop.
-WATCHDOG_STALL_LIMIT_SEC = int(os.getenv("WATCHDOG_STALL_LIMIT_SEC", "150") or 150)
+# Default 1200s (20 min): langere Auto-Heal-drempel tijdens RL-training / trage engine-ticks.
+WATCHDOG_STALL_LIMIT_SEC = int(os.getenv("WATCHDOG_STALL_LIMIT_SEC", "1200") or 1200)
+WATCHDOG_STARTUP_GRACE_SEC = int(os.getenv("WATCHDOG_STARTUP_GRACE_SEC", "240") or 240)
+_PROCESS_START_MONO = time.monotonic()
+
+
+def _daily_stop_loss_drawdown_pct() -> float:
+    """
+    Max drawdown t.o.v. paper startkapitaal voordat een 'daily stop-loss' alert gaat.
+    Paper default 15% (ruimte voor meerdere ~10%-trades); LIVE default 3%.
+    Override: zet ``DAILY_STOP_LOSS_PCT`` (één waarde voor beide modi).
+    """
+    raw = str(os.getenv("DAILY_STOP_LOSS_PCT", "") or "").strip()
+    if raw:
+        try:
+            return max(0.5, min(90.0, float(raw)))
+        except (TypeError, ValueError):
+            pass
+    return 3.0 if LIVE_MODE else 15.0
+
+
+def _paper_daily_stop_auto_resume_enabled() -> bool:
+    if LIVE_MODE:
+        return False
+    return str(os.getenv("PAPER_DAILY_STOP_AUTO_RESUME", "1")).strip().lower() in ("1", "true", "yes", "on")
 TZ = pytz.timezone("Europe/Amsterdam")
 MIN_EXPLORATION_EPS = 0.05
 PREDICT_QUEUE_MAX = int(os.getenv("PREDICT_QUEUE_MAX", "128") or 128)
@@ -510,28 +760,104 @@ def _portfolio_distribution_snapshot() -> list[dict[str, Any]]:
     cash = float(wallet.get("cash", 0.0) or 0.0)
     lp = wallet.get("last_prices_by_market") if isinstance(wallet.get("last_prices_by_market"), dict) else {}
     pbm = wallet.get("position_by_market") if isinstance(wallet.get("position_by_market"), dict) else {}
-    out = [
-        {"asset": "EUR", "qty": cash, "weight_pct": (cash / max(1.0, equity)) * 100.0},
-    ]
+    obm = wallet.get("open_lots_by_market") if isinstance(wallet.get("open_lots_by_market"), dict) else {}
+
+    def _norm_mk(raw: str) -> str:
+        return str(raw or "").strip().upper().replace("/", "-")
+
+    def _fallback_px_from_obm(mku_key: str) -> float:
+        mku = _norm_mk(mku_key)
+        lots = obm.get(mku_key)
+        if not isinstance(lots, list):
+            lots = obm.get(mku)
+        if not isinstance(lots, list):
+            for k, v in obm.items():
+                if _norm_mk(k) == mku and isinstance(v, list):
+                    lots = v
+                    break
+            else:
+                lots = []
+        q_acc = 0.0
+        c_acc = 0.0
+        for lot in lots:
+            if not isinstance(lot, dict):
+                continue
+            try:
+                rq = float(lot.get("qty") or 0.0)
+                ep = float(lot.get("entry_price") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if rq > 1e-12 and ep > 1e-12:
+                q_acc += rq
+                c_acc += rq * ep
+        return c_acc / q_acc if q_acc > 1e-12 else 0.0
+
+    # Robust denominator: voorkom absurde percentages bij corrupte/te kleine equity.
+    derived_total = max(0.0, cash)
+    if isinstance(pbm, dict) and pbm:
+        for mkt, qv in pbm.items():
+            try:
+                qty0 = float(qv or 0.0)
+            except (TypeError, ValueError):
+                qty0 = 0.0
+            if qty0 <= 1e-12:
+                continue
+            mku0 = _norm_mk(mkt)
+            px0 = float(lp.get(mku0, 0.0) or 0.0)
+            if px0 <= 0 and mku0 == _norm_mk(str(wallet.get("position_symbol") or "")):
+                px0 = float(wallet.get("last_price", 0.0) or 0.0)
+            if px0 <= 0:
+                px0 = _fallback_px_from_obm(mku0)
+            derived_total += max(0.0, qty0 * max(0.0, px0))
+    denom = max(1.0, float(equity if equity == equity else 0.0), float(derived_total))
+    out = [{"asset": "EUR", "qty": cash, "weight_pct": max(0.0, min(100.0, (cash / denom) * 100.0))}]
+    def _lots_qty(mku: str) -> float:
+        mk = _norm_mk(mku)
+        lots = obm.get(mk)
+        if not isinstance(lots, list):
+            for k, v in obm.items():
+                if _norm_mk(k) == mk and isinstance(v, list):
+                    lots = v
+                    break
+            else:
+                lots = []
+        if not isinstance(lots, list):
+            return 0.0
+        tot = 0.0
+        for lot in lots:
+            if isinstance(lot, dict):
+                try:
+                    tot += max(0.0, float(lot.get("qty", 0.0) or 0.0))
+                except (TypeError, ValueError):
+                    pass
+        return float(tot)
     if pbm:
         for mkt, qv in pbm.items():
-            qty = float(qv or 0.0)
+            mku = _norm_mk(mkt)
+            qty_guess = float(qv or 0.0)
+            qty = _lots_qty(mku) or qty_guess
+            # Guard corrupted pbm (can contain price/notional).
+            if qty > 10.0 and equity < 200000.0 and _lots_qty(mku) <= 1e-12:
+                continue
             if qty <= 1e-12:
                 continue
-            mku = str(mkt).strip().upper()
             px = float(lp.get(mku, 0.0) or 0.0)
-            if px <= 0 and mku == str(wallet.get("position_symbol") or "").upper():
+            if px <= 0 and mku == _norm_mk(str(wallet.get("position_symbol") or "")):
                 px = float(wallet.get("last_price", 0.0) or 0.0)
+            if px <= 0:
+                px = _fallback_px_from_obm(mku)
+            if px <= 0:
+                continue
             pos_val = max(0.0, qty * px)
             if pos_val > 0:
-                out.append({"asset": mku, "qty": qty, "weight_pct": (pos_val / max(1.0, equity)) * 100.0})
+                out.append({"asset": mku, "qty": qty, "weight_pct": max(0.0, min(100.0, (pos_val / denom) * 100.0))})
         return out
     market = str(wallet.get("position_symbol") or "NONE").upper()
     qty = float(wallet.get("position_qty", 0.0) or 0.0)
     px = float(wallet.get("last_price", 0.0) or 0.0)
     pos_val = max(0.0, qty * px) if market != "NONE" else 0.0
     if market != "NONE" and pos_val > 0:
-        out.append({"asset": market, "qty": qty, "weight_pct": (pos_val / max(1.0, equity)) * 100.0})
+        out.append({"asset": market, "qty": qty, "weight_pct": max(0.0, min(100.0, (pos_val / denom) * 100.0))})
     return out
 
 _peak_summary = {"cpu_max": 0.0, "ram_max": 0.0, "gpu_util_max": 0.0, "gpu_temp_max": 0.0, "last_reset": time.time()}
@@ -554,19 +880,22 @@ async def _resource_watchdog_and_heartbeat_loop() -> None:
             if cpu > _peak_summary["cpu_max"]: _peak_summary["cpu_max"] = cpu
             if ram > _peak_summary["ram_max"]: _peak_summary["ram_max"] = ram
             
-            if pynvml:
+            if pynvml and _nvml_ensure_initialized():
                 try:
-                    pynvml.nvmlInit()
-                    for i in range(pynvml.nvmlDeviceGetCount()):
-                        handle = pynvml.nvmlDeviceGetHandleByIndex(i)
-                        temp = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
+                    for i in range(_nvml_device_count()):
+                        handle = _nvml_device_handle(i)
+                        if handle is None:
+                            continue
+                        temp = float(pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU))
                         mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
                         util = pynvml.nvmlDeviceGetUtilizationRates(handle)
                         vram_util = (mem.used / mem.total) * 100.0 if mem.total > 0 else 0.0
-                        
-                        if temp > _peak_summary["gpu_temp_max"]: _peak_summary["gpu_temp_max"] = temp
-                        if util.gpu > _peak_summary["gpu_util_max"]: _peak_summary["gpu_util_max"] = util.gpu
-                        
+
+                        if temp > _peak_summary["gpu_temp_max"]:
+                            _peak_summary["gpu_temp_max"] = temp
+                        if util.gpu > _peak_summary["gpu_util_max"]:
+                            _peak_summary["gpu_util_max"] = util.gpu
+
                         if temp > 80.0:
                             msg = f"GPU Temperature Overload: {temp}°C op GPU {i}"
                             print(f"{datetime.now(TZ).isoformat()} [CRITICAL][RESOURCE] {msg}")
@@ -583,15 +912,66 @@ async def _resource_watchdog_and_heartbeat_loop() -> None:
                 perf_path.write_text(json.dumps(_peak_summary, indent=2))
             except Exception:
                 pass
-                
+            try:
+                hb_path = LOGS_DIR / "heartbeat.json"
+                hb_path.write_text(
+                    json.dumps(
+                        {
+                            "last_heartbeat": datetime.now(UTC).isoformat(),
+                            "status": "ALIVE",
+                            "type": "resource_watchdog",
+                            "role": _process_role(),
+                            "cpu_max_pct": _peak_summary.get("cpu_max"),
+                            "ram_max_pct": _peak_summary.get("ram_max"),
+                        },
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+            except Exception:
+                pass
+
             loop_count += 1
             if loop_count >= 6:  # 6 * 10s = 60s
                 last_order = STATE.get("last_order", {})
                 last_ts = (last_order.get("order", {}).get("timestamp", "Never") if isinstance(last_order, dict) else "Never") or "Never"
-                print(f"{datetime.now(TZ).isoformat()} [HB][STATUS] Worker: Active | Redis: Connected | Last Trade: {last_ts} | Resource Peak: {_peak_summary['cpu_max']}%")
-                
+                role = _process_role()
+                print(
+                    f"{datetime.now(TZ).isoformat()} [HB][STATUS][{role}] Active | Redis: Connected | "
+                    f"Last Trade: {last_ts} | Resource Peak: {_peak_summary['cpu_max']}%"
+                )
+
                 worker_ram_mb = psutil.Process().memory_info().rss / (1024 * 1024) if psutil else 0.0
-                print(f"{datetime.now(TZ).isoformat()} [MEM-TRACE] Huidig Worker proces RAM-gebruik: {worker_ram_mb:.2f} MB | Systeem RAM: {ram}%")
+                print(
+                    f"{datetime.now(TZ).isoformat()} [MEM-TRACE][{role}] Dit proces RSS: {worker_ram_mb:.2f} MB | "
+                    f"Systeem RAM: {ram}% (totaal machine/cgroup, niet alleen dit proces)"
+                )
+                warn_sys = float(os.getenv("MEM_WARN_SYSTEM_RAM_PCT", "75") or 75)
+                crit_sys = float(os.getenv("MEM_CRIT_SYSTEM_RAM_PCT", "85") or 85)
+                warn_rss = float(os.getenv("MEM_WARN_PROCESS_RSS_MB", "900") or 900)
+                crit_deb = max(60, int(float(os.getenv("MEM_TRACE_CRITICAL_DEBOUNCE_SEC", "120") or 120)))
+                warn_deb = max(60, int(float(os.getenv("MEM_TRACE_WARNING_DEBOUNCE_SEC", "180") or 180)))
+                if ram >= crit_sys:
+                    wmsg = (
+                        f"Systeem-RAM ≥{crit_sys:.0f}% ({ram:.1f}%) — dit proces {worker_ram_mb:.0f} MB. "
+                        "Controleer andere containers/host; RL_BACKGROUND_TRAIN kan pieken geven."
+                    )
+                    if _mem_trace_global_log_due(kind="crit_sysram", cooldown_sec=crit_deb):
+                        print(f"{datetime.now(TZ).isoformat()} [MEM-TRACE][CRITICAL][{role}] {wmsg}")
+                        _log_to_browser_console("ERROR", wmsg)
+                elif ram >= warn_sys:
+                    wmsg = (
+                        f"Systeem-RAM hoog ({ram:.1f}% ≥{warn_sys:.0f}%), dit proces {worker_ram_mb:.0f} MB. "
+                        "Zie ook [RL] MEM-TRACE bij inferentie >70%."
+                    )
+                    if _mem_trace_global_log_due(kind="warn_sysram", cooldown_sec=warn_deb):
+                        print(f"{datetime.now(TZ).isoformat()} [MEM-TRACE][WARNING][{role}] {wmsg}")
+                        _log_to_browser_console("WARN", wmsg)
+                if psutil and worker_ram_mb >= warn_rss:
+                    wmsg = f"Proces-RSS hoog ({worker_ram_mb:.0f} MB ≥{warn_rss:.0f} MB) [{role}]"
+                    if _mem_trace_global_log_due(kind="warn_rss", cooldown_sec=warn_deb):
+                        print(f"{datetime.now(TZ).isoformat()} [MEM-TRACE][WARNING][{role}] {wmsg}")
+                        _log_to_browser_console("WARN", wmsg)
                 loop_count = 0
                 
         except Exception as exc:
@@ -601,8 +981,10 @@ async def _resource_watchdog_and_heartbeat_loop() -> None:
 
 def _append_bot_log_line(text: str) -> None:
     global TELEGRAM_BATCH_TASK
+    raw = text.rstrip()
+    inner = _BOT_LOG_LEADING_ISO_TS.sub("", raw, count=1) if raw else ""
     ts = datetime.now(TZ).isoformat()
-    line = f"[{ts}] {text.rstrip()}"
+    line = f"[{ts}] {inner}" if inner else f"[{ts}]"
     blackbox_logger.info(line)
 
     upper_line = line.upper()
@@ -657,9 +1039,11 @@ class _TeeTextStream(io.TextIOBase):
         self._buffer += text
         while "\n" in self._buffer:
             line, self._buffer = self._buffer.split("\n", 1)
-            if line.strip():
+            stripped = line.strip()
+            if stripped:
                 ts = datetime.now(TZ).isoformat()
-                bot_logger.info(f"[{ts}] {line.strip()}")
+                inner = _BOT_LOG_LEADING_ISO_TS.sub("", stripped, count=1) if stripped else ""
+                bot_logger.info(f"[{ts}] {inner}" if inner else f"[{ts}]")
                 _append_bot_log_line(line)
         return len(text)
 
@@ -667,7 +1051,9 @@ class _TeeTextStream(io.TextIOBase):
         self._base.flush()
         if self._buffer.strip():
             ts = datetime.now(TZ).isoformat()
-            bot_logger.info(f"[{ts}] {self._buffer.strip()}")
+            stripped = self._buffer.strip()
+            inner = _BOT_LOG_LEADING_ISO_TS.sub("", stripped, count=1) if stripped else ""
+            bot_logger.info(f"[{ts}] {inner}" if inner else f"[{ts}]")
             _append_bot_log_line(self._buffer)
             self._buffer = ""
 
@@ -757,7 +1143,12 @@ _install_stdout_stderr_tee()
 
 # ALL ENGINE INSTANTIATIONS MOVED AFTER TEE INSTALL
 # This ensures any initialization/model load crashes are immediately caught in portal_api.log!
-_FINBERT = LazyFinBertSentimentAnalyzer()
+_FINBERT_FALLBACK = LazyFinBertSentimentAnalyzer()
+from app.ai.sentiment.finbert_sentiment import RedisSentimentReader as _RedisSentimentReader
+_FINBERT = _RedisSentimentReader(
+    redis_url=os.getenv("REDIS_URL", "redis://redis:6379/0"),
+    fallback=_FINBERT_FALLBACK,
+)
 SIGNAL_ENGINE = SignalEngine(sentiment=_FINBERT)
 _max_trade_frac = float(os.getenv("RISK_MAX_TRADE_EQUITY_PCT", "10")) / 100.0
 RISK_MANAGER = RiskManager(max_budget_fraction_per_trade=max(0.001, min(1.0, _max_trade_frac)))
@@ -768,7 +1159,7 @@ FEAR_GREED = FearGreedService()
 WHALE_WATCHER = WhaleWatcherService()
 CMC_SERVICE = CoinMarketCapService(ttl_seconds=1200)
 MACRO_CALENDAR = MacroCalendarService()
-NEWS_SERVICE = CryptoCompareNewsService(ttl_seconds=60)
+NEWS_SERVICE = CryptoCompareNewsService(ttl_seconds=900)
 RSS_ENGINE = RssEngineService()
 NEWS_ENGINE = NewsEngineService(
     api_service=NEWS_SERVICE,
@@ -777,11 +1168,48 @@ NEWS_ENGINE = NewsEngineService(
 )
 PAPER_MANAGER = PaperTradeManager(
     PaperConfig(
-        starting_balance_eur=float(os.getenv("PAPER_START_BALANCE_EUR", "10000")),
+        starting_balance_eur=float(os.getenv("PAPER_START_BALANCE_EUR", "1000")),
         fee_rate=0.0015,
-        db_path=os.getenv("TRADE_HISTORY_DB_PATH", "data/trade_history.db"),
+        db_path=os.getenv("TRADE_HISTORY_DB_PATH", "data/database.db"),
     )
 )
+
+# Eén paper-cycle tegelijk (elite-loop + PAPER_RUN_QUEUE): voorkomt races tussen
+# ``paper_buy_blocked_if_open_position`` en ``process_signal`` op verschillende thread-pool threads.
+_PAPER_CYCLE_CRITICAL_LOCK = threading.Lock()
+_LAST_BUY_TS: dict[str, float] = {}
+_BUY_COOLDOWN_SEC = float(os.getenv("BUY_COOLDOWN_SEC", "120"))
+
+
+def _rsi_tail_from_closes(closes: list[float], period: int = 14) -> float:
+    if len(closes) < period + 1:
+        return 50.0
+    gains = 0.0
+    losses = 0.0
+    for i in range(len(closes) - period, len(closes)):
+        d = float(closes[i]) - float(closes[i - 1])
+        if d >= 0:
+            gains += d
+        else:
+            losses -= d
+    ag = gains / float(period)
+    al = losses / float(period)
+    if al <= 1e-12:
+        return 70.0 if ag > 1e-12 else 50.0
+    rs = ag / al
+    return float(max(0.0, min(100.0, 100.0 - (100.0 / (1.0 + rs)))))
+
+
+def _ema_last_from_closes(closes: list[float], span: int = 20) -> float:
+    if not closes:
+        return 0.0
+    alpha = 2.0 / (float(span) + 1.0)
+    e = float(closes[0])
+    for x in closes[1:]:
+        e = alpha * float(x) + (1.0 - alpha) * e
+    return float(e)
+
+
 RL_AGENT = RLAgentService(model_dir=os.getenv("RL_MODEL_DIR", "artifacts/rl"))
 if not _PORTAL_SLIM:
     try:
@@ -790,12 +1218,194 @@ if not _PORTAL_SLIM:
         pass
 TRADER = Trader(
     TraderConfig(
-        initial_capital_eur=float(os.getenv("PAPER_START_BALANCE_EUR", "10000")),
+        initial_capital_eur=float(os.getenv("PAPER_START_BALANCE_EUR", "1000")),
         lookback_days=int(os.getenv("LOOKBACK_DAYS", "400")),
         model_dir=os.getenv("RL_MODEL_DIR", "artifacts/rl"),
     ),
     agent_service=RL_AGENT,
 )
+
+
+def _paper_trade_closed_listener(
+    market: str, realized_pnl_eur: float, reward_pct: float, trades_count: int
+) -> None:
+    """Reward-regel direct; optionele PPO micro-train asynchroon + tweede logregel."""
+    mks = str(market).upper().replace("/", "-")
+    msg0 = (
+        f"Paper trade #{int(trades_count)} closed ({mks}): "
+        f"Reward {float(reward_pct):+.2f}% (≈€{float(realized_pnl_eur):+.2f})."
+    )
+    try:
+        tail = STATE.setdefault("cockpit_log_tail", [])
+        if not isinstance(tail, list):
+            tail = []
+            STATE["cockpit_log_tail"] = tail
+        ts_iso = datetime.now(UTC).isoformat()
+        entry0 = f"{ts_iso} [REWARD] {msg0}"
+        tail.append(entry0)
+        STATE["cockpit_log_tail"] = tail[-100:]
+        publish_trading_update({"type": "cockpit_log_line", "line": entry0})
+        _log_to_browser_console("INFO", msg0)
+    except Exception:
+        pass
+
+    # ≥1 volledige PPO-rollout (n_steps) zodat loss/value series meteen bewegen na eerste close.
+    steps = int(os.getenv("RL_MICRO_UPDATE_STEPS_ON_CLOSE", "1024") or 0)
+    min_exp = max(1, int(os.getenv("RL_MIN_EXPERIENCES_FOR_MICRO_TRAIN", "1") or 1))
+
+    # Write reward synchronously — cannot rely on daemon thread surviving container restarts.
+    try:
+        from app.services.rl_replay_buffer import append_trade_close as _atc
+        _atc(
+            market=market,
+            trade_num=int(trades_count),
+            reward_pct=float(reward_pct),
+            pnl_eur=float(realized_pnl_eur),
+            model_updated=False,
+        )
+        print(
+            f"[REWARD-PIPELINE] trade #{int(trades_count)} {market} "
+            f"reward_pct={float(reward_pct):+.4f} pnl=€{float(realized_pnl_eur):+.2f} model_updated=False",
+            flush=True,
+        )
+        _exploration_last_forced["_any_trade_ever"] = True
+    except Exception:
+        pass
+
+    def _job() -> None:
+        if not _PORTAL_SLIM:
+            STATE["rl_micro_train_active"] = True
+        try:
+            model_updated = False
+            lr_note = ""
+            if (not _PORTAL_SLIM) and steps > 0 and int(trades_count) >= min_exp:
+                try:
+                    lb_d = max(7, min(120, int(STATE.get("lookback_days", 60) or 60)))
+                    RL_AGENT.online_update(
+                        pair=str(market).upper(),
+                        lookback_days=lb_d,
+                        total_timesteps=max(256, min(8192, int(steps))),
+                        cmc_metrics=_refresh_cmc_metrics(),
+                    )
+                    model_updated = True
+                    lr_note = str(RL_AGENT.last_training_stats.get("learning_rate", ""))
+                    _st = RL_AGENT.last_training_stats
+                    STATE["rl_optimizer_stats"] = {
+                        "learning_rate": _st.get("learning_rate"),
+                        "global_step_count": _st.get("global_step_count"),
+                        "exploration_rate_pct": _st.get("exploration_rate_pct"),
+                    }
+                except Exception as exc:
+                    lr_note = f"error:{exc}"
+            elif steps > 0:
+                lr_note = f"waiting_for_min_experiences({int(trades_count)}/{min_exp})"
+            if steps > 0 and int(trades_count) >= min_exp:
+                msg1 = (
+                    f"PPO micro-update: {'voltooid' if model_updated else 'mislukt'} "
+                    f"(RL_MICRO_UPDATE_STEPS_ON_CLOSE={steps}). learning_rate={lr_note}"
+                )
+                try:
+                    tail = STATE.setdefault("cockpit_log_tail", [])
+                    if not isinstance(tail, list):
+                        tail = []
+                        STATE["cockpit_log_tail"] = tail
+                    ts2 = datetime.now(UTC).isoformat()
+                    entry1 = f"{ts2} [RL-TRAIN] {msg1}"
+                    tail.append(entry1)
+                    STATE["cockpit_log_tail"] = tail[-100:]
+                    publish_trading_update({"type": "cockpit_log_line", "line": entry1})
+                    _log_to_browser_console("INFO", msg1)
+                except Exception:
+                    pass
+        finally:
+            if not _PORTAL_SLIM:
+                STATE["rl_micro_train_active"] = False
+                try:
+                    wire = _brain_ws_wire_payload()
+                    extras = {
+                        "brain_ws": json.loads(json.dumps(wire, default=str)),
+                        "system_stats": _compact_worker_portal_system_stats(),
+                    }
+                    write_worker_portal_snapshot(extras=extras)
+                except Exception:
+                    pass
+                try:
+                    _publish_trading_redis_activity("paper_trade_closed", str(market))
+                except Exception:
+                    pass
+
+    threading.Thread(target=_job, daemon=True).start()
+
+
+PAPER_MANAGER.register_trade_closed_listener(_paper_trade_closed_listener)
+
+
+def _replay_context_for_ticker(ticker: str) -> tuple[float, float, float, str]:
+    """(prob_h, prob_b, prob_s, greedy) uit RL-multi / last decision."""
+    mku = str(ticker or "").strip().upper().replace("/", "-")
+    dec: dict[str, Any] = {}
+    multi = STATE.get("rl_multi_decisions") if isinstance(STATE.get("rl_multi_decisions"), dict) else {}
+    raw = multi.get(mku) if isinstance(multi.get(mku), dict) else None
+    if isinstance(raw, dict):
+        dec = _rl_decision_as_dict_with_fallback(raw)
+    elif isinstance(STATE.get("rl_last_decision"), dict):
+        gl = STATE["rl_last_decision"]
+        gk = str(gl.get("market") or gl.get("ticker") or "").strip().upper().replace("/", "-")
+        if not gk or gk == mku:
+            dec = _rl_decision_as_dict_with_fallback(gl)
+    ph = _safe_float_runtime(dec.get("prob_hold", 1.0 / 3.0), 1.0 / 3.0)
+    pb = _safe_float_runtime(dec.get("prob_buy", 1.0 / 3.0), 1.0 / 3.0)
+    ps = _safe_float_runtime(dec.get("prob_sell", 1.0 / 3.0), 1.0 / 3.0)
+    ssum = ph + pb + ps
+    if ssum > 1e-12:
+        ph, pb, ps = ph / ssum, pb / ssum, ps / ssum
+    greedy = max(("HOLD", ph), ("BUY", pb), ("SELL", ps), key=lambda x: x[1])[0]
+    return ph, pb, ps, greedy
+
+
+def _last_scores_tech_for_replay() -> tuple[float, float, float]:
+    ls = STATE.get("last_scores") if isinstance(STATE.get("last_scores"), dict) else {}
+    rsi = _safe_float_runtime(ls.get("rsi_14", 50.0), 50.0)
+    eg = _safe_float_runtime(ls.get("ema_gap_pct", 0.0), 0.0)
+    vc = _safe_float_runtime(ls.get("volume_change", 0.0), 0.0)
+    return rsi, eg, vc
+
+
+def _append_paper_replay_experience(ticker: str, executed_signal: str, price: float) -> None:
+    try:
+        from app.services.rl_replay_buffer import append_paper_experience
+
+        ph, pb, ps, greedy = _replay_context_for_ticker(ticker)
+        ex = str(executed_signal or "").upper()
+        explored = ex in ("BUY", "SELL", "HOLD") and greedy in ("BUY", "SELL", "HOLD") and ex != greedy
+        rsi, eg, vc = _last_scores_tech_for_replay()
+        append_paper_experience(
+            market=ticker,
+            executed_signal=ex,
+            prob_hold=ph,
+            prob_buy=pb,
+            prob_sell=ps,
+            policy_greedy=greedy,
+            explored=bool(explored),
+            rsi_14=rsi,
+            ema_gap_pct=eg,
+            volume_change=vc,
+            price=float(price),
+            meta={"source": "paper_cycle"},
+        )
+    except Exception:
+        pass
+
+
+def replay_stats_for_activity() -> dict[str, Any]:
+    try:
+        from app.services.rl_replay_buffer import replay_buffer_stats
+
+        return replay_buffer_stats()
+    except Exception:
+        return {"rows": 0, "last": None}
+
+
 MAIN_ENGINE = TradingEngine(
     run_cycle=lambda ticker, lookback_days: _run_paper_cycle_sync(ticker=ticker, lookback_days=lookback_days),
     online_update=lambda pair, lookback_days, timesteps, cmc: RL_AGENT.online_update(
@@ -938,6 +1548,9 @@ def _elite_ai_signals_payload() -> list[dict[str, Any]]:
                 "whale_danger": danger,
                 "panic_cooldown": cooldown,
                 "in_position": bool(in_pos),
+                "prob_buy": round(float(dec.get("prob_buy") or 0.0), 4) if isinstance(dec, dict) else 0.0,
+                "prob_hold": round(float(dec.get("prob_hold") or 0.0), 4) if isinstance(dec, dict) else 0.0,
+                "prob_sell": round(float(dec.get("prob_sell") or 0.0), 4) if isinstance(dec, dict) else 0.0,
             }
         )
     return out
@@ -1162,13 +1775,129 @@ def _resolve_execution_price(ticker: str, fallback_price: float) -> float:
 
 def _sanitize_paper_wallet() -> None:
     """Verwijdert geneste referenties in history om exponentiële RAM-groei te voorkomen."""
-    if isinstance(PAPER_MANAGER.wallet.get("history"), list):
-        for h in PAPER_MANAGER.wallet["history"]:
+    w = PAPER_MANAGER.wallet
+    for key, default in (("wins", 0), ("losses", 0), ("trades_count", 0), ("realized_pnl_eur", 0.0)):
+        w.setdefault(key, default)
+    if isinstance(w.get("history"), list):
+        for h in w["history"]:
             if isinstance(h, dict):
                 h.pop("wallet", None)
                 h.pop("snap", None)
                 h.pop("history", None)
-        PAPER_MANAGER.wallet["history"] = PAPER_MANAGER.wallet["history"][-500:]
+        w["history"] = w["history"][-500:]
+
+
+def _sync_trades_ledger_state() -> None:
+    """Laatste trades (alle paren, BUY/SELL + gesloten rondes) → STATE voor Redis-portal."""
+    try:
+        from core.database import get_all_trades
+
+        try:
+            lim = int(os.getenv("WORKER_SNAPSHOT_TRADES_LIMIT", "25"))
+        except (TypeError, ValueError):
+            lim = 25
+        lim = max(10, min(lim, 100))
+        STATE["trades"] = get_all_trades(limit=lim)
+    except Exception:
+        STATE["trades"] = []
+
+
+def default_paper_reset_balance_eur() -> float:
+    """Standaard paper-resetbedrag (portal-knop / API); override met PAPER_RESET_BALANCE_EUR."""
+    try:
+        v = float(os.getenv("PAPER_RESET_BALANCE_EUR", "1000") or 1000)
+    except (TypeError, ValueError):
+        v = 1000.0
+    return round(v if v > 0 else 1000.0, 2)
+
+
+def reset_paper_portfolio_and_state(starting_eur: float | None = None) -> dict[str, Any]:
+    """
+    Paperwallet + volledige ledger-wipe in SQLite, STATE/Redis, allocatie 10% t.o.v. equity,
+    exploratie-inferentie ε=0.10 (stabieler) en ``decision_threshold``=0.45.
+    """
+    amt = float(starting_eur) if starting_eur is not None else default_paper_reset_balance_eur()
+    if amt <= 0:
+        amt = default_paper_reset_balance_eur()
+    amt = round(amt, 2)
+    info = PAPER_MANAGER.reset_paper_account(amt, full_environment_reset=True)
+    STATE["paper_portfolio"] = PAPER_MANAGER.wallet
+    STATE["trades"] = []
+    # Stabielere exploratie na reset; overschrijf via RL_EXPLORATION_* in env vóór deze call.
+    if not str(os.getenv("RL_EXPLORATION_INFERENCE_EPS", "")).strip():
+        os.environ["RL_EXPLORATION_INFERENCE_EPS"] = "0.10"
+    if not str(os.getenv("RL_EXPLORATION_FINAL_EPS", "")).strip():
+        os.environ["RL_EXPLORATION_FINAL_EPS"] = "0.10"
+    STATE["decision_threshold"] = float(os.getenv("RL_ACTION_MIN_CONFIDENCE", "0.45") or 0.45)
+    try:
+        _eps = float(os.getenv("RL_EXPLORATION_FINAL_EPS", "0.10") or 0.10)
+        if RL_AGENT is not None and hasattr(RL_AGENT, "last_training_stats"):
+            RL_AGENT.last_training_stats["exploration_final_eps"] = _eps
+            RL_AGENT.last_training_stats["exploration_rate_pct"] = round(_eps * 100.0, 4)
+    except Exception:
+        pass
+    _sync_trades_ledger_state()
+    try:
+        from core.trading_constraints_redis import apply_paper_reset_allocation_constraints
+
+        info["trading_constraints"] = apply_paper_reset_allocation_constraints(equity_eur=float(amt))
+    except Exception as exc:
+        info["trading_constraints_error"] = str(exc)[:500]
+    try:
+        append_event(
+            {
+                "ts": datetime.now(UTC).isoformat(),
+                "type": "paper_reset",
+                "starting_eur": amt,
+                "archived_rows": int(info.get("archived_trade_history_rows", 0) or 0)
+                + int(info.get("archived_trade_events_rows", 0) or 0),
+            }
+        )
+    except Exception:
+        pass
+    try:
+        tk = str(STATE.get("selected_market") or os.getenv("DEFAULT_TICKER", "BTC-EUR") or "BTC-EUR").strip()
+        _publish_trading_redis_activity(kind="paper_reset", ticker=tk)
+    except Exception:
+        pass
+    try:
+        if not _PORTAL_SLIM:
+            write_worker_portal_snapshot()
+    except Exception:
+        pass
+    return {"ok": True, **info}
+
+
+def reconcile_paper_balance_in_state() -> dict[str, Any]:
+    """Open posities wissen, equity = cash; ledger/DB-trades blijven. Portal: via worker-commando."""
+    info = PAPER_MANAGER.force_reconcile_balance_clear_positions()
+    _sanitize_paper_wallet()
+    STATE["paper_portfolio"] = PAPER_MANAGER.wallet
+    _sync_trades_ledger_state()
+    try:
+        append_event(
+            {
+                "ts": datetime.now(UTC).isoformat(),
+                "type": "paper_balance_reconcile",
+                "cash": info.get("cash"),
+                "equity_before": info.get("equity_before"),
+                "equity_after": info.get("equity_after"),
+                "cleared_open_markets": info.get("cleared_open_markets"),
+            }
+        )
+    except Exception:
+        pass
+    try:
+        tk = str(STATE.get("selected_market") or os.getenv("DEFAULT_TICKER", "BTC-EUR") or "BTC-EUR").strip()
+        _publish_trading_redis_activity(kind="paper_balance_reconcile", ticker=tk)
+    except Exception:
+        pass
+    try:
+        if not _PORTAL_SLIM:
+            write_worker_portal_snapshot()
+    except Exception:
+        pass
+    return dict(info)
 
 
 def _paper_whale_panic_intervention(
@@ -1190,9 +1919,9 @@ def _paper_whale_panic_intervention(
     wallet = dict(PAPER_MANAGER.wallet)
     held = str(prediction.ticker or "").strip().upper()
     pbm = wallet.get("position_by_market") if isinstance(wallet.get("position_by_market"), dict) else {}
-    qty = float(pbm.get(held, 0.0) or 0.0)
+    qty = _safe_float_runtime(pbm.get(held, 0.0), 0.0)
     if qty <= 1e-12:
-        qty = float(wallet.get("position_qty", 0.0) or 0.0)
+        qty = _safe_float_runtime(wallet.get("position_qty", 0.0), 0.0)
         if str(wallet.get("position_symbol") or "").upper() != held:
             qty = 0.0
     if qty <= 1e-12 or not held:
@@ -1200,14 +1929,16 @@ def _paper_whale_panic_intervention(
     ok, reason = whale_panic_should_force_sell(STATE, held)
     if not ok or not can_fire_whale_panic_sell(STATE, held):
         return "", ""
-    fallback_px = float(wallet.get("last_price") or 0.0) or float(prediction.latest_close or 0.0)
+    fallback_px = _safe_float_runtime(wallet.get("last_price"), 0.0) or _safe_float_runtime(
+        getattr(prediction, "latest_close", 0.0), 0.0
+    )
     live_price = _resolve_execution_price(ticker=held, fallback_price=fallback_px)
     if live_price <= 0:
         live_price = max(fallback_px, 1e-9)
-    equity = float(wallet.get("equity", 10000.0) or 10000.0)
-    friction = (float(spread_bps) + float(slippage_bps)) / 10000.0
-    exec_price = float(live_price) * max(0.0, 1.0 - friction)
-    frac = CORE_RISK.full_exit_size_fraction(equity=equity, wallet=wallet, price=float(live_price), market=held)
+    equity = _safe_float_runtime(wallet.get("equity", 10000.0), 10000.0)
+    friction = (_safe_float_runtime(spread_bps, 0.0) + _safe_float_runtime(slippage_bps, 0.0)) / 10000.0
+    exec_price = _safe_float_runtime(live_price, 0.0) * max(0.0, 1.0 - friction)
+    frac = CORE_RISK.full_exit_size_fraction(equity=equity, wallet=wallet, price=_safe_float_runtime(live_price, 0.0), market=held)
     insights = STATE.get("news_insights", [])
     top_headlines = [str(x.get("headline", "")) for x in insights[:3] if isinstance(x, dict)]
     rl_note = f"[WHALE-PANIC] {reason}; preventieve MARKET SELL {held}."
@@ -1217,20 +1948,39 @@ def _paper_whale_panic_intervention(
         signal="SELL",
         price=exec_price,
         size_fraction=frac,
-        sentiment_score=float(prediction.news_sentiment or 0.0),
+        sentiment_score=_safe_float_runtime(getattr(prediction, "news_sentiment", 0.0), 0.0),
         news_headlines=top_headlines,
         ai_thought=rl_note,
         ledger_context=ledger_ctx,
     )
+    try:
+        from core.worker_execution import schedule_immediate_trade_telegram
+
+        if isinstance(snap, dict):
+            snap_tg = dict(snap)
+            if str(snap_tg.get("status") or "").lower() == "closed":
+                snap_tg["telegram_whale_context"] = f"{reason} — preventieve MARKET SELL."
+            schedule_immediate_trade_telegram(snap=snap_tg, market=held, execution_price=float(exec_price))
+        else:
+            schedule_immediate_trade_telegram(snap=snap, market=held, execution_price=float(exec_price))
+    except Exception:
+        pass
     _sanitize_paper_wallet()
     STATE["paper_portfolio"] = PAPER_MANAGER.wallet
+    _sync_trades_ledger_state()
     set_whale_panic_cooldown(STATE, held)
     record_whale_panic_sell_fired(STATE, held)
     base = held.split("-", 1)[0] if "-" in held else held
-    try:
-        TELEGRAM.send_whale_panic_mode(coin=str(base or held))
-    except Exception:
-        pass
+    if str(os.getenv("TELEGRAM_WHALE_PANIC_EXTRA", "0")).strip().lower() in ("1", "true", "yes", "on"):
+        try:
+            TELEGRAM.send_whale_panic_mode(coin=str(base or held))
+        except Exception:
+            pass
+    elif not (isinstance(snap, dict) and str(snap.get("status") or "").lower() == "closed"):
+        try:
+            TELEGRAM.send_whale_panic_mode(coin=str(base or held))
+        except Exception:
+            pass
     if isinstance(snap, dict) and str(snap.get("status", "")) == "closed":
         append_event(
             {
@@ -1244,8 +1994,8 @@ def _paper_whale_panic_intervention(
         _register_signal_marker(
             ticker=held,
             signal="SELL",
-            price=float(live_price),
-            expected_return_pct=float(prediction.expected_return_pct or 0.0),
+            price=_safe_float_runtime(live_price, 0.0),
+            expected_return_pct=_safe_float_runtime(getattr(prediction, "expected_return_pct", 0.0), 0.0),
         )
     snap_st = str(snap.get("status", "")) if isinstance(snap, dict) else ""
     print(f"[WHALE-PANIC] Forced exit {held} reason={reason} snap_status={snap_st}")
@@ -1347,9 +2097,106 @@ def _rl_chunk_steps_for_pair(pair: str, base_chunk: int) -> int:
     return base_chunk
 
 
+def _filter_markets_global_top_n(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    Houd alleen EUR-paren waarvan de base in de wereldwijde top-N staat (CMC of CoinGecko).
+    Zet ACTIVE_MARKETS_GLOBAL_TOP_N=0 om uit te zetten (oude Bitvavo-volume/Elite-gedrag).
+
+    Bij ≥1 overlap worden alleen die rijen behouden (ook als dat minder dan drie is);
+    alleen bij nul overlap blijft de invoerlijst ongewijzigd (API-fout of geen match).
+    """
+    n = int(os.getenv("ACTIVE_MARKETS_GLOBAL_TOP_N", "20") or 0)
+    if n <= 0 or not rows:
+        return rows
+    try:
+        from app.services.market_scanner import fetch_global_top_base_symbols
+
+        bases = fetch_global_top_base_symbols(n)
+    except Exception:
+        return rows
+    if not bases:
+        print("[MARKETS] ACTIVE_MARKETS_GLOBAL_TOP_N: geen symbolen van API; lijst ongewijzigd.")
+        return rows
+    out: list[dict[str, Any]] = []
+    for m in rows:
+        if not isinstance(m, dict):
+            continue
+        mk = str(m.get("market", "")).strip().upper()
+        if not mk:
+            continue
+        if _base_from_market(mk) in bases:
+            out.append(m)
+    # Eerder: bij <3 matches werd de hele lijst teruggegeven → Elite-tabs toonden alsnog non-top-N bases.
+    # Strikt: filter behouden zolang er minstens één overlap is; alleen bij nul overlap niet leeg dwingen.
+    if len(out) == 0:
+        print(
+            f"[MARKETS] Global top-{n}: geen overlap met huidige {len(rows)} paren "
+            f"(CMC/CoinGecko-symbolen vs Bitvavo-base); lijst ongewijzigd."
+        )
+        return rows
+    if len(out) < len(rows):
+        print(f"[MARKETS] Global top-{n} (marktkap): {len(rows)} → {len(out)} actieve paren (strikt gefilterd)")
+    else:
+        print(f"[MARKETS] Global top-{n} (marktkap): {len(rows)} actieve paren (alle binnen top-{n})")
+    return out
+
+
 def _refresh_active_markets_cache() -> None:
     prev_rows = [dict(x) for x in (STATE.get("active_markets") or []) if isinstance(x, dict) and x.get("market")]
     old_elite = [str(m.get("market", "")).upper() for m in prev_rows][:8]
+
+    # Vaste Bitvavo-universe: top N EUR-paren op 24h volume (sluit dynamic elite-scanner uit).
+    _bv_top_n = int(os.getenv("BITVAVO_ACTIVE_TOP_N", "0") or 0)
+    if _bv_top_n > 0:
+        try:
+            markets = MARKET_SCANNER.fetch_top_eur_by_volume(limit=_bv_top_n)
+        except Exception as exc:
+            print(f"[MARKETS] BITVAVO_ACTIVE_TOP_N={_bv_top_n} fetch mislukt: {exc}")
+            markets = MARKET_SCANNER.fetch_active_pairs()
+            markets = [m for m in markets if str(m.get("market", "")).upper().endswith("-EUR")][: max(1, _bv_top_n)]
+        scanner_selected = [dict(m) for m in markets]
+        new_elite = [str(m.get("market", "")).upper() for m in markets if m.get("market")][:8]
+        if old_elite and new_elite and old_elite != new_elite:
+            feed = STATE.setdefault("scanner_intel_feed", [])
+            if not isinstance(feed, list):
+                feed = []
+                STATE["scanner_intel_feed"] = feed
+            for i, nm in enumerate(new_elite):
+                om = old_elite[i] if i < len(old_elite) else None
+                if not om or om == nm:
+                    continue
+                base_n = _coin_from_ticker(nm)
+                base_o = _coin_from_ticker(om)
+                reason_n = _selection_reason_for_market(markets, nm)
+                msg = (
+                    f"Scanner: [{base_n}] replaced [{base_o}] — "
+                    f"{reason_n or 'Bitvavo volume top-N refresh'}."
+                )
+                ts = datetime.now(UTC).isoformat()
+                feed.append(
+                    {
+                        "headline": msg,
+                        "title": msg,
+                        "text": msg,
+                        "summary": "",
+                        "url": "",
+                        "source": "Scanner",
+                        "published_at": ts,
+                        "publishedAt": ts,
+                        "coin": base_n,
+                        "sentiment": 0.0,
+                        "is_urgent": True,
+                        "is_scanner_stub": True,
+                    }
+                )
+            STATE["scanner_intel_feed"] = feed[-80:]
+        markets = _filter_markets_global_top_n(markets)
+        scanner_selected = _filter_markets_global_top_n(scanner_selected)
+        STATE["active_markets"] = markets
+        STATE["scanner_selected"] = scanner_selected
+        if markets and not any(m["market"] == STATE.get("selected_market") for m in markets):
+            STATE["selected_market"] = markets[0]["market"]
+        return
 
     markets = MARKET_SCANNER.fetch_active_pairs()
     scanner_selected: list[dict[str, Any]] = []
@@ -1449,6 +2296,9 @@ def _refresh_active_markets_cache() -> None:
             )
         STATE["scanner_intel_feed"] = feed[-80:]
 
+    markets = _filter_markets_global_top_n(markets)
+    if scanner_selected:
+        scanner_selected = _filter_markets_global_top_n(list(scanner_selected))
     STATE["active_markets"] = markets
     STATE["scanner_selected"] = scanner_selected
     if markets and not any(m["market"] == STATE.get("selected_market") for m in markets):
@@ -1486,7 +2336,8 @@ async def _rl_background_training_loop() -> None:
         first_iter = False
         active_pairs = [str(m.get("market", "")).upper() for m in (STATE.get("active_markets") or []) if m.get("market")]
         pair = str(STATE.get("selected_market") or os.getenv("DEFAULT_TICKER", "BTC-EUR")).upper()
-        targets = active_pairs[:8] if active_pairs else [pair]
+        _bg_cap = max(1, int(os.getenv("RL_BG_TRAIN_MAX_MARKETS", "8") or 8))
+        targets = active_pairs[:_bg_cap] if active_pairs else [pair]
         lookback = int(STATE.get("lookback_days", 400) or 400)
         chunk = max(512, int(os.getenv("RL_TRAIN_CHUNK_STEPS", "1000") or 1000))
         cmc = STATE.get("cmc_metrics") if isinstance(STATE.get("cmc_metrics"), dict) else None
@@ -1521,6 +2372,110 @@ async def _rl_background_training_loop() -> None:
             last_hourly_save = now
 
 
+async def _rl_hourly_checkpoint_and_metrics_loop() -> None:
+    """
+    Los van RL_BACKGROUND_TRAIN: elk uur (RL_HOURLY_METRICS_INTERVAL_SEC) JSONL-trend + optioneel PPO .zip checkpoint.
+    """
+    from app.services.rl_metrics_store import write_hourly_training_summary_log
+
+    interval = max(300, int(os.getenv("RL_HOURLY_METRICS_INTERVAL_SEC", "3600") or 3600))
+    while True:
+        await asyncio.sleep(interval)
+        if _PORTAL_SLIM:
+            continue
+        try:
+            info = await asyncio.to_thread(write_hourly_training_summary_log)
+            print(f"[RL-HOURLY] metrics → {info.get('ts_utc')} chunks={info.get('training_chunks_in_window')} "
+                  f"avg_loss={info.get('avg_loss')} avg_reward_tail={info.get('avg_final_cumulative_reward')}")
+        except Exception as exc:
+            print(f"[RL-HOURLY] metrics log mislukt: {exc}")
+        if str(os.getenv("RL_HOURLY_MODEL_CHECKPOINT", "1")).strip().lower() not in ("1", "true", "yes", "on"):
+            pass
+        else:
+            try:
+                pair = str(STATE.get("selected_market") or os.getenv("DEFAULT_TICKER", "BTC-EUR")).upper()
+                await asyncio.to_thread(RL_AGENT.save_hourly_checkpoint, pair)
+            except Exception as exc:
+                print(f"[RL-HOURLY] checkpoint mislukt: {exc}")
+        try:
+            import subprocess, sys
+            briefing_script = Path(__file__).resolve().parent.parent / "scripts" / "generate_briefing.py"
+            await asyncio.to_thread(
+                subprocess.run,
+                [sys.executable, str(briefing_script)],
+                timeout=30, capture_output=True,
+            )
+            print("[RL-HOURLY] AUTO_BRIEFING.md bijgewerkt.")
+        except Exception as exc:
+            print(f"[RL-HOURLY] briefing mislukt: {exc}")
+
+
+async def _send_initial_report_after_startup() -> None:
+    """Cold-start: kort Telegram + HTML-mail (vault + flock); niet bij WS-reconnect."""
+    delay = max(2, int(os.getenv("INITIAL_REPORT_DELAY_SEC", "5") or 5))
+    await asyncio.sleep(delay)
+    if _PORTAL_SLIM:
+        return
+    from app.services.reporting import cold_start_send_initial_report
+
+    try:
+        out = await asyncio.to_thread(cold_start_send_initial_report)
+        print(f"{datetime.now(UTC).isoformat()} [INITIAL-REPORT] {out}")
+    except Exception as exc:
+        print(f"{datetime.now(UTC).isoformat()} [INITIAL-REPORT] failed: {exc}")
+
+
+async def morning_report_scheduler_loop() -> None:
+    """08:00 AMS ochtendrapport (Telegram + e-mail); vault-credentials; blokkeert trading niet."""
+    from pathlib import Path
+
+    from app.services import reporting
+
+    while True:
+        try:
+            await asyncio.sleep(60)
+            if _PORTAL_SLIM:
+                continue
+            from app.services.state import current_tenant_id
+
+            tid = str(current_tenant_id() or "default").strip().lower() or "default"
+            wallet = dict(
+                STATE.get("paper_portfolio")
+                or (PAPER_MANAGER.wallet if isinstance(PAPER_MANAGER.wallet, dict) else {})
+                or {}
+            )
+            raw = os.getenv("TRADE_HISTORY_DB_PATH", "data/database.db")
+            tdb = Path(raw)
+            if not tdb.is_absolute():
+                tdb = Path.cwd() / tdb
+            st = RL_AGENT.last_training_stats if isinstance(getattr(RL_AGENT, "last_training_stats", None), dict) else {}
+            eps_raw = st.get("exploration_final_eps")
+            try:
+                exploration_eps = float(eps_raw) if eps_raw is not None else None
+            except (TypeError, ValueError):
+                exploration_eps = None
+
+            def _tick() -> dict[str, Any] | None:
+                return reporting.dispatch_if_due(
+                    state=dict(STATE),
+                    wallet=wallet,
+                    tenant_id=tid,
+                    trade_db=tdb,
+                    exploration_eps=exploration_eps,
+                )
+
+            out = await asyncio.to_thread(_tick)
+            if isinstance(out, dict):
+                print(
+                    f"{datetime.now(UTC).isoformat()} [MORNING-REPORT] verzonden "
+                    f"telegram_ok={out.get('telegram_ok')} email_ok={out.get('email_ok')}"
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print(f"{datetime.now(UTC).isoformat()} [MORNING-REPORT] loop error: {exc}")
+
+
 async def _scanner_hourly_refresh_loop() -> None:
     interval_sec = max(900, int(os.getenv("SCANNER_INTERVAL_SEC", "3600") or 3600))
     while True:
@@ -1541,12 +2496,97 @@ async def _scanner_hourly_refresh_loop() -> None:
         await asyncio.sleep(interval_sec)
 
 
+_log_rl_multi = logging.getLogger(__name__)
+
+
+def _float_prob(x: Any) -> float:
+    try:
+        v = float(x)
+        return v if math.isfinite(v) else float("nan")
+    except (TypeError, ValueError):
+        return float("nan")
+
+
+def _safe_float_runtime(value: Any, default: float = 0.0) -> float:
+    """Runtime-safe numeric coercion for inference/order payloads."""
+    try:
+        if value is None:
+            return float(default)
+        if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return float(default)
+            raw = raw.replace("%", "").replace(",", ".")
+            value = raw
+        out = float(value)
+        return out if math.isfinite(out) else float(default)
+    except Exception:
+        return float(default)
+
+
+def _rl_decision_as_dict_with_fallback(decision: Any) -> dict[str, Any]:
+    """RLDecision → dict; invalid/missing probs worden als unavailable gemarkeerd (geen statische fake-policy)."""
+    if hasattr(decision, "__dict__") and not isinstance(decision, dict):
+        row: dict[str, Any] = dict(decision.__dict__)
+    elif isinstance(decision, dict):
+        row = dict(decision)
+    else:
+        row = {}
+    ph = _float_prob(row.get("prob_hold"))
+    pb = _float_prob(row.get("prob_buy"))
+    ps = _float_prob(row.get("prob_sell"))
+    s = ph + pb + ps
+    if not all(map(math.isfinite, (ph, pb, ps))) or s < 1e-9:
+        _log_rl_multi.warning(
+            "RL policy probs invalid or near-zero (hold=%s buy=%s sell=%s sum=%s) — mark as unavailable",
+            ph,
+            pb,
+            ps,
+            s,
+        )
+        row["prob_hold"] = 0.0
+        row["prob_buy"] = 0.0
+        row["prob_sell"] = 0.0
+        row["policy_status"] = "unavailable"
+        row["analysis_unavailable"] = True
+        note = "[Policy unavailable: inference/feature pipeline returned invalid probs.]"
+        row["reasoning"] = f"{note} {row.get('reasoning', '')}".strip()
+    else:
+        row["prob_hold"] = float(ph / s)
+        row["prob_buy"] = float(pb / s)
+        row["prob_sell"] = float(ps / s)
+        row["policy_status"] = str(row.get("policy_status") or "ok")
+        row["analysis_unavailable"] = False
+    return row
+
+
 async def _rl_multi_inference_loop() -> None:
     interval_sec = max(20, int(os.getenv("RL_MULTI_INFER_INTERVAL_SEC", "60") or 60))
-    # Concurrency Cap: Maximaal 2 munten tegelijk verwerken om RAM-explosies (DataFrames) te voorkomen
-    sem = asyncio.Semaphore(2)
+    # Concurrency Cap: standaard conservatief (1) om RAM-pieken op GTX1080 setups te voorkomen.
+    conc = max(1, min(2, int(os.getenv("RL_MULTI_INFER_CONCURRENCY", "1") or 1)))
+    sem = asyncio.Semaphore(conc)
+    env_max_pairs = int(os.getenv("RL_MULTI_INFER_MAX_PAIRS", "8") or 8)
+    configured_pairs = len(CONFIG_TICKERS) if isinstance(CONFIG_TICKERS, list) else 0
+    max_pairs = max(1, min(8, max(env_max_pairs, configured_pairs)))
     while True:
+        cycle_t0 = time.monotonic()
         try:
+            if not _PORTAL_SLIM and getattr(RL_AGENT, "model", None) is None:
+                boot_pair = str(STATE.get("selected_market") or os.getenv("DEFAULT_TICKER", "BTC-EUR")).upper()
+                try:
+                    await asyncio.to_thread(TRADER.initialize, boot_pair)
+                    print(
+                        f"{datetime.now().astimezone().isoformat()} [AI-ENGINE][INIT] "
+                        f"RL model initialized for {boot_pair} before multi-inference."
+                    )
+                except Exception as exc:
+                    print(
+                        f"{datetime.now().astimezone().isoformat()} [AI-ENGINE][WARN] "
+                        f"RL init failed before multi-inference ({boot_pair}): {exc}"
+                    )
+                    await asyncio.sleep(5)
+                    continue
+
             # RESOURCE WATCHDOG: Soft Limit Guard
             ram_pct = psutil.virtual_memory().percent if psutil else 0.0
             if ram_pct > 85.0:
@@ -1566,74 +2606,196 @@ async def _rl_multi_inference_loop() -> None:
                 str(m.get("market", "")).upper()
                 for m in (STATE.get("active_markets") or [])
                 if m.get("market")
-            ][:8]
+            ][:max_pairs]
             if not active_pairs:
-                await asyncio.sleep(interval_sec)
-                continue
+                # Zelfde fallback als RL-train: zonder Elite-8 blijft inferentie anders eeuwig wachten
+                # en blijft AI Brain op de placeholder-tekst staan.
+                pair_fb = str(STATE.get("selected_market") or os.getenv("DEFAULT_TICKER", "BTC-EUR")).upper()
+                active_pairs = [pair_fb]
+            focus_infer = str(STATE.get("selected_market") or os.getenv("DEFAULT_TICKER", "BTC-EUR")).upper()
+            if focus_infer not in active_pairs:
+                # Portal kan een andere selected_market hebben dan de worker-Elite-8; altijd minstens die markt inferen.
+                active_pairs = (active_pairs[: max_pairs - 1] + [focus_infer]) if len(active_pairs) >= max_pairs else list(active_pairs) + [focus_infer]
+
+            def _cockpit_tail_push_info(message: str) -> None:
+                try:
+                    tail = STATE.setdefault("cockpit_log_tail", [])
+                    if not isinstance(tail, list):
+                        tail = []
+                        STATE["cockpit_log_tail"] = tail
+                    ts_iso = datetime.now(UTC).isoformat()
+                    entry = f"{ts_iso} [INFO] {message}"
+                    tail.append(entry)
+                    STATE["cockpit_log_tail"] = tail[-100:]
+                    publish_trading_update({"type": "cockpit_log_line", "line": entry})
+                except Exception:
+                    pass
 
             async def infer_pair(tp: str) -> tuple[str, dict[str, Any]]:
-                async with sem:
-                    end_dt = datetime.now(UTC)
-                    start_dt = end_dt - timedelta(days=max(30, int(STATE.get("lookback_days", 400) or 400)))
-                    candles = await asyncio.to_thread(
-                        fetch_bitvavo_historical_candles,
-                        tp,
-                        "1h",
-                        start_dt,
-                        end_dt,
-                    )
-                    rl_frame = await asyncio.to_thread(
-                        build_rl_training_frame,
-                        candles,
-                        tp,
-                        "crypto",
-                        os.getenv("CRYPTOCOMPARE_KEY"),
-                        os.getenv("CRYPTOCOMPARE_KEY"),
-                        _refresh_cmc_metrics(),
-                    )
-                    last = rl_frame.iloc[-1].to_dict()
+                try:
+                    async with sem:
+                        _cockpit_tail_push_info(f"Inference requested for {tp}")
+                        end_dt = datetime.now(UTC)
+                        start_dt = end_dt - timedelta(days=max(30, int(STATE.get("lookback_days", 400) or 400)))
+                        candles = await asyncio.to_thread(
+                            fetch_bitvavo_historical_candles,
+                            tp,
+                            "1h",
+                            start_dt,
+                            end_dt,
+                        )
+                        rl_frame = await asyncio.to_thread(
+                            build_rl_training_frame,
+                            candles_df=candles,
+                            market=tp,
+                            news_query="crypto",
+                            news_api_key=os.getenv("CRYPTOCOMPARE_KEY"),
+                            cryptocompare_key=os.getenv("CRYPTOCOMPARE_KEY"),
+                            cmc_metrics=_refresh_cmc_metrics(),
+                        )
+                        try:
+                            _quote_ob = float(os.getenv("RL_ORDERBOOK_QUOTE_NOTIONAL_EUR", "500") or 500)
+                        except (TypeError, ValueError):
+                            _quote_ob = 500.0
+                        spread_bps_ob, _sl_ob, book_imb_ob = await asyncio.to_thread(
+                            _orderbook_spread_slippage_bps,
+                            tp,
+                            max(0.0, _quote_ob),
+                        )
+                        rl_frame = patch_last_row_live_orderbook(rl_frame, spread_bps_ob, book_imb_ob)
+                        last = rl_frame.iloc[-1].to_dict()
+                        _sel_m = str(STATE.get("selected_market") or "BTC-EUR").strip().upper().replace("/", "-")
+                        _tp_u = str(tp).strip().upper().replace("/", "-")
+                        if _tp_u == _sel_m:
+                            from app.services.market_regime import refresh_market_regime_from_last_row
+
+                            refresh_market_regime_from_last_row(last)
                     
                     # MEMORY FIX: Gooi gigantische DataFrames direct weg vóór de PyTorch inference
                     del candles
                     del rl_frame
                     import gc
                     gc.collect()
+                    last, _social_note = _apply_social_overlay_for_decide(last, tp)
+                    acct = STATE.get("paper_portfolio", {})
+                    equity = float(acct.get("equity", 10000.0) or 10000.0)
+                    cash = float(acct.get("cash", equity) or equity)
+                    _tc2 = build_trade_decision_context(tp, STATE)
+                    # Harden inference input: ensure numeric observation/account fields.
+                    latest_payload = dict(last)
+                    for _k in getattr(RL_AGENT, "feature_names", []):
+                        latest_payload[_k] = _safe_float_runtime(latest_payload.get(_k, 0.0), 0.0)
 
-                last, _social_note = _apply_social_overlay_for_decide(last, tp)
-                acct = STATE.get("paper_portfolio", {})
-                equity = float(acct.get("equity", 10000.0) or 10000.0)
-                cash = float(acct.get("cash", equity) or equity)
-                _tc2 = build_trade_decision_context(tp, STATE)
-                
-                # Bereken time-in-market (in uren) voor de actieve positie in deze specifieke markt
-                position_hours = 0.0
-                open_lots = acct.get("open_lots_by_market", {}).get(tp, [])
-                if isinstance(open_lots, list) and open_lots:
+                    # Per-paar open quantity i.p.v. globale position_qty — anders is het account-tail van de
+                    # PPO-observatie identiek voor elke Elite-munt → dezelfde softmax (~29/32/38%) overal.
+                    pos_qty_pair = 0.0
+                    _obm_raw = acct.get("open_lots_by_market", {})
+                    if isinstance(_obm_raw, dict):
+                        _lots_cur = _obm_raw.get(tp)
+                        if _lots_cur is None:
+                            _tp_u = str(tp).strip().upper().replace("/", "-")
+                            for _mk, _lv in _obm_raw.items():
+                                if str(_mk).strip().upper().replace("/", "-") == _tp_u:
+                                    _lots_cur = _lv
+                                    break
+                        if isinstance(_lots_cur, list):
+                            for _lot in _lots_cur:
+                                if isinstance(_lot, dict):
+                                    pos_qty_pair += _safe_float_runtime(
+                                        _lot.get("qty", _lot.get("position_qty", 0.0)), 0.0
+                                    )
+
+                    # Deterministische micro-shift op features die het PPO-model wél leest (feature_names).
+                    # `ticker_id` in de payload wordt door decide() genegeerd — zonder shift geven gelijke
+                    # macro/RSI-rijen vaak dezelfde softmax (~15/30/54) voor alle Elite-munten.
+                    # Standaard jitter ~1e-3; uitzetten met RL_INFER_PAIR_JITTER=0
+                    _jit_raw = str(os.getenv("RL_INFER_PAIR_JITTER", "")).strip()
                     try:
-                        open_ts = str(open_lots[0].get("open_time_utc") or "")
-                        if open_ts:
-                            dt_open = datetime.fromisoformat(open_ts.replace("Z", "+00:00"))
-                            if dt_open.tzinfo is None:
-                                dt_open = dt_open.replace(tzinfo=UTC)
-                            position_hours = (datetime.now(UTC) - dt_open).total_seconds() / 3600.0
+                        _jit = float(_jit_raw) if _jit_raw else 0.0
+                    except ValueError:
+                        _jit = 0.0
+                    if _jit > 0.0:
+                        _h = zlib.adler32(str(tp).strip().upper().encode("utf-8", errors="ignore")) & 0xFFFFFFFF
+                        _delta_eg = ((int(_h) % 20001) / 10000.0 - 1.0) * _jit
+                        _h2 = (int(_h) >> 11) & 0xFFFFFFFF
+                        _delta_macd = ((int(_h2) % 20001) / 10000.0 - 1.0) * (_jit * 0.4)
+                        latest_payload["ema_gap_pct"] = _safe_float_runtime(latest_payload.get("ema_gap_pct", 0.0), 0.0) + float(
+                            _delta_eg
+                        )
+                        latest_payload["macd"] = _safe_float_runtime(latest_payload.get("macd", 0.0), 0.0) + float(_delta_macd)
+
+                    # Bereken time-in-market (in uren) voor de actieve positie in deze specifieke markt
+                    position_hours = 0.0
+                    open_lots = acct.get("open_lots_by_market", {}).get(tp, [])
+                    if isinstance(open_lots, list) and open_lots:
+                        try:
+                            open_ts = str(open_lots[0].get("open_time_utc") or "")
+                            if open_ts:
+                                dt_open = datetime.fromisoformat(open_ts.replace("Z", "+00:00"))
+                                if dt_open.tzinfo is None:
+                                    dt_open = dt_open.replace(tzinfo=UTC)
+                                position_hours = (datetime.now(UTC) - dt_open).total_seconds() / 3600.0
+                        except Exception:
+                            pass
+
+                    decision = await asyncio.to_thread(
+                        lambda: TRADER.decide(
+                            {
+                                **latest_payload,
+                                "ticker_id": float(abs(hash(tp)) % 1000) / 1000.0,
+                                "time_in_market_h": round(position_hours, 2),
+                            },
+                            {
+                                "balance_ratio": cash / max(1.0, equity),
+                                "position": float(pos_qty_pair),
+                                "pnl_ratio": _safe_float_runtime(acct.get("realized_pnl_eur", 0.0), 0.0) / max(1.0, equity),
+                                "trade_ratio": _safe_float_runtime(acct.get("trades_count", 0.0), 0.0) / 10000.0,
+                                "position_hours": round(position_hours, 2),
+                            },
+                            _tc2,
+                        )
+                    )
+                    try:
+                        drow = _rl_decision_as_dict_with_fallback(decision)
+                        _pb = _safe_float_runtime(drow.get("prob_buy", 0.0), 0.0)
+                        _ph = _safe_float_runtime(drow.get("prob_hold", 0.0), 0.0)
+                        _ps = _safe_float_runtime(drow.get("prob_sell", 0.0), 0.0)
+                        _px = _safe_float_runtime(latest_payload.get("close", latest_payload.get("latest_close", 0.0)), 0.0)
+                        print(
+                            f"{datetime.now().astimezone().isoformat()} [AI-ENGINE][PROBS] {tp} "
+                            f"buy/hold/sell={_pb:.4f}/{_ph:.4f}/{_ps:.4f} close={_px:.6f}"
+                        )
                     except Exception:
                         pass
 
-                decision = await asyncio.to_thread(
-                    lambda: TRADER.decide(
-                        {**last, "ticker_id": float(abs(hash(tp)) % 1000) / 1000.0, "time_in_market_h": round(position_hours, 2)},
-                        {
-                            "balance_ratio": cash / max(1.0, equity),
-                            "position": float(acct.get("position_qty", 0.0) or 0.0),
-                            "pnl_ratio": float(acct.get("realized_pnl_eur", 0.0) or 0.0) / max(1.0, equity),
-                            "trade_ratio": float(acct.get("trades_count", 0.0) or 0.0) / 10000.0,
-                            "position_hours": round(position_hours, 2),
-                        },
-                        _tc2,
-                    )
-                )
+                    try:
+                        ln = f"{tp}: Inference done"
+                        tail = STATE.setdefault("cockpit_log_tail", [])
+                        if not isinstance(tail, list):
+                            tail = []
+                            STATE["cockpit_log_tail"] = tail
+                        ts_iso = datetime.now(UTC).isoformat()
+                        entry = f"{ts_iso} [INFO] {ln}"
+                        tail.append(entry)
+                        STATE["cockpit_log_tail"] = tail[-100:]
+                        publish_trading_update({"type": "cockpit_log_line", "line": entry})
+                    except Exception:
+                        pass
 
-                return tp, decision
+                    return tp, decision
+                except Exception as exc:
+                    _cockpit_tail_push_info(f"{tp}: inference unavailable ({exc})")
+                    return tp, {
+                        "market": str(tp).upper(),
+                        "ticker": str(tp).upper(),
+                        "action": "N/A",
+                        "prob_buy": 0.0,
+                        "prob_hold": 0.0,
+                        "prob_sell": 0.0,
+                        "policy_status": "unavailable",
+                        "analysis_unavailable": True,
+                        "reasoning": f"[Policy unavailable] {exc}",
+                    }
 
             results = await asyncio.gather(*[infer_pair(tp) for tp in active_pairs], return_exceptions=True)
             out: dict[str, Any] = {}
@@ -1643,29 +2805,80 @@ async def _rl_multi_inference_loop() -> None:
                     continue
                 tp, decision = item
                 out[tp] = decision
-                
-                # Zorg dat de actieve UI-markt direct globaal in State komt
+
+                # Zorg dat de actieve UI-markt direct globaal in State komt (altijd ticker zetten i.v.m. format_stats).
                 if tp == str(STATE.get("selected_market") or "BTC-EUR").upper():
-                    STATE["rl_last_decision"] = decision.__dict__ if hasattr(decision, "__dict__") else decision
-                    
-            STATE["rl_multi_decisions"] = out
+                    _gl = _rl_decision_as_dict_with_fallback(decision)
+                    _tpu = str(tp).strip().upper().replace("/", "-")
+                    _gl["ticker"] = _tpu
+                    _gl["market"] = _tpu
+                    STATE["rl_last_decision"] = _gl
+
+            # Iedere entry moet ticker/market dragen — anders filtert de UI (decisionMatchesMarket) alles weg
+            # en valt hij terug op niet-geattribueerde ai_action_probs (zelfde balkjes voor elke munt).
+            for _tp_key, _dec_val in list(out.items()):
+                _tpu = str(_tp_key).strip().upper().replace("/", "-")
+                if isinstance(_dec_val, dict):
+                    _d = dict(_dec_val)
+                    if not str(_d.get("ticker") or _d.get("market") or "").strip():
+                        _d["ticker"] = _tpu
+                        _d["market"] = _tpu
+                    out[_tp_key] = _d
+
+            # Merge i.p.v. vervangen: een cyclus inferent slechts subset → anders verdwijnen andere paren
+            # uit de map en blijft de UI op oude / fallback-percentages hangen.
+            _prev_multi = STATE.get("rl_multi_decisions")
+            if isinstance(_prev_multi, dict) and isinstance(out, dict):
+                _merged_multi = dict(_prev_multi)
+                _merged_multi.update(out)
+                STATE["rl_multi_decisions"] = _merged_multi
+            else:
+                STATE["rl_multi_decisions"] = out
+            try:
+                from core.worker_execution import write_per_market_prediction_policy
+
+                for _tp, _dec in out.items():
+                    _dic = _rl_decision_as_dict_with_fallback(_dec)
+                    _tpu = str(_tp).strip().upper().replace("/", "-")
+                    _dic["ticker"] = _tpu
+                    _dic["market"] = _tpu
+                    write_per_market_prediction_policy(_tp, _dic)
+            except Exception:
+                pass
+            fk = str(STATE.get("selected_market") or "BTC-EUR").upper()
+            if (not isinstance(STATE.get("rl_last_decision"), dict) or not STATE.get("rl_last_decision")) and fk in out:
+                _gl2 = _rl_decision_as_dict_with_fallback(out[fk])
+                _fku = str(fk).strip().upper().replace("/", "-")
+                _gl2["ticker"] = _fku
+                _gl2["market"] = _fku
+                STATE["rl_last_decision"] = _gl2
             shared = STATE.get("rl_shared_buffer")
             if not isinstance(shared, list):
                 shared = []
             ts = datetime.now(UTC).isoformat()
             for tp, decision in out.items():
+                row = decision if isinstance(decision, dict) else getattr(decision, "__dict__", {})
+                if not isinstance(row, dict):
+                    row = {}
                 shared.append(
                     {
                         "ts": ts,
                         "market": tp,
-                        "action": str(decision.get("action") or ""),
-                        "confidence": float(decision.get("confidence") or 0.0),
+                        "action": str(row.get("action") or ""),
+                        "confidence": float(row.get("confidence") or 0.0),
                     }
                 )
             STATE["rl_shared_buffer"] = shared[-1000:]
+            try:
+                _pub_tk = str(STATE.get("selected_market") or (active_pairs[0] if active_pairs else "BTC-EUR"))
+                _publish_trading_redis_activity(kind="rl_inference", ticker=_pub_tk)
+            except Exception:
+                pass
         except Exception as exc:
             print(f"[RL-MULTI] inference warning: {exc}")
-        await asyncio.sleep(interval_sec)
+        min_guard = max(10.0, float(os.getenv("WORKER_OBSERVATION_INTERVAL_SEC", "12") or 12.0))
+        elapsed = max(0.0, time.monotonic() - cycle_t0)
+        await asyncio.sleep(max(interval_sec, min_guard) - elapsed if elapsed < max(interval_sec, min_guard) else min_guard)
 
 
 async def _audit_engine_loop() -> None:
@@ -1677,15 +2890,20 @@ async def _audit_engine_loop() -> None:
             metrics = PAPER_MANAGER.elite8_audit_metrics(elite_markets=elite_markets, window_hours=24)
             mean_pf = sum(float(v.get("profit_factor", 0.0)) for v in metrics.values()) / max(1, len(metrics))
             mean_wr = sum(float(v.get("win_rate", 0.0)) for v in metrics.values()) / max(1, len(metrics))
-            old_threshold = float(STATE.get("decision_threshold", float(os.getenv("RL_ACTION_MIN_CONFIDENCE", "0.55") or 0.55)))
+            _env_floor = float(os.getenv("RL_ACTION_MIN_CONFIDENCE", "0.20") or 0.20)
+            old_threshold = float(STATE.get("decision_threshold", _env_floor))
             old_sl = float(STATE.get("stop_loss_pct", float(os.getenv("RISK_STOP_LOSS_PCT", "2.5") or 2.5)))
             delta = 0.05
-            if mean_pf >= 1.2 and mean_wr >= 52.0:
-                new_threshold = max(0.4, old_threshold - delta)
+            if mean_pf == 0.0 and mean_wr == 0.0:
+                new_threshold = _env_floor
+                new_sl = old_sl
+                reason = "No 24h trade data — keeping threshold at env floor."
+            elif mean_pf >= 1.2 and mean_wr >= 52.0:
+                new_threshold = max(_env_floor, old_threshold - delta)
                 new_sl = max(0.5, old_sl - delta)
                 reason = "Strong 24h edge (PF/WR) -> more aggressive execution."
             else:
-                new_threshold = min(0.95, old_threshold + delta)
+                new_threshold = min(0.95, max(_env_floor, old_threshold + delta))
                 new_sl = min(10.0, old_sl + delta)
                 reason = "Weak 24h edge (PF/WR) -> tighter entry and wider protection."
             STATE["decision_threshold"] = round(new_threshold, 4)
@@ -1720,22 +2938,32 @@ async def _daily_auto_calibration_loop() -> None:
     interval_sec = max(3600, int(os.getenv("AUTO_CALIBRATION_INTERVAL_SEC", "86400") or 86400))
     while True:
         try:
+            if str(os.getenv("AUTO_CALIBRATION_ENABLED", "1")).strip().lower() in ("0", "false", "no", "off"):
+                await asyncio.sleep(interval_sec)
+                continue
             elite_markets = [str(m.get("market", "")).upper() for m in (STATE.get("active_markets") or []) if m.get("market")][:8]
             metrics = PAPER_MANAGER.elite8_audit_metrics(elite_markets=elite_markets, window_hours=24)
             if metrics:
                 avg_wr = sum(float(v.get("win_rate", 0.0)) for v in metrics.values()) / max(1, len(metrics))
                 avg_pf = sum(float(v.get("profit_factor", 0.0)) for v in metrics.values()) / max(1, len(metrics))
-                old_threshold = float(STATE.get("decision_threshold", float(os.getenv("RL_ACTION_MIN_CONFIDENCE", "0.55") or 0.55)))
+                _env_floor2 = float(os.getenv("RL_ACTION_MIN_CONFIDENCE", "0.20") or 0.20)
+                old_threshold = float(STATE.get("decision_threshold", _env_floor2))
                 old_sl = float(STATE.get("stop_loss_pct", float(os.getenv("RISK_STOP_LOSS_PCT", "2.5") or 2.5)))
                 dt = 0.05 if (avg_pf < 1.0 or avg_wr < 48.0) else (-0.05 if (avg_pf > 1.25 and avg_wr > 55.0) else 0.0)
+                low_wr_pct = float(os.getenv("AUTO_CALIBRATION_WIN_RATE_LOW_PCT", "45") or 45)
+                extra_dt = float(os.getenv("AUTO_CALIBRATION_LOW_WIN_EXTRA_THRESHOLD_DELTA", "0.05") or 0.05)
+                low_wr_note = ""
+                if avg_wr < low_wr_pct:
+                    dt += extra_dt
+                    low_wr_note = f" low_wr<{low_wr_pct}%(+{extra_dt:.2f})"
                 dsl = -0.05 if (avg_pf < 1.0 or avg_wr < 48.0) else (0.05 if (avg_pf > 1.25 and avg_wr > 55.0) else 0.0)
-                new_threshold = max(0.50, min(0.95, old_threshold + dt))
+                new_threshold = max(_env_floor2, min(0.95, old_threshold + dt))
                 new_sl = max(0.5, min(5.0, old_sl + dsl))
                 STATE["decision_threshold"] = round(new_threshold, 4)
                 STATE["stop_loss_pct"] = round(new_sl, 4)
                 print(
                     f"[AUTO-CAL] 24h calibrated decision_threshold={new_threshold:.2f} "
-                    f"stop_loss_pct={new_sl:.2f} (pf={avg_pf:.2f}, wr={avg_wr:.2f}%)"
+                    f"stop_loss_pct={new_sl:.2f} (pf={avg_pf:.2f}, wr={avg_wr:.2f}%){low_wr_note}"
                 )
         except Exception as exc:
             print(f"[AUTO-CAL] warning: {exc}")
@@ -1745,7 +2973,14 @@ async def _daily_auto_calibration_loop() -> None:
 async def _health_watchdog_loop() -> None:
     while True:
         try:
+            # Vermijd valse stall-restarts vlak na boot/recovery.
+            if (time.monotonic() - _PROCESS_START_MONO) < WATCHDOG_STARTUP_GRACE_SEC:
+                await asyncio.sleep(10)
+                continue
             now = datetime.now(UTC)
+            if STATE.get("rl_micro_train_active"):
+                await asyncio.sleep(10)
+                continue
             lec = STATE.get("last_engine_cycle", {}) if isinstance(STATE.get("last_engine_cycle"), dict) else {}
             engine_ts = str(lec.get("ts") or "")
             ws_ts = str(STATE.get("last_ws_heartbeat_ts") or engine_ts or "")
@@ -1763,7 +2998,11 @@ async def _health_watchdog_loop() -> None:
             ws_age = _age_seconds(ws_ts)
             ws_connections = int(STATE.get("ws_connections", 0) or 0)
             ws_stalled = ws_connections > 0 and ws_age > WATCHDOG_STALL_LIMIT_SEC
-            if engine_age > WATCHDOG_STALL_LIMIT_SEC or ws_stalled:
+            hard_engine_stall = engine_age > WATCHDOG_STALL_LIMIT_SEC
+            # Alleen hard ingrijpen bij echte stall-signalen:
+            # - WS stall, of
+            # - engine stall in combinatie met API-fail streak.
+            if ws_stalled or (hard_engine_stall and api_fail_streak >= 1):
                 _maybe_send_watchdog_recovery_telegram(engine_age, ws_age)
                 print("[WATCHDOG] stall detected; forcing process restart for auto-recovery.")
                 os._exit(1)
@@ -1779,13 +3018,35 @@ async def _health_watchdog_loop() -> None:
             wallet = PAPER_MANAGER.wallet if isinstance(PAPER_MANAGER.wallet, dict) else {}
             equity = float(wallet.get("equity", PAPER_MANAGER.config.starting_balance_eur) or PAPER_MANAGER.config.starting_balance_eur)
             start = float(PAPER_MANAGER.config.starting_balance_eur or 10000.0)
-            if start > 0 and equity <= start * 0.97:
+            dd_pct = _daily_stop_loss_drawdown_pct()
+            floor_mult = 1.0 - dd_pct / 100.0
+            floor_eur = start * floor_mult if start > 0 else 0.0
+            breach = start > 0 and equity <= floor_eur
+            if breach:
                 _maybe_send_urgent_alert(
-                    key="daily_stop_loss_3pct",
-                    subject="Daily stop-loss reached",
-                    details=f"Equity dropped to {equity:.2f} EUR; below 3% daily loss threshold from start {start:.2f} EUR.",
+                    key="daily_stop_loss_equity",
+                    subject=f"Daily stop-loss ({dd_pct:.0f}% vs start) reached",
+                    details=(
+                        f"Equity {equity:.2f} EUR; floor {floor_eur:.2f} EUR "
+                        f"({dd_pct:.1f}% drawdown from start {start:.2f} EUR, TRADING_MODE={'LIVE' if LIVE_MODE else 'PAPER'})."
+                    ),
                     cooldown_minutes=180,
                 )
+                STATE["daily_stop_auto_resume_armed"] = True
+            else:
+                if (
+                    _paper_daily_stop_auto_resume_enabled()
+                    and str(STATE.get("bot_status", "running") or "running").lower() == "paused"
+                    and STATE.get("daily_stop_auto_resume_armed")
+                ):
+                    STATE["bot_status"] = "running"
+                    STATE["daily_stop_auto_resume_armed"] = False
+                    print(
+                        f"{datetime.now(UTC).isoformat()} [WATCHDOG] Paper: equity boven daily-stop floor "
+                        f"({dd_pct:.1f}% van start) — bot_status=running."
+                    )
+                elif str(STATE.get("bot_status", "running") or "running").lower() != "paused":
+                    STATE["daily_stop_auto_resume_armed"] = False
         except Exception as exc:
             print(f"[WATCHDOG] warning: {exc}")
         await asyncio.sleep(10)
@@ -1808,7 +3069,12 @@ async def _autonomous_improvement_loop() -> None:
             AUTO_OPT_SCORE_HISTORY.append(score)
             AUTO_OPT_SCORE_HISTORY = AUTO_OPT_SCORE_HISTORY[-20:]
 
-            old_eps = max(MIN_EXPLORATION_EPS, float(os.getenv("RL_EXPLORATION_FINAL_EPS", "0.05") or 0.05))
+            tune_eps = str(os.getenv("AUTO_OPT_TUNE_EPSILON", "1")).strip().lower() in ("1", "true", "yes", "on")
+            eps_floor = max(
+                MIN_EXPLORATION_EPS,
+                float(os.getenv("RL_EXPLORATION_MIN_EPS", str(MIN_EXPLORATION_EPS)) or MIN_EXPLORATION_EPS),
+            )
+            old_eps = max(eps_floor, float(os.getenv("RL_EXPLORATION_FINAL_EPS", "0.05") or 0.05))
             old_risk_cap = float(os.getenv("RISK_MAX_PER_ASSET_TRADE_PCT", "20") or 20.0)
             old_train_steps = int(os.getenv("RL_TRAIN_CHUNK_STEPS", "1000") or 1000)
 
@@ -1817,18 +3083,34 @@ async def _autonomous_improvement_loop() -> None:
             new_train_steps = old_train_steps
             reason = "Stable regime: keep autonomous optimizer settings."
 
+            portfolio_hold = False
+            try:
+                from app.services.reporting import read_system_state
+
+                _st_pf = read_system_state()
+                portfolio_hold = _st_pf.get("portfolio_equity_integrity_ok") is False
+            except Exception:
+                portfolio_hold = False
+
             if mean_pf < 1.0 or mean_wr < 48.0:
                 new_eps = min(0.35, old_eps + 0.02)
                 new_risk_cap = max(5.0, old_risk_cap - 1.0)
                 new_train_steps = min(5000, old_train_steps + 250)
                 reason = "Underperforming 24h edge: increase exploration, reduce risk cap, increase training chunk."
             elif mean_pf > 1.3 and mean_wr > 55.0:
-                new_eps = max(MIN_EXPLORATION_EPS, old_eps - 0.01)
+                new_eps = max(eps_floor, old_eps - 0.01)
                 new_risk_cap = min(35.0, old_risk_cap + 1.0)
                 new_train_steps = max(800, old_train_steps - 100)
                 reason = "Strong 24h edge: reduce exploration, relax risk cap slightly, lower training overhead."
 
-            new_eps = max(MIN_EXPLORATION_EPS, float(new_eps))
+            if not tune_eps:
+                new_eps = old_eps
+                reason = f"{reason} | AUTO_OPT_TUNE_EPSILON uit — ε vast op {old_eps:.3f}."
+
+            new_eps = max(eps_floor, float(new_eps))
+            if portfolio_hold:
+                new_eps = max(new_eps, 0.80)
+                reason = f"{reason} | portfolio integrity hold (ε floor 0.80)"
             os.environ["RL_EXPLORATION_FINAL_EPS"] = f"{new_eps:.4f}"
             os.environ["RISK_MAX_PER_ASSET_TRADE_PCT"] = f"{new_risk_cap:.2f}"
             os.environ["RL_TRAIN_CHUNK_STEPS"] = str(int(new_train_steps))
@@ -1877,7 +3159,9 @@ async def _autonomous_improvement_loop() -> None:
                 new_eps = float(AUTO_OPT_BEST_SETTINGS.get("exploration_eps", new_eps) or new_eps)
                 new_risk_cap = float(AUTO_OPT_BEST_SETTINGS.get("risk_cap_pct", new_risk_cap) or new_risk_cap)
                 new_train_steps = int(AUTO_OPT_BEST_SETTINGS.get("train_chunk_steps", new_train_steps) or new_train_steps)
-                new_eps = max(MIN_EXPLORATION_EPS, float(new_eps))
+                new_eps = max(eps_floor, float(new_eps))
+                if portfolio_hold:
+                    new_eps = max(new_eps, 0.80)
                 os.environ["RL_EXPLORATION_FINAL_EPS"] = f"{new_eps:.4f}"
                 os.environ["RISK_MAX_PER_ASSET_TRADE_PCT"] = f"{new_risk_cap:.2f}"
                 os.environ["RL_TRAIN_CHUNK_STEPS"] = str(int(new_train_steps))
@@ -1977,6 +3261,7 @@ def _bootstrap_state_after_markets_refresh() -> None:
     """Vul STATE vanuit paper-wallet + env; gedeeld door portal- en full-startup."""
     _sanitize_paper_wallet()
     STATE["paper_portfolio"] = PAPER_MANAGER.wallet
+    _sync_trades_ledger_state()
     STATE["bot_status"] = "running"
     STATE["last_ws_heartbeat_ts"] = datetime.now(UTC).isoformat()
     STATE["last_engine_cycle"] = {"ok": True, "ts": datetime.now(UTC).isoformat(), "bootstrap": True}
@@ -2078,11 +3363,19 @@ async def _background_startup_network_bundle() -> None:
         cuda_available = bool(torch.cuda.is_available())
     except Exception:
         cuda_available = False
-    wallet = PAPER_MANAGER.wallet if isinstance(PAPER_MANAGER.wallet, dict) else {}
+    wallet = dict(PAPER_MANAGER.wallet) if isinstance(PAPER_MANAGER.wallet, dict) else {}
     cash = float(wallet.get("cash", PAPER_MANAGER.config.starting_balance_eur) or PAPER_MANAGER.config.starting_balance_eur)
     equity = float(
         wallet.get("equity", PAPER_MANAGER.config.starting_balance_eur) or PAPER_MANAGER.config.starting_balance_eur
     )
+    try:
+        from app.services.portfolio_qty import implied_equity_eur_from_wallet
+
+        eq_impl = implied_equity_eur_from_wallet(wallet)
+        if math.isfinite(eq_impl) and eq_impl > 1e-6:
+            equity = float(eq_impl)
+    except Exception:
+        pass
     # Telegram/SMTP is sync; never block the asyncio loop (avoids ERR_EMPTY_RESPONSE on burst GETs).
     await asyncio.to_thread(
         send_restart_report,
@@ -2103,34 +3396,18 @@ async def _background_startup_network_bundle() -> None:
 
 async def _worker_portal_snapshot_loop() -> None:
     interval_sec = max(1.0, float(os.getenv("PORTAL_SNAPSHOT_INTERVAL_SEC", "2") or 2))
+
+    def _snapshot_once() -> None:
+        wire = _brain_ws_wire_payload()
+        extras = {
+            "brain_ws": json.loads(json.dumps(wire, default=str)),
+            "system_stats": _compact_worker_portal_system_stats(),
+        }
+        write_worker_portal_snapshot(extras=extras)
+
     while True:
         try:
-            # Direct hardware poll om 0.0% te voorkomen
-            live_gpu_temp = 0.0
-            live_gpu_util = 0.0
-            if pynvml:
-                try:
-                    pynvml.nvmlInit()
-                    handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-                    live_gpu_temp = float(pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU))
-                    util = pynvml.nvmlDeviceGetUtilizationRates(handle)
-                    live_gpu_util = float(util.gpu)
-                except Exception:
-                    pass
-            
-            cpu_load = psutil.cpu_percent(interval=None) if psutil else 0.0
-            
-            wire = _brain_ws_wire_payload()
-            stats = compact_system_stats(get_system_stats())
-            if live_gpu_temp > 0: stats["gpu_temp_max"] = live_gpu_temp
-            if live_gpu_util > 0: stats["gpu_util_pct"] = live_gpu_util
-            if cpu_load > 0: stats["cpu_pct"] = cpu_load
-            
-            extras = {
-                "brain_ws": json.loads(json.dumps(wire, default=str)),
-                "system_stats": stats
-            }
-            write_worker_portal_snapshot(extras=extras)
+            await asyncio.to_thread(_snapshot_once)
         except Exception as exc:
             print(f"[PORTAL-SNAP] worker write mislukt: {exc}")
         await asyncio.sleep(interval_sec)
@@ -2138,7 +3415,7 @@ async def _worker_portal_snapshot_loop() -> None:
 
 async def _worker_system_stats_redis_loop() -> None:
     """Portal heeft geen nvidia-smi: worker publiceert echte GPU/host-schijf (compact WS-shape)."""
-    interval = max(1.0, float(os.getenv("WORKER_SYSTEM_STATS_REDIS_SEC", "2") or 2))
+    interval = max(1.0, float(os.getenv("WORKER_SYSTEM_STATS_REDIS_SEC", "5") or 5))
     while True:
         try:
 
@@ -2235,6 +3512,37 @@ async def _worker_command_listener_loop() -> None:
                             elif action == "bot_panic":
                                 STATE["bot_status"] = "panic_stop"
                                 print(f"{datetime.now(UTC).isoformat()} [WORKER] Commando ontvangen: PANIC STOP!")
+                            elif action == "rl_inference_greedy":
+                                STATE["rl_inference_greedy"] = bool(cmd.get("greedy", True))
+                                print(
+                                    f"{datetime.now(UTC).isoformat()} [WORKER] RL inference greedy="
+                                    f"{STATE['rl_inference_greedy']} (ε=0 policy actief in decide())."
+                                )
+                            elif action == "reset_paper":
+                                try:
+                                    raw = cmd.get("starting_eur")
+                                    se = float(raw) if raw is not None else default_paper_reset_balance_eur()
+                                except (TypeError, ValueError):
+                                    se = default_paper_reset_balance_eur()
+                                reset_paper_portfolio_and_state(se)
+                                print(
+                                    f"{datetime.now(UTC).isoformat()} [WORKER] Paper reset uitgevoerd: "
+                                    f"€{se:,.2f} start, ledger gearchiveerd/gewist."
+                                )
+                            elif action == "paper_reconcile_balance":
+                                out = reconcile_paper_balance_in_state()
+                                print(
+                                    f"{datetime.now(UTC).isoformat()} [WORKER] Paper saldo gecorrigeerd: "
+                                    f"equity {out.get('equity_before')} → {out.get('equity_after')} EUR (cash={out.get('cash')})."
+                                )
+                            elif action == "sync_wallet":
+                                r = PAPER_MANAGER.sync_wallet_from_db()
+                                if r.get("ok"):
+                                    STATE["paper_portfolio"] = PAPER_MANAGER.wallet
+                                    print(
+                                        f"{datetime.now(UTC).isoformat()} [WORKER] Wallet gesynced uit DB: "
+                                        f"cash={r.get('cash')} open={r.get('open_markets')}."
+                                    )
                         except Exception as e:
                             print(f"{datetime.now(UTC).isoformat()} [WORKER] Fout bij verwerken commando: {e}")
         except asyncio.CancelledError:
@@ -2327,16 +3635,15 @@ def build_html_audit_report(title_prefix: str = "AI Trading System Audit") -> st
     # --- 1. Live Data Fetching (GPU & Redis) ---
     live_gpu_temp = 0.0
     live_gpu_util = 0.0
-    if pynvml:
+    h0 = _nvml_device_handle(0)
+    if h0 is not None and pynvml:
         try:
-            pynvml.nvmlInit()
-            handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-            live_gpu_temp = float(pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU))
-            util = pynvml.nvmlDeviceGetUtilizationRates(handle)
+            live_gpu_temp = float(pynvml.nvmlDeviceGetTemperature(h0, pynvml.NVML_TEMPERATURE_GPU))
+            util = pynvml.nvmlDeviceGetUtilizationRates(h0)
             live_gpu_util = float(util.gpu)
         except Exception:
             pass
-            
+
     btc_price = 0.0
     try:
         import redis
@@ -2481,21 +3788,41 @@ async def _run_full_trading_startup() -> None:
     set_current_tenant("default")
 
     # 1. Start communicatiekanalen als EERSTE, zodat we fouten direct naar Telegram kunnen sturen
+    startup_verbose = str(os.getenv("TELEGRAM_STARTUP_STYLE", "compact") or "").strip().lower() in (
+        "verbose",
+        "full",
+        "detailed",
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
     start_background_task(_telegram_sender_worker())
-    _queue_telegram_message("🚀 *SYSTEM*\n\nAI Trading Bot initialization started. Verifying hardware and state...")
-    
+    if startup_verbose:
+        _queue_telegram_message(
+            "🚀 *SYSTEM*\n\nAI Trading Bot initialization started. Verifying hardware and state..."
+        )
+
     try:
         _genesis_require_gpu_or_raise()
-        if _probe_torch_cuda_available():
-            msg = "✅ GPU ENGINE ENGAGED"
-            print(f"{datetime.now(TZ).isoformat()} [HEALTH] {msg}")
-            _queue_telegram_message(f"✅ *SYSTEM*\n\n{msg}")
     except Exception as e:
-        _queue_telegram_message(f"🚨 *SYSTEM*\n\nFATAL STARTUP ERROR: {e}")
-        await asyncio.sleep(2) # Geef de sender tijd om het bericht te pushen
-        raise e
-        
-    _startup_cuda_flag = _probe_torch_cuda_available()
+        print(f"{datetime.now(TZ).isoformat()} [DEVICE][WARN] GPU requirement check failed: {e}. Continuing with CPU fallback.")
+
+    resolved_device = _resolve_compute_device_with_retry()
+    if resolved_device == "cuda":
+        STATE["compute_device"] = "cuda"
+        msg = "✅ GPU ENGINE ENGAGED (cuda)"
+        print(f"{datetime.now(TZ).isoformat()} [HEALTH] {msg}")
+        if startup_verbose:
+            _queue_telegram_message(f"✅ *SYSTEM*\n\n{msg}")
+    else:
+        _apply_cpu_fallback_runtime()
+        msg = "⚠️ GPU unavailable after retry — switched to CPU inference."
+        print(f"{datetime.now(TZ).isoformat()} [HEALTH] {msg}")
+        if startup_verbose:
+            _queue_telegram_message(f"⚠️ *SYSTEM*\n\n{msg}")
+
+    _startup_cuda_flag = resolved_device == "cuda"
 
     await asyncio.to_thread(_preventive_cleanup)
 
@@ -2515,22 +3842,52 @@ async def _run_full_trading_startup() -> None:
         print(f"{datetime.now(TZ).isoformat()} [STARTUP] Wacht 15 sec op systeem metrics voor audit e-mail...")
         # Wacht 15 seconden zodat de resource-watchdog en andere loops de eerste data kunnen verzamelen.
         await asyncio.sleep(15)
+        # Silent restart: alleen uitgebreide startup audit bij handmatige start.
+        try:
+            from app.services.reporting import startup_mode, notification_cooldown_due, mark_notification_sent
+        except Exception:
+            startup_mode = None  # type: ignore[assignment]
+            notification_cooldown_due = None  # type: ignore[assignment]
+            mark_notification_sent = None  # type: ignore[assignment]
+
+        if startup_mode is not None and startup_mode() == "auto":
+            print(f"{datetime.now(TZ).isoformat()} [STARTUP][MAIL] Overgeslagen (auto-restart silent mode).")
+            return
+        # Notification Throttle: 60 min cooldown voor startup (email + telegram gezamenlijk)
+        try:
+            cd_sec = max(60, int(os.getenv("STARTUP_COOLDOWN_SEC", "3600") or 3600))
+            if notification_cooldown_due is not None and not notification_cooldown_due(
+                key="startup_any_last_sent_utc", cooldown_sec=cd_sec
+            ):
+                print(f"{datetime.now(TZ).isoformat()} [STARTUP][MAIL] Overgeslagen (cooldown actief).")
+                return
+        except Exception:
+            pass
+        if not _startup_audit_email_due():
+            print(f"{datetime.now(TZ).isoformat()} [STARTUP][MAIL] Overgeslagen (cooldown actief).")
+            return
         try:
             def _build_and_send():
                 print(f"{datetime.now(TZ).isoformat()} [STARTUP][MAIL] Audit Report genereren...")
-                report_text = build_text_audit_report("🚀 Bot Startup - System Audit")
+                report_text = build_html_audit_report("🚀 Bot Startup - System Audit")
                 
                 print(f"{datetime.now(TZ).isoformat()} [STARTUP][MAIL] Rapport gegenereerd. Verzenden via SMTP...")
                 return send_email(
                     subject="Server Status Report",
                     body=report_text,
-                    is_html=False,
+                    is_html=True,
                     is_priority=True,
                     force_send=True
                 )
             
             success = await asyncio.to_thread(_build_and_send)
             if success:
+                _mark_startup_audit_email_sent()
+                try:
+                    if mark_notification_sent is not None:
+                        mark_notification_sent(key="startup_any_last_sent_utc")
+                except Exception:
+                    pass
                 print(f"{datetime.now(TZ).isoformat()} [STARTUP] ✅ Audit e-mail succesvol verzonden.")
             else:
                 print(f"{datetime.now(TZ).isoformat()} [STARTUP] ❌ Audit e-mail mislukt (zie notificatie logs).")
@@ -2539,7 +3896,8 @@ async def _run_full_trading_startup() -> None:
             err_msg = f"[STARTUP] Harde crash bij startup audit email: {email_err}\n{traceback.format_exc()}"
             print(f"{datetime.now(TZ).isoformat()} {err_msg}")
             notif_logger.error(err_msg)
-    start_background_task(_send_startup_audit_email_after_warmup())
+    # NOODSITUATIE: startup audit e-mail uit (crash-loop spam).
+    # start_background_task(_send_startup_audit_email_after_warmup())
 
     start_background_task(_background_rss_poller())
     start_background_task(_predict_queue_worker())
@@ -2554,6 +3912,8 @@ async def _run_full_trading_startup() -> None:
     start_background_task(_daily_auto_calibration_loop())
     if str(os.getenv("RL_BACKGROUND_TRAIN", "0")).strip().lower() in ("1", "true", "yes", "on"):
         start_background_task(_rl_background_training_loop())
+    if not _PORTAL_SLIM:
+        start_background_task(_rl_hourly_checkpoint_and_metrics_loop())
 
     # --- Daily Email Audit ---
     async def daily_audit_email_loop():
@@ -2566,12 +3926,12 @@ async def _run_full_trading_startup() -> None:
 
             try:
                 def _build_and_send_daily():
-                    report_text = build_text_audit_report("AI Trading System Audit")
+                    report_text = build_html_audit_report("AI Trading System Audit")
                     sub = f"Server Status Report - {now_local.strftime('%Y-%m-%d')}"
                     return send_email(
                         subject=sub, 
                         body=report_text, 
-                        is_html=False, 
+                        is_html=True, 
                         is_priority=True
                     ), sub
                     
@@ -2588,10 +3948,24 @@ async def _run_full_trading_startup() -> None:
             await asyncio.sleep(70)
 
     start_background_task(daily_audit_email_loop())
-    start_background_task(_telegram_sender_worker())
+    if not _PORTAL_SLIM:
+        start_background_task(morning_report_scheduler_loop())
 
     await MAIN_ENGINE.start()
-    _queue_telegram_message("✅ *SYSTEM*\n\nAI Trading Bot engines fully operational. Listening for signals...")
+    # NOODSITUATIE: post-startup Telegram + cold-start rapport uit (crash-loop spam).
+    # if startup_verbose:
+    #     _queue_telegram_message(
+    #         "✅ *SYSTEM*\n\nAI Trading Bot engines fully operational. Listening for signals..."
+    #     )
+    # else:
+    #     dev_label = "CUDA" if resolved_device == "cuda" else "CPU"
+    #     _queue_telegram_message(
+    #         "🚀 <b>SYSTEM</b>\n"
+    #         f"Bot gestart — device <code>{dev_label}</code>.\n"
+    #         "<b>MAIN_ENGINE</b> actief (signaalverwerking)."
+    #     )
+    # if not _PORTAL_SLIM:
+    #     start_background_task(_send_initial_report_after_startup())
     if RESTART_MAIL_TASK is None or RESTART_MAIL_TASK.done():
         RESTART_MAIL_TASK = asyncio.create_task(
             daily_restart_report_loop(
@@ -2643,7 +4017,10 @@ async def _run_full_trading_startup() -> None:
 
 
 async def _portal_startup_only() -> None:
-    _genesis_require_gpu_or_raise()
+    try:
+        _genesis_require_gpu_or_raise()
+    except Exception as e:
+        print(f"{datetime.now(TZ).isoformat()} [DEVICE][WARN] Portal GPU requirement check failed: {e}")
     set_current_tenant("default")
     try:
         await asyncio.to_thread(_refresh_active_markets_cache)
@@ -2655,25 +4032,41 @@ async def _portal_startup_only() -> None:
     start_background_task(_portal_system_stats_redis_subscribe_loop())
     _bootstrap_state_after_markets_refresh()
 
-    # Watchdog Integration
-    if not _probe_torch_cuda_available():
-        msg = "🚨 GPU DISCONNECTED - BOT STOPPED."
-        print(f"[CRITICAL][DEVICE] {msg}")
-        try:
-            sent = False
-            for method_name in ("send", "notify", "send_message", "send_msg", "send_text"):
-                if hasattr(TELEGRAM, method_name):
-                    getattr(TELEGRAM, method_name)(msg)
-                    sent = True
-                    break
-            if not sent:
-                bot_token = os.getenv("TELEGRAM_TOKEN")
-                chat_id = os.getenv("TELEGRAM_CHAT_ID")
-                if bot_token and chat_id:
-                    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-                    requests.post(url, json={"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"}, timeout=5)
-        except Exception as e:
-            print(f"[TELEGRAM] Kon startup-notificatie niet versturen, maar bot start door: {e}")
+    # Portal slim image heeft vaak geen torch; voorkom vals "GPU disconnected" alarm op UI/Telegram.
+    has_torch = True
+    try:
+        import torch as _torch  # noqa: F401
+    except Exception:
+        has_torch = False
+
+    if not has_torch:
+        STATE["compute_device"] = str(STATE.get("compute_device") or "cpu")
+        print(f"{datetime.now(TZ).isoformat()} [DEVICE] Portal startup: slim image zonder torch; worker-device status wordt via snapshot gebruikt.")
+    else:
+        # Device health: 1x retry, daarna CPU-fallback i.p.v. stop.
+        resolved_device = _resolve_compute_device_with_retry()
+        if resolved_device == "cuda":
+            STATE["compute_device"] = "cuda"
+            print(f"{datetime.now(TZ).isoformat()} [DEVICE] Portal startup device: cuda")
+        else:
+            _apply_cpu_fallback_runtime()
+            msg = "⚠️ GPU disconnected after retry — continuing on CPU (bot stays online)."
+            print(f"{datetime.now(TZ).isoformat()} [DEVICE] {msg}")
+            try:
+                sent = False
+                for method_name in ("send", "notify", "send_message", "send_msg", "send_text"):
+                    if hasattr(TELEGRAM, method_name):
+                        getattr(TELEGRAM, method_name)(msg)
+                        sent = True
+                        break
+                if not sent:
+                    bot_token = os.getenv("TELEGRAM_TOKEN")
+                    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+                    if bot_token and chat_id:
+                        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+                        requests.post(url, json={"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"}, timeout=5)
+            except Exception as e:
+                print(f"[TELEGRAM] Kon startup-notificatie niet versturen, maar bot start door: {e}")
 
     # Geen _predict_queue_worker: portal mist ML-stack; /predict → 503.
     # Geen _health_watchdog_loop: die vergelijkt last_engine_cycle met worker-ticks; op portal is STATE
@@ -2686,46 +4079,300 @@ async def run_trading_worker_forever() -> None:
     """Zonder Uvicorn: alle trading/AI-taken + snapshot voor portal."""
     await _run_full_trading_startup()
     print("[WORKER] Trading/AI-loops actief (geen HTTP); portal-state via worker_portal_snapshot.json")
-    await asyncio.Future()
+    while True:
+        await asyncio.sleep(0.1)
+
+def _worker_calc_hints_for_redis() -> list[str]:
+    """Zelfde idee als routes_activity._build_worker_calc_hints (compact voor WS)."""
+    out: list[str] = []
+    ls = STATE.get("last_scores") if isinstance(STATE.get("last_scores"), dict) else {}
+    lp = STATE.get("last_prediction") if isinstance(STATE.get("last_prediction"), dict) else {}
+    lo = STATE.get("last_order") if isinstance(STATE.get("last_order"), dict) else {}
+    lec = STATE.get("last_engine_cycle") if isinstance(STATE.get("last_engine_cycle"), dict) else {}
+    tr = ls.get("technical_predicted_return_pct")
+    if tr is not None:
+        try:
+            out.append(f"RSI/techniek: verwacht {float(tr):+.2f}%")
+        except (TypeError, ValueError):
+            pass
+    js = str(ls.get("judge_signal") or "").upper()
+    if js:
+        out.append(f"Sentiment check: judge → {js}")
+    ss = ls.get("sentiment_score")
+    if ss is not None:
+        try:
+            out.append(f"Nieuwslaag: score {float(ss):.3f}")
+        except (TypeError, ValueError):
+            pass
+    sig = str(lp.get("signal") or "").upper()
+    if sig:
+        _tk = str(lp.get("ticker") or "").strip().upper().replace("/", "-")
+        _dec = tenant_rl_decision_for_symbol(STATE if isinstance(STATE, dict) else {}, _tk) if _tk else None
+        _th = trade_confidence_threshold_01()
+        if prediction_signal_allowed_by_rl(sig, _dec, _th):
+            out.append(f"Voorspelling: {sig}" + (f" · {_tk}" if _tk else ""))
+    rd = lo.get("risk_decision") if isinstance(lo.get("risk_decision"), dict) else {}
+    rs = str(rd.get("reason") or "").strip()
+    if rs and rs != "approved":
+        out.append(f"Risk gate: {rs}")
+    pair = str(lec.get("pair") or "").strip().upper()
+    if pair:
+        out.append(f"Worker: cyclus {pair}")
+    return out[-12:]
+
+
+def _worker_calc_hints_by_market_for_redis() -> dict[str, list[str]]:
+    """Per-market hints voor UI-filtering (BTC-tab ziet alleen BTC-regels, etc.)."""
+    out: dict[str, list[str]] = {}
+    decisions = STATE.get("rl_multi_decisions") if isinstance(STATE.get("rl_multi_decisions"), dict) else {}
+    for mk_raw, dec in decisions.items():
+        mk = str(mk_raw or "").strip().upper().replace("/", "-")
+        if not mk:
+            continue
+        row = _rl_decision_as_dict_with_fallback(dec)
+        hints: list[str] = []
+        action = str(row.get("action") or "").upper()
+        if action:
+            hints.append(f"Signaal {action} · {mk}")
+        pb = _safe_float_runtime(row.get("prob_buy", 0.0), 0.0) * 100.0
+        ph = _safe_float_runtime(row.get("prob_hold", 0.0), 0.0) * 100.0
+        ps = _safe_float_runtime(row.get("prob_sell", 0.0), 0.0) * 100.0
+        hints.append(f"Policy {mk}: BUY {pb:.1f}% · HOLD {ph:.1f}% · SELL {ps:.1f}%")
+        conf = _safe_float_runtime(row.get("confidence", 0.0), 0.0) * (100.0 if _safe_float_runtime(row.get("confidence", 0.0), 0.0) <= 1.0 else 1.0)
+        hints.append(f"Confidence {mk}: {conf:.1f}%")
+        reason = str(row.get("reasoning") or "").strip()
+        if reason:
+            hints.append(f"{mk}: {reason}")
+        out[mk] = hints[-8:]
+    return out
+
 
 def _publish_trading_redis_activity(kind: str, ticker: str) -> None:
     """Publiceert de actuele status naar de trading_updates Redis channel."""
     try:
+        _tk_pub = str(
+            STATE.get("selected_market") or ticker or os.getenv("DEFAULT_TICKER", "BTC-EUR") or "BTC-EUR"
+        ).strip().upper().replace("/", "-")
         payload = {
             "type": "message",
             "kind": kind,
-            "ticker": ticker,
+            "ticker": _tk_pub,
+            "market": _tk_pub,
+            "rl_inference_greedy": bool(STATE.get("rl_inference_greedy")),
             "last_engine_tick_utc": datetime.now(UTC).isoformat(),
             "last_prediction": STATE.get("last_prediction"),
             "paper_portfolio": STATE.get("paper_portfolio") or PAPER_MANAGER.wallet,
             "last_order": STATE.get("last_order"),
             "fear_greed": STATE.get("fear_greed"),
-            "risk_profile": risk_profile_dict(CORE_RISK, PAPER_MANAGER.config.starting_balance_eur),
+            "risk_profile": risk_profile_dict(),
             "elite_ai_signals": _elite_ai_signals_payload(),
-            "system_stats": compact_system_stats(get_system_stats()),
             "allocation_snapshot": allocation_snapshot(
                 STATE.get("paper_portfolio") or PAPER_MANAGER.wallet,
                 float((STATE.get("paper_portfolio") or PAPER_MANAGER.wallet).get("equity", 10000.0) or 10000.0)
             ),
+            "rl_last_decision": STATE.get("rl_last_decision") if isinstance(STATE.get("rl_last_decision"), dict) else {},
+            "rl_multi_decisions": STATE.get("rl_multi_decisions") if isinstance(STATE.get("rl_multi_decisions"), dict) else {},
+            "worker_calc_hints": _worker_calc_hints_for_redis(),
+            "worker_calc_hints_by_market": _worker_calc_hints_by_market_for_redis(),
+            "active_markets": STATE.get("active_markets") or [],
+            "trades": STATE.get("trades") or [],
+            "system_stats": _system_stats_payload_for_websocket(),
         }
         publish_trading_update(payload)
     except Exception as exc:
         print(f"[REDIS] Error publishing activity: {exc}")
 
+
+def _rl_decision_confidence_for_market(market: str) -> float | None:
+    """Laatste RL confidence (0..1) voor deze markt uit multi-map of globaal besluit."""
+    mku = str(market or "").strip().upper().replace("/", "-")
+    multi = STATE.get("rl_multi_decisions") if isinstance(STATE.get("rl_multi_decisions"), dict) else {}
+    row = None
+    if isinstance(multi.get(mku), dict):
+        row = multi.get(mku)
+    elif isinstance(multi, dict):
+        for k, v in multi.items():
+            if str(k).strip().upper().replace("/", "-") == mku and isinstance(v, dict):
+                row = v
+                break
+    if isinstance(row, dict) and row.get("confidence") is not None:
+        try:
+            return float(row.get("confidence"))
+        except (TypeError, ValueError):
+            pass
+    gl = STATE.get("rl_last_decision") if isinstance(STATE.get("rl_last_decision"), dict) else {}
+    tk = str(gl.get("ticker") or gl.get("market") or "").strip().upper().replace("/", "-")
+    if tk == mku and gl.get("confidence") is not None:
+        try:
+            return float(gl.get("confidence"))
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
+def _paper_buy_confidence_size_multiplier(market: str, sig: str) -> tuple[float, str]:
+    """
+    Marginale BUY: lagere inleg tussen twee drempels (default 0.50–0.60 → 50% van baseline-size_frac).
+    Uit: ``PAPER_CONFIDENCE_POSITION_SCALE=0`` (default uit).
+    """
+    if str(sig or "").upper() != "BUY":
+        return 1.0, ""
+    if str(os.getenv("PAPER_CONFIDENCE_POSITION_SCALE", "0")).strip().lower() not in ("1", "true", "yes", "on"):
+        return 1.0, ""
+    conf = _rl_decision_confidence_for_market(market)
+    if conf is None or conf != conf:
+        return 1.0, "conf_missing"
+    try:
+        full_min = float(os.getenv("PAPER_CONFIDENCE_FULL_MIN", "0.60") or 0.60)
+        band_lo = float(os.getenv("PAPER_CONFIDENCE_BAND_LO", "0.50") or 0.50)
+        half_mult = float(os.getenv("PAPER_CONFIDENCE_HALF_MULT", "0.5") or 0.5)
+    except (TypeError, ValueError):
+        full_min, band_lo, half_mult = 0.60, 0.50, 0.5
+    half_mult = max(0.05, min(1.0, half_mult))
+    if conf >= full_min:
+        return 1.0, f"conf_full>={full_min}"
+    if conf > band_lo:
+        return half_mult, f"conf_partial:{conf:.2f} in ({band_lo},{full_min})"
+    return 1.0, f"conf_low≤{band_lo}"
+
+
+def _paper_execution_mid_to_fill_price(
+    mid_px: float,
+    signal: str,
+    spread_bps: float,
+    slippage_bps: float,
+) -> float:
+    """
+    P2 (audit): effectieve fill t.o.v. mid met orderbook-geschatte spread + slippage.
+    BUY: mid + halve spread + slip; SELL: mid − halve spread − slip.
+    Uit: ``PAPER_FORCE_ORDERBOOK_EXECUTION_PRICE=0`` (mid-only).
+    """
+    if str(os.getenv("PAPER_FORCE_ORDERBOOK_EXECUTION_PRICE", "1")).strip().lower() not in ("1", "true", "yes", "on"):
+        return float(mid_px)
+    mid = _safe_float_runtime(mid_px, 0.0)
+    if mid <= 0.0:
+        return mid
+    sp = max(0.0, _safe_float_runtime(spread_bps, 0.0))
+    sl = max(0.0, _safe_float_runtime(slippage_bps, 0.0))
+    half_spread_abs = mid * (sp / 10000.0) * 0.5
+    slip_abs = mid * (sl / 10000.0)
+    sig = str(signal or "").upper()
+    if sig == "BUY":
+        return max(mid * 1e-12, mid + half_spread_abs + slip_abs)
+    if sig == "SELL":
+        return max(mid * 1e-12, mid - half_spread_abs - slip_abs)
+    return mid
+
+
+_exploration_last_forced: dict[str, float] = {}
+
+
+def _maybe_apply_exploration_override(prediction: "PredictionResponse", ticker: str) -> "PredictionResponse":
+    """
+    Overschrijf het signaal naar BUY als de bot te lang geen trade heeft uitgevoerd.
+    Gate: RL_EXPLORATION_FORCE_TRADE_ENABLED=1, geen open positie, regime BULL/RANGING.
+    """
+    if str(os.getenv("RL_EXPLORATION_FORCE_TRADE_ENABLED", "0")).strip().lower() not in ("1", "true", "yes"):
+        return prediction
+
+    stall_h = max(0.25, float(os.getenv("RL_EXPLORATION_FORCE_TRADE_STALL_HOURS", "2") or 2))
+    cooldown_h = stall_h * 1.5
+    now = time.time()
+
+    if now - _exploration_last_forced.get(ticker, 0.0) < cooldown_h * 3600:
+        return prediction
+
+    wallet = STATE.get("paper_portfolio") or {}
+    pos = float((wallet.get("position_by_market") or {}).get(ticker, 0.0) or 0.0)
+    if pos > 0:
+        return prediction  # al open positie
+
+    last_trade_utc = wallet.get("last_trade_utc")
+    if last_trade_utc:
+        try:
+            last_ts = datetime.fromisoformat(str(last_trade_utc).replace("Z", "+00:00")).timestamp()
+            if now - last_ts < stall_h * 3600:
+                return prediction
+        except Exception:
+            pass
+    elif _exploration_last_forced.get("_any_trade_ever"):
+        return prediction  # voorzorgsmaatregel: reset als er al een trade was
+
+    regime = str((STATE.get("market_regime") or {}).get("regime") or "RANGING")
+    if regime in ("VOLATILE", "BEAR"):
+        print(f"[EXPLORATION] {ticker} regime={regime} → geen force BUY (te risicovol).")
+        return prediction
+
+    size_pct = max(1.0, min(15.0, float(os.getenv("RL_EXPLORATION_FORCE_TRADE_SIZE_PCT", "5") or 5)))
+    _exploration_last_forced[ticker] = now
+    msg = (
+        f"[EXPLORATION] Force BUY op {ticker} @ {prediction.latest_close:.2f} "
+        f"(regime={regime}, stall>{stall_h}h, size={size_pct}% equity)"
+    )
+    print(msg)
+    try:
+        tail = STATE.setdefault("cockpit_log_tail", [])
+        if not isinstance(tail, list):
+            tail = []
+        tail.append(f"{datetime.now(UTC).isoformat()} [INFO] {msg}")
+        STATE["cockpit_log_tail"] = tail[-100:]
+    except Exception:
+        pass
+    try:
+        from dataclasses import replace as _dc_replace
+        return _dc_replace(prediction, signal="BUY")
+    except Exception:
+        pass
+    try:
+        p2 = prediction.copy()  # pydantic
+        p2.signal = "BUY"
+        return p2
+    except Exception:
+        return prediction
+
+
 def _run_paper_cycle_sync(ticker: str, lookback_days: int) -> dict[str, Any]:
     """Synchrone paper run voor background thread."""
+    from core.worker_execution import is_paper_execution_paused
+
+    if is_paper_execution_paused():
+        return {
+            "status": "paused",
+            "reason": "PAPER_EXECUTION_PAUSE",
+            "market": ticker,
+            "signal": "HOLD",
+        }
+
     prediction = generate_prediction(ticker, lookback_days)
+    prediction = _maybe_apply_exploration_override(prediction, ticker)
     STATE["last_prediction"] = prediction.model_dump() if hasattr(prediction, "model_dump") else prediction.dict()
-    
+    with _PAPER_CYCLE_CRITICAL_LOCK:
+        return _run_paper_cycle_locked(ticker, lookback_days, prediction)
+
+
+def _run_paper_cycle_locked(ticker: str, lookback_days: int, prediction: PredictionResponse) -> dict[str, Any]:
     wallet = dict(STATE.get("paper_portfolio") or PAPER_MANAGER.wallet)
     equity = float(wallet.get("equity", 10000.0) or 10000.0)
     cash = float(wallet.get("cash", equity) or equity)
-    px = float(prediction.latest_close)
+    anchor_equity = float(
+        wallet.get("paper_anchor_equity_eur")
+        or wallet.get("starting_balance_eur")
+        or equity
+        or 1000.0
+    )
+    anchor_equity = max(1.0, anchor_equity)
+    px = _safe_float_runtime(getattr(prediction, "latest_close", 0.0), 0.0)
     sig = str(prediction.signal or "").upper()
     if sig not in {"BUY", "SELL", "HOLD"}:
         sig = "HOLD"
-        
-    size_frac, _quote_eur, size_note = CORE_RISK.calculate_trade_size(
+
+    if sig == "BUY":
+        _since = time.monotonic() - _LAST_BUY_TS.get(ticker, 0.0)
+        if _since < _BUY_COOLDOWN_SEC:
+            sig = "HOLD"
+            size_note = f"buy_cooldown ({_BUY_COOLDOWN_SEC:.0f}s, {_since:.0f}s geleden)"
+
+    size_frac, _quote_eur, size_note = calculate_order_size_for_signal(
         signal=sig,
         equity=equity,
         cash=cash,
@@ -2733,13 +4380,25 @@ def _run_paper_cycle_sync(ticker: str, lookback_days: int) -> dict[str, Any]:
         wallet=wallet,
         market=ticker,
     )
-    
-    spread_bps, slippage_bps = _orderbook_spread_slippage_bps(
+    cf_mult, cf_note = _paper_buy_confidence_size_multiplier(ticker, sig)
+    if cf_mult < 1.0 - 1e-12 and str(sig).upper() == "BUY":
+        size_frac = max(0.0, float(size_frac) * cf_mult)
+        size_note = f"{size_note}|{cf_note}"
+
+    spread_bps, slippage_bps, _book_imbalance_unused = _orderbook_spread_slippage_bps(
         ticker,
-        quote_notional_eur=max(0.0, float(equity) * max(0.0, float(size_frac))),
+        quote_notional_eur=max(
+            0.0,
+            float(anchor_equity if str(sig).upper() == "BUY" else equity) * max(0.0, float(size_frac)),
+        ),
     )
     if spread_bps <= 0.0:
         spread_bps = _estimate_spread_bps_from_recent_range(ticker)
+    try:
+        min_spread_bps = float(os.getenv("PAPER_MIN_SPREAD_BPS", "10") or 10.0)
+    except (TypeError, ValueError):
+        min_spread_bps = 10.0
+    spread_bps = max(float(spread_bps), max(0.0, min_spread_bps))
     if slippage_bps <= 0.0:
         slippage_bps = max(0.0, spread_bps * 0.15)
         
@@ -2747,12 +4406,28 @@ def _run_paper_cycle_sync(ticker: str, lookback_days: int) -> dict[str, Any]:
         proposed_signal=sig,
         proposed_size_fraction=size_frac,
         spread_bps=spread_bps,
-        sentiment_score=prediction.news_sentiment,
+        sentiment_score=_safe_float_runtime(getattr(prediction, "news_sentiment", 0.0), 0.0),
     )
-    
+
+    def _push_shadow(signal: str, reason: str, extra: str = "") -> None:
+        bucket = list(STATE.get("shadow_trades") or [])[-49:]
+        bucket.append({
+            "ts": datetime.utcnow().isoformat(timespec="seconds"),
+            "market": ticker,
+            "signal": signal,
+            "reason": reason,
+            "extra": extra,
+            "spread_bps": round(float(spread_bps), 1),
+            "price": round(float(px), 2),
+        })
+        STATE["shadow_trades"] = bucket
+
+    if sig in ("BUY", "SELL") and not risk_decision.approved:
+        _push_shadow(sig, risk_decision.reason)
+
     final_signal = str(risk_decision.adjusted_signal).upper()
-    final_frac = float(risk_decision.adjusted_size_fraction)
-    
+    final_frac = max(0.0, min(1.0, _safe_float_runtime(risk_decision.adjusted_size_fraction, 0.0)))
+
     if risk_decision.reason == "emergency_exit_negative_sentiment_shock" and final_signal == "SELL":
         final_frac = CORE_RISK.full_exit_size_fraction(
             equity=equity, wallet=wallet, price=px, market=ticker
@@ -2765,13 +4440,14 @@ def _run_paper_cycle_sync(ticker: str, lookback_days: int) -> dict[str, Any]:
             cash=cash,
             price=px,
             wallet=wallet,
-            proposed_quote_eur=final_frac * equity,
+            proposed_quote_eur=final_frac * anchor_equity,
             fee_rate=float(PAPER_MANAGER.config.fee_rate),
         )
         if not ok:
             final_signal = "HOLD"
             final_frac = 0.0
             size_note = why
+            _push_shadow("BUY", "core_risk_check_safety", why or "")
 
     # Dynamische Trailing Stop-Loss check via de RiskManager
     is_hard_exit, exit_reason = CORE_RISK.hard_exit_for_sl_tp(
@@ -2795,6 +4471,41 @@ def _run_paper_cycle_sync(ticker: str, lookback_days: int) -> dict[str, Any]:
                 cooldown_minutes=60,
             )
 
+    # Safety timeout: sluit positie als die te lang openstaat zonder SELL-signaal.
+    try:
+        timeout_h = max(1.0, float(os.getenv("PAPER_POSITION_TIMEOUT_HOURS", "4") or 4.0))
+    except (TypeError, ValueError):
+        timeout_h = 4.0
+    if final_signal != "SELL":
+        try:
+            tk_u = str(ticker or "").strip().upper().replace("/", "-")
+            obm_to = wallet.get("open_lots_by_market") if isinstance(wallet.get("open_lots_by_market"), dict) else {}
+            open_lots = list(obm_to.get(tk_u) or [])
+            if not open_lots and isinstance(obm_to, dict):
+                for k, v in obm_to.items():
+                    if str(k).strip().upper().replace("/", "-") == tk_u and isinstance(v, list):
+                        open_lots = list(v)
+                        break
+            oldest_h = 0.0
+            if isinstance(open_lots, list):
+                for lot in open_lots:
+                    if not isinstance(lot, dict):
+                        continue
+                    ts = str(lot.get("entry_ts_utc") or "")
+                    if not ts:
+                        continue
+                    dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=UTC)
+                    held_h = (datetime.now(UTC) - dt.astimezone(UTC)).total_seconds() / 3600.0
+                    oldest_h = max(oldest_h, float(held_h))
+            if oldest_h >= timeout_h:
+                final_signal = "SELL"
+                final_frac = CORE_RISK.full_exit_size_fraction(equity=equity, wallet=wallet, price=px, market=ticker)
+                size_note = f"Forced safety timeout exit ({oldest_h:.2f}h >= {timeout_h:.2f}h)"
+        except Exception:
+            pass
+
     forced_panic_market, rl_note = _paper_whale_panic_intervention(prediction, spread_bps, slippage_bps)
     if forced_panic_market == ticker:
         _publish_trading_redis_activity(kind="paper_cycle", ticker=ticker)
@@ -2807,27 +4518,50 @@ def _run_paper_cycle_sync(ticker: str, lookback_days: int) -> dict[str, Any]:
     if is_hard_exit:
         ai_thought = f"🛡️ [RISK] {size_note}"
 
+    if final_signal == "BUY":
+        blocked, skip_msg = paper_buy_blocked_if_open_position(
+            wallet=dict(PAPER_MANAGER.wallet),
+            ticker=ticker,
+        )
+        if blocked:
+            print(skip_msg, flush=True)
+            final_signal = "HOLD"
+            final_frac = 0.0
+            size_note = skip_msg
+            ai_thought = skip_msg
+
+    exec_px = _paper_execution_mid_to_fill_price(px, final_signal, spread_bps, slippage_bps)
     snap = PAPER_MANAGER.process_signal(
         market=ticker,
         signal=final_signal,
-        price=px,
+        price=exec_px,
         size_fraction=final_frac,
-        sentiment_score=float(prediction.news_sentiment),
+        sentiment_score=_safe_float_runtime(getattr(prediction, "news_sentiment", 0.0), 0.0),
         news_headlines=top_headlines,
         ai_thought=ai_thought,
         ledger_context=format_ledger_social_whale_context(ticker, STATE),
     )
-    
+    if isinstance(snap, dict) and snap.get("status") == "opened":
+        _LAST_BUY_TS[ticker] = time.monotonic()
+    try:
+        from core.worker_execution import schedule_immediate_trade_telegram
+
+        schedule_immediate_trade_telegram(snap=snap, market=ticker, execution_price=float(exec_px))
+    except Exception:
+        pass
+    _append_paper_replay_experience(ticker, final_signal, exec_px)
+
     _sanitize_paper_wallet()
     STATE["paper_portfolio"] = PAPER_MANAGER.wallet
-    
-    risk_controls = compute_risk_controls(prediction.latest_close)
+    _sync_trades_ledger_state()
+
+    risk_controls = compute_risk_controls(exec_px)
     paper_order = build_paper_order(
         signal=final_signal,
         ticker=ticker,
-        price=px,
+        price=exec_px,
         size_fraction=final_frac,
-        budget_eur=equity,
+        budget_eur=anchor_equity if str(final_signal).upper() == "BUY" else equity,
     )
     
     STATE["last_order"] = {
@@ -2850,6 +4584,144 @@ def _run_paper_cycle_sync(ticker: str, lookback_days: int) -> dict[str, Any]:
 
 
 
+def _maybe_record_predict_rl_snapshot(ticker: str, prediction: PredictionResponse) -> None:
+    """
+    Bij elke ``generate_prediction`` (/predict-queue): volledige RL-featurerij + account-tail naar SQLite.
+    Uit: ``RL_PREDICT_FEATURE_LOG=0``.
+    """
+    if _PORTAL_SLIM:
+        return
+    flag = str(os.getenv("RL_PREDICT_FEATURE_LOG", "1")).strip().lower()
+    if flag in ("0", "false", "no", "off"):
+        return
+    fnames = list(getattr(RL_AGENT, "feature_names", []) or [])
+    if len(fnames) < 12:
+        return
+    mkt = str(ticker or "").strip().upper().replace("/", "-")
+    ts_iso = datetime.now(UTC).isoformat()
+    try:
+        from app.rl.data import build_rl_training_frame, fetch_bitvavo_historical_candles, patch_last_row_live_orderbook
+
+        end_dt = datetime.now(UTC)
+        start_dt = end_dt - timedelta(days=max(30, int(STATE.get("lookback_days", 400) or 400)))
+        candles = fetch_bitvavo_historical_candles(mkt, "1h", start_dt, end_dt)
+        rl_frame = build_rl_training_frame(
+            candles_df=candles,
+            market=mkt,
+            news_query="crypto",
+            news_api_key=os.getenv("CRYPTOCOMPARE_KEY"),
+            cryptocompare_key=os.getenv("CRYPTOCOMPARE_KEY"),
+            cmc_metrics=_refresh_cmc_metrics(),
+        )
+        try:
+            _quote_ob = float(os.getenv("RL_ORDERBOOK_QUOTE_NOTIONAL_EUR", "500") or 500)
+        except (TypeError, ValueError):
+            _quote_ob = 500.0
+        spread_bps_ob, _sl_ob, book_imb_ob = _orderbook_spread_slippage_bps(mkt, max(0.0, _quote_ob))
+        rl_frame = patch_last_row_live_orderbook(rl_frame, spread_bps_ob, book_imb_ob)
+        last = rl_frame.iloc[-1].to_dict()
+        feat: dict[str, float] = {}
+        for k in fnames:
+            feat[str(k)] = round(float(_safe_float_runtime(last.get(k, 0.0), 0.0)), 8)
+
+        acct_w = STATE.get("paper_portfolio", {})
+        if not isinstance(acct_w, dict):
+            acct_w = {}
+        equity = float(acct_w.get("equity", 10000.0) or 10000.0)
+        cash = float(acct_w.get("cash", equity) or equity)
+        pos_qty_pair = 0.0
+        _obm_raw = acct_w.get("open_lots_by_market", {})
+        if isinstance(_obm_raw, dict):
+            _lots_cur = _obm_raw.get(mkt)
+            if _lots_cur is None:
+                _tp_u = mkt
+                for _mk, _lv in _obm_raw.items():
+                    if str(_mk).strip().upper().replace("/", "-") == _tp_u:
+                        _lots_cur = _lv
+                        break
+            if isinstance(_lots_cur, list):
+                for _lot in _lots_cur:
+                    if isinstance(_lot, dict):
+                        pos_qty_pair += _safe_float_runtime(_lot.get("qty", _lot.get("position_qty", 0.0)), 0.0)
+
+        position_hours = 0.0
+        open_lots = acct_w.get("open_lots_by_market", {}).get(mkt, [])
+        if isinstance(open_lots, list) and open_lots:
+            try:
+                open_ts = str(open_lots[0].get("open_time_utc") or "")
+                if open_ts:
+                    dt_open = datetime.fromisoformat(open_ts.replace("Z", "+00:00"))
+                    if dt_open.tzinfo is None:
+                        dt_open = dt_open.replace(tzinfo=UTC)
+                    position_hours = (datetime.now(UTC) - dt_open).total_seconds() / 3600.0
+            except Exception:
+                pass
+
+        account = {
+            "balance_ratio": round(cash / max(1.0, equity), 8),
+            "position": round(float(pos_qty_pair), 8),
+            "pnl_ratio": round(_safe_float_runtime(acct_w.get("realized_pnl_eur", 0.0), 0.0) / max(1.0, equity), 8),
+            "trade_ratio": round(_safe_float_runtime(acct_w.get("trades_count", 0.0), 0.0) / 10000.0, 8),
+            "position_hours": round(position_hours, 4),
+        }
+        obs_vec = [feat[k] for k in fnames] + [
+            account["balance_ratio"],
+            account["position"],
+            account["pnl_ratio"],
+            account["trade_ratio"],
+            account["position_hours"],
+        ]
+
+        multi_raw = STATE.get("rl_multi_decisions") if isinstance(STATE.get("rl_multi_decisions"), dict) else {}
+        pol_hint: dict[str, Any] | None = None
+        if isinstance(multi_raw, dict):
+            hit = multi_raw.get(mkt)
+            if hit is None:
+                for kk, vv in multi_raw.items():
+                    if str(kk).strip().upper().replace("/", "-") == mkt:
+                        hit = vv
+                        break
+            if isinstance(hit, dict):
+                pol_hint = {
+                    "prob_buy": hit.get("prob_buy"),
+                    "prob_hold": hit.get("prob_hold"),
+                    "prob_sell": hit.get("prob_sell"),
+                    "action": hit.get("action") or hit.get("action_name"),
+                    "confidence": hit.get("confidence"),
+                    "policy_status": hit.get("policy_status"),
+                }
+
+        effective_th = float(trade_confidence_threshold_01())
+        meta: dict[str, Any] = {
+            "predict_signal": getattr(prediction, "signal", None),
+            "predict_expected_return_pct": getattr(prediction, "expected_return_pct", None),
+            "predict_news_sentiment": getattr(prediction, "news_sentiment", None),
+            "predict_generated_at": getattr(prediction, "generated_at", None),
+            "effective_decision_threshold_01": round(effective_th, 6),
+            "state_decision_threshold": STATE.get("decision_threshold"),
+            "decision_threshold_regime_boost": STATE.get("decision_threshold_regime_boost"),
+            "regime_high_volatility": STATE.get("regime_high_volatility"),
+            "market_regime": STATE.get("market_regime") or {},
+            "spread_bps_orderbook": round(float(spread_bps_ob), 6),
+            "orderbook_imbalance_live": round(float(book_imb_ob), 8),
+            "rl_policy_hint": pol_hint,
+            "atr_14": round(float(_safe_float_runtime(last.get("atr_14", 0.0), 0.0)), 12),
+            "atr_mean_24": round(float(_safe_float_runtime(last.get("atr_mean_24", 0.0), 0.0)), 12),
+        }
+
+        snapshot = {
+            "ts_utc": ts_iso,
+            "market": mkt,
+            "feature_vector": feat,
+            "account": account,
+            "observation_vector": [round(float(x), 8) for x in obs_vec],
+            "meta": meta,
+        }
+        PAPER_MANAGER.record_predict_rl_feature_snapshot(snapshot)
+    except Exception as exc:
+        print(f"{ts_iso} [PREDICT-RL-LOG][WARN] {mkt}: {exc}")
+
+
 def generate_prediction(ticker: str, lookback_days: int) -> PredictionResponse:
     df = fetch_market_data(ticker, lookback_days)
     close_prices = [float(x) for x in df["Close"].values.flatten().tolist()]
@@ -2857,6 +4729,7 @@ def generate_prediction(ticker: str, lookback_days: int) -> PredictionResponse:
     news_api_key = os.getenv("CRYPTOCOMPARE_KEY")
     news_query = "crypto"
     articles = _signal_news_articles(ticker=ticker, news_query=news_query, news_api_key=news_api_key)
+    _FINBERT.set_market(ticker)
     scoring = SIGNAL_ENGINE.evaluate(close_prices=close_prices, news_articles=articles)
     technical_result = scoring["technical"]
     sentiment_result = scoring["sentiment"]
@@ -2882,6 +4755,20 @@ def generate_prediction(ticker: str, lookback_days: int) -> PredictionResponse:
         news_sentiment=round(sentiment_result.score, 3),
         generated_at=datetime.utcnow().isoformat(),
     )
+    rsi_live = _rsi_tail_from_closes(close_prices, period=14)
+    ema20 = _ema_last_from_closes(close_prices, span=20)
+    ema_gap_live = 0.0
+    if ema20 > 1e-12 and latest_close > 0:
+        ema_gap_live = float((latest_close - ema20) / ema20)
+    vol_ch_live = 0.0
+    if "Volume" in df.columns:
+        try:
+            vols = [float(x) for x in df["Volume"].values.flatten().tolist() if x == x]
+            if len(vols) > 1:
+                a, b = float(vols[-2]), float(vols[-1])
+                vol_ch_live = float((b - a) / max(1e-9, abs(a))) if abs(a) > 1e-12 else 0.0
+        except Exception:
+            vol_ch_live = 0.0
     STATE["last_scores"] = {
         "technical_score": technical_result.score,
         "technical_predicted_return_pct": technical_result.predicted_return_pct,
@@ -2893,6 +4780,9 @@ def generate_prediction(ticker: str, lookback_days: int) -> PredictionResponse:
             "technical": judge_result.technical_weight,
             "sentiment": judge_result.sentiment_weight,
         },
+        "rsi_14": round(rsi_live, 4),
+        "ema_gap_pct": round(ema_gap_live, 6),
+        "volume_change": round(vol_ch_live, 6),
     }
     STATE["news_insights"] = _build_news_insights(
         ticker=ticker,
@@ -2908,6 +4798,7 @@ def generate_prediction(ticker: str, lookback_days: int) -> PredictionResponse:
         if channel == "RSS":
             print(f"[RSS-FEED] Nieuw artikel gevonden: {title} - Sentiment analyse starten...")
         print(f"[NEWS][{channel}] {source}: {title} | Sentiment: {sentiment:.3f}")
+    _maybe_record_predict_rl_snapshot(str(ticker).upper(), prediction)
     return prediction
 
 
@@ -2927,32 +4818,55 @@ def _estimate_spread_bps_from_recent_range(ticker: str) -> float:
     return max(0.0, ((last_high - last_low) / last_close) * 10000.0)
 
 
-def _orderbook_spread_slippage_bps(ticker: str, quote_notional_eur: float) -> tuple[float, float]:
+def _orderbook_spread_slippage_bps(ticker: str, quote_notional_eur: float) -> tuple[float, float, float]:
+    """
+    Haalt spread/slippage (bps) + signed orderbook imbalance ((bid_qty-ask_qty)/(bid_qty+ask_qty)) uit het Bitvavo boek.
+    """
     market = str(ticker or "").upper()
+    endpoint_path = "/v2/UNKNOWN/book"
     if "-" not in market:
-        return 0.0, 0.0
+        return 0.0, 0.0, 0.0
     try:
+        endpoint_path = f"/v2/{market}/book"
         t0 = time.time()
         resp = requests.get(
-            "https://api.bitvavo.com/v2/book",
-            params={"market": market, "depth": 50},
+            f"https://api.bitvavo.com{endpoint_path}",
+            params={"depth": 50},
             timeout=8,
         )
         elapsed_ms = (time.time() - t0) * 1000
         if elapsed_ms > 500:
             print(f"{datetime.now().astimezone().isoformat()} [COMM][BITVAVO][TIMEOUT] Request took > {elapsed_ms:.0f}ms. Potential lag detected.")
         if resp.status_code != 200:
-            print(f"{datetime.now().astimezone().isoformat()} [EXCHANGE-API][ERROR] Bitvavo /v2/book HTTP {resp.status_code}: {resp.text}")
-            return 0.0, 0.0
+            body_preview = (resp.text or "").replace("\n", " ")[:220]
+            print(
+                f"{datetime.now().astimezone().isoformat()} [EXCHANGE-API][ERROR] "
+                f"Bitvavo {endpoint_path} HTTP {resp.status_code}: {body_preview}"
+            )
+            return 0.0, 0.0, 0.0
         data = resp.json()
         bids = data.get("bids", []) if isinstance(data, dict) else []
         asks = data.get("asks", []) if isinstance(data, dict) else []
         if not bids or not asks:
-            return 0.0, 0.0
+            return 0.0, 0.0, 0.0
         best_bid = float(bids[0][0])
         best_ask = float(asks[0][0])
         mid = (best_bid + best_ask) / 2.0 if (best_bid > 0 and best_ask > 0) else 0.0
         spread_bps = 0.0 if mid <= 0 else ((best_ask - best_bid) / mid) * 10000.0
+
+        bid_vol = 0.0
+        ask_vol = 0.0
+        max_lvls = 25
+        for row in bids[:max_lvls]:
+            if isinstance(row, list) and len(row) >= 2:
+                bid_vol += float(row[1])
+        for row in asks[:max_lvls]:
+            if isinstance(row, list) and len(row) >= 2:
+                ask_vol += float(row[1])
+        denom = bid_vol + ask_vol + 1e-12
+        imbalance = (bid_vol - ask_vol) / denom
+        imbalance = max(-1.0, min(1.0, float(imbalance)))
+
         remain = max(0.0, float(quote_notional_eur or 0.0))
         notional_consumed = 0.0
         weighted_px_sum = 0.0
@@ -2970,13 +4884,13 @@ def _orderbook_spread_slippage_bps(ticker: str, quote_notional_eur: float) -> tu
             if remain <= 1e-9:
                 break
         if notional_consumed <= 1e-9:
-            return max(0.0, spread_bps), 0.0
+            return max(0.0, spread_bps), 0.0, imbalance
         vwap = weighted_px_sum / notional_consumed
         slippage_bps = 0.0 if mid <= 0 else max(0.0, ((vwap - mid) / mid) * 10000.0)
-        return max(0.0, spread_bps), max(0.0, slippage_bps)
+        return max(0.0, spread_bps), max(0.0, slippage_bps), imbalance
     except Exception as exc:
-        print(f"{datetime.now().astimezone().isoformat()} [EXCHANGE-API][CRITICAL] Bitvavo /v2/book netwerkfout: {exc}")
-        return 0.0, 0.0
+        print(f"{datetime.now().astimezone().isoformat()} [EXCHANGE-API][CRITICAL] Bitvavo {endpoint_path} netwerkfout: {exc}")
+        return 0.0, 0.0, 0.0
 
 
 def send_email(subject: str, body: str, is_html: bool = False, is_priority: bool = False, force_send: bool = False) -> bool:
@@ -3080,34 +4994,172 @@ def _read_storage_stats() -> dict[str, Any]:
         "resolution": "Mixed (1s/1m)",
     }
 
+def _coerce_rl_decision_dict(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        return raw
+    if raw is not None and hasattr(raw, "__dict__"):
+        d = vars(raw)
+        return dict(d) if isinstance(d, dict) else {}
+    return {}
+
+
+def _build_thinking_sections(decision: dict[str, Any]) -> dict[str, str]:
+    """Decompose RLDecision fields into labeled thinking sections for the brain UI."""
+    prob_hold = float(decision.get("prob_hold") or 0.0)
+    prob_buy = float(decision.get("prob_buy") or 0.0)
+    prob_sell = float(decision.get("prob_sell") or 0.0)
+    expected_reward = float(decision.get("expected_reward_pct") or 0.0)
+    action_name = str(decision.get("action_name") or "—").upper()
+    confidence = float(decision.get("confidence") or 0.0)
+    fw: dict[str, Any] = decision.get("feature_weights") or {}
+    top_features = sorted(fw.items(), key=lambda x: float(x[1]), reverse=True)[:3] if fw else []
+    top_str = ", ".join(f"{k} ({v:.2f})" for k, v in top_features) if top_features else "—"
+    probs = sorted([prob_hold, prob_buy, prob_sell], reverse=True)
+    margin = probs[0] - probs[1] if len(probs) >= 2 else 1.0
+    if margin < 0.08:
+        conflict = f"Sterke twijfel: slechts {margin:.1%} marge tussen top-2 acties — conflicterende signalen."
+    elif margin < 0.20:
+        conflict = f"Beperkte marge ({margin:.1%}): gemengde signalen, kleine verschuiving kan actie omdraaien."
+    else:
+        conflict = f"Duidelijke voorkeur: {margin:.1%} marge — sterke policy-consensus."
+    reward_sign = "+" if expected_reward >= 0 else ""
+    return {
+        "observations": (
+            f"P(HOLD)={prob_hold:.1%} · P(BUY)={prob_buy:.1%} · P(SELL)={prob_sell:.1%}\n"
+            f"Top signalen: {top_str}"
+        ),
+        "conflict": conflict,
+        "verdict": f"{action_name} (conf. {confidence:.1%}) · Verwachte beloning: {reward_sign}{expected_reward:.2f}%",
+    }
+
+
+def _build_buy_block_factors(
+    decision: dict[str, Any],
+    obs: dict[str, Any],
+    shadow_trades: list[dict[str, Any]],
+    spread_bps: float | None = None,
+) -> list[dict[str, Any]]:
+    """Return factor-rows that explain why BUY is currently blocked or throttled."""
+    factors: list[dict[str, Any]] = []
+
+    # --- RSI ---
+    rsi = float(obs.get("rsi_14") or 0.0)
+    if rsi > 0:
+        overbought = rsi >= 70
+        factors.append({
+            "label": "RSI-14",
+            "value": f"{rsi:.1f}",
+            "status": "block" if overbought else "ok",
+            "detail": "Overbought — BUY geblokkeerd" if overbought else "Neutraal",
+        })
+
+    # --- Sentiment ---
+    sentiment = float(obs.get("sentiment_score") or decision.get("news_sentiment") or 0.0)
+    neg_thresh = -0.8
+    sentiment_status = "block" if sentiment <= neg_thresh else ("warn" if sentiment < -0.3 else "ok")
+    factors.append({
+        "label": "Sentiment",
+        "value": f"{sentiment:+.2f}",
+        "status": sentiment_status,
+        "detail": "Emergency-exit drempel bereikt" if sentiment_status == "block" else (
+            "Negatief — voorzichtigheid" if sentiment_status == "warn" else "Neutraal/positief"
+        ),
+    })
+
+    # --- Confidence ---
+    confidence = float(decision.get("confidence") or 0.0)
+    try:
+        conf_th = float(os.getenv("MIN_BUY_CONFIDENCE", "0.55") or 0.55)
+    except (TypeError, ValueError):
+        conf_th = 0.55
+    conf_status = "block" if confidence < conf_th else "ok"
+    factors.append({
+        "label": "Confidence",
+        "value": f"{confidence:.0%}",
+        "status": conf_status,
+        "detail": f"Onder drempel ({conf_th:.0%})" if conf_status == "block" else "Boven drempel",
+    })
+
+    # --- Volatiliteit / spread ---
+    try:
+        max_spread = float(os.getenv("RISK_MAX_SPREAD_BPS_FOR_TRADING", "45") or 45)
+    except (TypeError, ValueError):
+        max_spread = 45.0
+    sp = spread_bps if spread_bps is not None else 0.0
+    spread_status = "block" if sp > max_spread else ("warn" if sp > max_spread * 0.8 else "ok")
+    factors.append({
+        "label": "Spread",
+        "value": f"{sp:.1f} bps",
+        "status": spread_status,
+        "detail": f"Te hoog (max {max_spread:.0f} bps)" if spread_status == "block" else (
+            "Dicht bij limiet" if spread_status == "warn" else "Acceptabel"
+        ),
+    })
+
+    # --- Open positie blokkade ---
+    recent_shadow_buy = [
+        s for s in (shadow_trades or [])
+        if str(s.get("signal", "")).upper() == "BUY"
+    ]
+    if recent_shadow_buy:
+        last = recent_shadow_buy[-1]
+        reason_code = str(last.get("reason") or "")
+        _reason_labels = {
+            "core_risk_check_safety": "Open positie blokkeert BUY",
+            "volatility_filter_spread_too_high": "Volatiliteitsfilter actief",
+            "emergency_exit_negative_sentiment_shock": "Sentiment-shock noodstop",
+            "no_trade_signal": "Geen handelssignaal",
+        }
+        label = _reason_labels.get(reason_code, reason_code.replace("_", " ").capitalize())
+        factors.append({
+            "label": "Shadow Block",
+            "value": last.get("ts", "")[-8:] or "—",
+            "status": "block",
+            "detail": label + (f" — {last.get('extra')}" if last.get("extra") else ""),
+        })
+
+    return factors
+
+
 def _brain_ws_payload() -> dict[str, Any]:
     """Snapshot voor `/ws/brain-stats` (zelfde bronnen als REST brain-endpoints)."""
-    decision = STATE.get("rl_last_decision")
-    if not isinstance(decision, dict):
-        decision = {}
+    focus = str(STATE.get("selected_market") or os.getenv("DEFAULT_TICKER", "BTC-EUR")).upper()
+    decision = _coerce_rl_decision_dict(STATE.get("rl_last_decision"))
+    if not str(decision.get("reasoning") or "").strip():
+        multi = STATE.get("rl_multi_decisions")
+        if isinstance(multi, dict):
+            alt = _coerce_rl_decision_dict(multi.get(focus))
+            if str(alt.get("reasoning") or "").strip():
+                decision = alt
     ld = RL_AGENT.last_decision
     policy_fw = ld.feature_weights if ld is not None else None
     fw_policy = merge_feature_weights_for_brain(decision, policy_fw)
     obs = STATE.get("rl_last_observation")
     obs_d = obs if isinstance(obs, dict) else {}
     fw_bar = bar_values_from_obs_and_weights(fw_policy, obs_d)
-        
-        tm = RL_AGENT.training_monitor()
-        if isinstance(tm, dict):
-            stats = tm.get("stats", {})
-            if isinstance(stats, dict):
-                stats["is_training_active"] = str(os.getenv("RL_BACKGROUND_TRAIN", "0")).strip().lower() in ("1", "true", "yes", "on")
-                tm["stats"] = stats
-                
+
+    tm = RL_AGENT.training_monitor()
+    if isinstance(tm, dict):
+        stats = tm.get("stats", {})
+        if isinstance(stats, dict):
+            stats["is_training_active"] = str(os.getenv("RL_BACKGROUND_TRAIN", "0")).strip().lower() in ("1", "true", "yes", "on")
+            tm["stats"] = stats
+
+    thinking_steps: list[str] = []
+    if RL_AGENT.last_decision is not None:
+        thinking_steps = list(RL_AGENT.last_decision.thinking_steps or [])
     return {
         "topic": "brain_stats",
         "reasoning": decision.get("reasoning", "Wachten op eerste besluit (RL inferentie)..."),
         "generated_at": decision.get("generated_at", ""),
-            "training_monitor": tm,
+        "thinking_sections": _build_thinking_sections(decision),
+        "training_monitor": tm,
         "feature_weights": fw_bar,
         "feature_weights_policy": fw_policy,
         "rl_observation": obs_d,
         "social_buzz": STATE.get("social_buzz_summary") if isinstance(STATE.get("social_buzz_summary"), dict) else {},
+        "thinking_steps": thinking_steps,
+        "shadow_trades": list(STATE.get("shadow_trades") or [])[-20:],
     }
 
 
@@ -3131,4 +5183,19 @@ def _brain_ws_wire_payload() -> dict[str, Any]:
     )
     wire["reasoning"] = inner.get("reasoning", "Wachten op eerste besluit (RL inferentie)...")
     wire["generated_at"] = inner.get("generated_at", "")
+    wire["thinking_sections"] = inner.get("thinking_sections") or {}
+    wire["tp"] = inner.get("thinking_steps") or []
+    wire["sh"] = inner.get("shadow_trades") or []
+    decision_snap = _coerce_rl_decision_dict(STATE.get("rl_last_decision"))
+    obs_snap = STATE.get("rl_last_observation")
+    obs_snap = obs_snap if isinstance(obs_snap, dict) else {}
+    last_spread = float(
+        (list(STATE.get("shadow_trades") or [{}])[-1] or {}).get("spread_bps") or 0.0
+    )
+    wire["buy_block_factors"] = _build_buy_block_factors(
+        decision=decision_snap,
+        obs=obs_snap,
+        shadow_trades=wire["sh"],
+        spread_bps=last_spread,
+    )
     return wire

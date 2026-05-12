@@ -5,15 +5,15 @@
 */
 
 :root {
-  --bg: #000000;
-  --panel: #000000;
-  --border: #222222;
-  --text: #ffffff;
-  --muted: #ffffff;
-  --green: #39ff14;
-  --red: #ff3131;
-  --yellow: #f8d04f;
-  --neon-blue: #00f0ff;
+  --bg:       var(--gnq-bg-base);
+  --panel:    var(--gnq-bg-card);
+  --border:   var(--gnq-border-subtle);
+  --text:     var(--gnq-text);
+  --muted:    var(--gnq-text-muted);
+  --green:    var(--gnq-green);
+  --red:      var(--gnq-red);
+  --yellow:   var(--gnq-amber);
+  --neon-blue: var(--gnq-cyan);
 }
 
 * {
@@ -35,7 +35,7 @@ body {
   align-items: stretch;
   width: 100%;
   min-height: 46px;
-  border-bottom: 1px solid #333333;
+  border-bottom: 1px solid var(--gnq-border-strong);
   background: #03060c;
 }
 
@@ -45,7 +45,7 @@ body {
   gap: 14px;
   padding: 6px 12px;
   flex-shrink: 0;
-  border-right: 1px solid #333333;
+  border-right: 1px solid var(--gnq-border-strong);
 }
 
 .res-gauge {
@@ -71,7 +71,7 @@ body {
   height: 7px;
   border-radius: 999px;
   background: #141820;
-  border: 1px solid #333333;
+  border: 1px solid var(--gnq-border-strong);
   overflow: hidden;
 }
 
@@ -196,7 +196,7 @@ h3 {
 
 .mode-banner {
   padding: 8px 12px;
-  border: 1px solid #222222;
+  border: 1px solid var(--gnq-border-subtle);
   border-radius: 8px;
   font-weight: 700;
   letter-spacing: 0.05em;
@@ -204,8 +204,8 @@ h3 {
 
 .mode-live {
   color: #000000;
-  background: #39ff14;
-  border-color: #39ff14 !important;
+  background: var(--gnq-green);
+  border-color: var(--gnq-green) !important;
   box-shadow: 0 0 16px rgba(57, 255, 20, 0.55);
 }
 
@@ -238,7 +238,7 @@ h3 {
 
 .panel {
   background: #000000;
-  border: 1px solid #222222;
+  border: 1px solid var(--gnq-border-subtle);
   border-radius: 10px;
   padding: 12px;
   overflow: auto;
@@ -284,7 +284,7 @@ button:hover {
 .chart-wrap {
   flex: 1;
   min-height: 360px;
-  border: 1px solid #333333;
+  border: 1px solid var(--gnq-border-strong);
   border-radius: 10px;
   padding: 8px;
   background: #04070d;
@@ -297,7 +297,7 @@ button:hover {
 
 .prediction-box {
   margin: 0;
-  border: 1px solid #333333;
+  border: 1px solid var(--gnq-border-strong);
   border-radius: 8px;
   padding: 10px;
   background: #060b14;
@@ -313,7 +313,7 @@ button:hover {
 }
 
 .news-item {
-  border: 1px solid #333333;
+  border: 1px solid var(--gnq-border-strong);
   border-radius: 8px;
   padding: 8px;
   background: #08101a;
@@ -476,7 +476,7 @@ button:hover {
 
 .neon-equity,
 .neon-cash {
-  color: #39ff14;
+  color: var(--gnq-green);
   text-shadow:
     0 0 12px rgba(57, 255, 20, 0.75),
     0 0 24px rgba(57, 255, 20, 0.4);
@@ -496,7 +496,7 @@ button:hover {
 
 .mini-chart {
   height: 150px;
-  border: 1px solid #333333;
+  border: 1px solid var(--gnq-border-strong);
   border-radius: 8px;
   padding: 6px;
   margin-bottom: 8px;
@@ -509,19 +509,19 @@ button:hover {
 }
 
 .positive {
-  color: #39ff14;
+  color: var(--gnq-green);
   background: rgba(57, 255, 20, 0.12);
   padding: 2px 8px;
   border-radius: 999px;
-  border: 1px solid #39ff14;
+  border: 1px solid var(--gnq-green);
 }
 
 .negative {
-  color: #ff3131;
+  color: var(--gnq-red);
   background: rgba(255, 49, 49, 0.12);
   padding: 2px 8px;
   border-radius: 999px;
-  border: 1px solid #ff3131;
+  border: 1px solid var(--gnq-red);
 }
 
 .impact-positive {
@@ -559,7 +559,7 @@ button:hover {
 }
 
 .trade-history-wrap {
-  border: 1px solid #333333;
+  border: 1px solid var(--gnq-border-strong);
   border-radius: 8px;
   background: #060b14;
   padding: 8px;
@@ -604,7 +604,7 @@ button:hover {
 .news-modal-card {
   width: min(760px, 92vw);
   background: #000000;
-  border: 1px solid #222222;
+  border: 1px solid var(--gnq-border-subtle);
   border-radius: 12px;
   padding: 16px;
   color: #ffffff;
@@ -667,7 +667,7 @@ button:hover {
     flex-wrap: wrap;
     width: 100%;
     border-right: none;
-    border-bottom: 1px solid #333333;
+    border-bottom: 1px solid var(--gnq-border-strong);
   }
 
   .ticker-tape--terminal {
@@ -841,7 +841,7 @@ button:hover {
 
 #terminalTab .ticker-tape--genesis {
   height: 36px;
-  border: 1px solid #222222;
+  border: 1px solid var(--gnq-border-subtle);
   border-radius: 8px;
   background: #000000;
   margin-bottom: 10px;
@@ -894,14 +894,14 @@ button:hover {
   align-items: stretch;
   gap: 12px;
   padding: 10px;
-  border: 1px solid #222222;
+  border: 1px solid var(--gnq-border-subtle);
   border-radius: 10px;
   background: #000000;
   cursor: pointer;
 }
 
 #terminalTab .terminal-news-row--urgent {
-  border-color: #ff3131;
+  border-color: var(--gnq-red);
   box-shadow: 0 0 12px rgba(255, 49, 49, 0.25);
 }
 
@@ -921,15 +921,15 @@ button:hover {
 
 #terminalTab .terminal-news-badge--bull {
   color: #000000;
-  background: #39ff14;
-  border: 1px solid #39ff14;
+  background: var(--gnq-green);
+  border: 1px solid var(--gnq-green);
   box-shadow: 0 0 14px rgba(57, 255, 20, 0.45);
 }
 
 #terminalTab .terminal-news-badge--bear {
   color: #ffffff;
-  background: #ff3131;
-  border: 1px solid #ff3131;
+  background: var(--gnq-red);
+  border: 1px solid var(--gnq-red);
   box-shadow: 0 0 14px rgba(255, 49, 49, 0.45);
 }
 
@@ -977,7 +977,7 @@ button:hover {
 #terminalTab .chart-wrap--genesis {
   flex: 1;
   min-height: 220px;
-  border: 1px solid #222222;
+  border: 1px solid var(--gnq-border-subtle);
   border-radius: 10px;
   padding: 6px;
   background: #000000;
@@ -991,7 +991,7 @@ button:hover {
   font-size: 0.72rem;
   line-height: 1.35;
   white-space: pre-wrap;
-  border: 1px solid #222222;
+  border: 1px solid var(--gnq-border-subtle);
   border-radius: 8px;
   padding: 8px;
   background: #000000;
@@ -1019,7 +1019,7 @@ button:hover {
 }
 
 #terminalTab .progress-shell {
-  border: 1px solid #222222;
+  border: 1px solid var(--gnq-border-subtle);
   background: #000000;
 }
 
@@ -1036,7 +1036,7 @@ button:hover {
 
 #terminalTab .trade-table--terminal th,
 #terminalTab .trade-table--terminal td {
-  border-bottom: 1px solid #222222;
+  border-bottom: 1px solid var(--gnq-border-subtle);
   color: #ffffff;
 }
 
@@ -1106,7 +1106,7 @@ body {
 
 .tab-btn {
   background: #000000 !important;
-  border: 1px solid #222222 !important;
+  border: 1px solid var(--gnq-border-subtle) !important;
   color: #ffffff !important;
   font-weight: 700;
   padding: 10px 14px !important;
@@ -1137,7 +1137,7 @@ h3 {
 
 .panel {
   background: #000000 !important;
-  border: 1px solid #222222 !important;
+  border: 1px solid var(--gnq-border-subtle) !important;
 }
 
 .muted {
@@ -1146,23 +1146,23 @@ h3 {
 }
 
 .positive {
-  color: #39ff14 !important;
+  color: var(--gnq-green) !important;
 }
 
 .negative {
-  color: #ff3131 !important;
+  color: var(--gnq-red) !important;
 }
 
 .impact-positive {
-  background: #39ff14 !important;
+  background: var(--gnq-green) !important;
   color: #000000 !important;
-  border-color: #39ff14 !important;
+  border-color: var(--gnq-green) !important;
 }
 
 .impact-negative {
-  background: #ff3131 !important;
+  background: var(--gnq-red) !important;
   color: #ffffff !important;
-  border-color: #ff3131 !important;
+  border-color: var(--gnq-red) !important;
 }
 
 .impact-neutral {
@@ -1263,24 +1263,24 @@ button:hover {
 }
 
 .status-connected {
-  color: #39ff14 !important;
+  color: var(--gnq-green) !important;
   font-weight: 800;
 }
 
 .status-disconnected {
-  color: #ff3131 !important;
+  color: var(--gnq-red) !important;
   font-weight: 800;
 }
 
 .ticker-item.positive {
-  color: #39ff14 !important;
+  color: var(--gnq-green) !important;
   background: transparent !important;
   border: 0 !important;
   padding: 0 !important;
 }
 
 .ticker-item.negative {
-  color: #ff3131 !important;
+  color: var(--gnq-red) !important;
   background: transparent !important;
   border: 0 !important;
   padding: 0 !important;
@@ -1295,8 +1295,11 @@ button:hover {
 
 /* Tooltips via #brainHintPortal (fixed); inline bubbels verborgen in alle tabs */
 #brainTab .hint-wrap > .hint-bubble,
+#tab-aibrain .hint-wrap > .hint-bubble,
 #terminalTab .hint-wrap > .hint-bubble,
-#hardwareTab .hint-wrap > .hint-bubble {
+#tab-terminal .hint-wrap > .hint-bubble,
+#hardwareTab .hint-wrap > .hint-bubble,
+#tab-hardware .hint-wrap > .hint-bubble {
   display: none !important;
 }
 
@@ -1320,12 +1323,12 @@ button:hover {
 
 #brainTab .positive,
 #brainTab .positive * {
-  color: #39ff14 !important;
+  color: var(--gnq-green) !important;
 }
 
 #brainTab .negative,
 #brainTab .negative * {
-  color: #ff3131 !important;
+  color: var(--gnq-red) !important;
 }
 
 #brainTab .brain-stat-card strong,
@@ -1354,7 +1357,7 @@ button:hover {
 
 .brain-stat-card {
   background: #000000;
-  border: 1px solid #222222;
+  border: 1px solid var(--gnq-border-subtle);
   border-radius: 8px;
   padding: 10px;
   display: flex;
@@ -1370,7 +1373,7 @@ button:hover {
 }
 
 .brain-stat-card strong {
-  color: #39ff14;
+  color: var(--gnq-green);
   font-size: 1.05rem;
 }
 
@@ -1537,11 +1540,95 @@ button:hover {
   border: 1px solid #333;
   border-radius: 8px;
   padding: 10px;
-  white-space: pre-wrap;
+  white-space: normal;
   line-height: 1.6;
   font-size: 0.9rem;
   overflow-wrap: anywhere;
   color: #ffffff !important;
+}
+
+.brain-reasoning-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+
+.brain-reasoning-kicker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  flex-shrink: 0;
+}
+
+.brain-reasoning-badge {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 4px 11px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  line-height: 1.2;
+}
+
+.brain-reasoning-badge--scanner {
+  background: rgba(0, 212, 255, 0.12);
+  color: #5cf;
+  border-color: rgba(0, 212, 255, 0.45);
+}
+
+.brain-reasoning-badge--rl {
+  background: rgba(57, 255, 20, 0.1);
+  color: var(--gnq-green);
+  border-color: rgba(57, 255, 20, 0.45);
+}
+
+.brain-reasoning-badge--prediction {
+  background: rgba(153, 69, 255, 0.12);
+  color: #c9a0ff;
+  border-color: rgba(180, 140, 255, 0.4);
+}
+
+.brain-reasoning-badge--model {
+  background: rgba(255, 193, 7, 0.12);
+  color: #ffd54a;
+  border-color: rgba(255, 213, 79, 0.45);
+}
+
+.brain-reasoning-badge--status {
+  background: rgba(120, 200, 255, 0.1);
+  color: #9bdcff;
+  border-color: rgba(140, 200, 255, 0.35);
+}
+
+.brain-reasoning-badge--wait {
+  background: rgba(255, 150, 50, 0.1);
+  color: #ffb347;
+  border-color: rgba(255, 180, 100, 0.35);
+}
+
+.brain-reasoning-badge--mixed {
+  background: rgba(255, 255, 255, 0.06);
+  color: #ccc;
+}
+
+.brain-reasoning-kicker-note {
+  font-size: 0.78rem;
+  color: #9aa4b2;
+  line-height: 1.35;
+  flex: 1 1 140px;
+  min-width: 0;
+}
+
+.brain-reasoning-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 0.9rem;
+  line-height: 1.6;
+  color: #ffffff;
 }
 
 .brain-state-overview {
@@ -1774,9 +1861,9 @@ div.chartjs-tooltip {
   --eq-text: #ffffff;
   --eq-border: rgba(255, 255, 255, 0.1);
   --eq-radius: 4px;
-  --eq-neon-blue: #00d1ff;
-  --eq-neon-green: #39ff14;
-  --eq-neon-red: #ff3131;
+  --eq-neon-blue: var(--gnq-cyan);
+  --eq-neon-green: var(--gnq-green);
+  --eq-neon-red: var(--gnq-red);
   --eq-neon-orange: #ff7a00;
 }
 
@@ -2417,7 +2504,7 @@ div.chartjs-tooltip {
   --genesis-font: "Inter", system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
   --genesis-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   --genesis-neon-line: 4px;
-  --genesis-neon-blue: #00d1ff;
+  --genesis-neon-blue: var(--gnq-cyan);
 }
 
 html {
@@ -2599,8 +2686,8 @@ body {
 }
 
 .system-logs-grid {
-  flex: 1;
-  min-height: 0;
+  flex: 1 1 auto;
+  min-height: min(320px, 42vh);
   padding: 0 15px 15px;
   box-sizing: border-box;
 }
@@ -2613,10 +2700,29 @@ body {
   flex-direction: column;
 }
 
+/* Kritiek: panel moet de flex-hoogte doorgeven anders blijft #systemLogConsole 0px hoog. */
+.system-logs-span > .panel.genesis-card,
+.system-logs-span > .panel.eq-card {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.system-logs-span #systemLogConsole {
+  flex: 1 1 auto;
+  min-height: min(280px, 40vh);
+}
+
 .system-logs-meta .eq-card {
   height: 100%;
 }
 
+#tab-terminal,
+#tab-aibrain,
+#tab-ledger,
+#tab-hardware.hardware-tab,
 #terminalTab,
 #brainTab.brain-tab,
 #ledgerTab.brain-tab,
@@ -2665,6 +2771,7 @@ body {
   margin: 0 15px;
 }
 
+#tab-hardware.hardware-tab,
 #hardwareTab.hardware-tab {
   display: flex;
   flex-direction: column;
@@ -2674,6 +2781,7 @@ body {
   padding: 0;
 }
 
+#tab-hardware .genesis-tab-inner,
 #hardwareTab .genesis-tab-inner {
   flex: 1;
   min-height: 0;
@@ -2681,9 +2789,10 @@ body {
   flex-direction: column;
 }
 
+#tab-hardware #systemLogConsole,
 #hardwareTab #systemLogConsole {
-  flex: 1;
-  min-height: 0;
+  flex: 1 1 auto;
+  min-height: min(280px, 40vh);
   max-height: none !important;
   overflow-y: auto !important;
   scrollbar-width: none;
@@ -2692,6 +2801,7 @@ body {
   font-size: 13px;
 }
 
+#tab-hardware #systemLogConsole::-webkit-scrollbar,
 #hardwareTab #systemLogConsole::-webkit-scrollbar {
   width: 0;
   height: 0;
@@ -2754,6 +2864,7 @@ body {
 }
 
 /* GPU-meter: neon blauw wanneer CUDA actief (conic-gradient zoals Electric Quant) */
+#tab-hardware .ring-meter--gpu.ring-meter--gpu-active .ring-meter__arc--gpu,
 #hardwareTab .ring-meter--gpu.ring-meter--gpu-active .ring-meter__arc--gpu {
   background: conic-gradient(
     var(--genesis-neon-blue) calc(var(--pct) * 1%),
@@ -2888,16 +2999,14 @@ body.cockpit-body {
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
-  min-height: 40px;
+  min-height: 0;
   padding: 6px 14px;
   background: #000000;
-  border-bottom: 1px solid #222222;
+  border-bottom: 1px solid var(--gnq-border-subtle);
   box-sizing: border-box;
   flex-shrink: 0;
   position: relative;
   z-index: var(--z-header);
-  /* Sync met --cockpit-header-h indien padding/tabs groeien */
-  min-height: var(--cockpit-header-h);
 }
 
 .cockpit-global-ticker-strip {
@@ -2906,7 +3015,7 @@ body.cockpit-body {
   flex-direction: column;
   gap: 6px;
   padding: 6px var(--cockpit-gap);
-  border-bottom: 1px solid #222222;
+  border-bottom: 1px solid var(--gnq-border-subtle);
   background: #000000;
   box-sizing: border-box;
   min-height: var(--cockpit-sticky-ticker-h);
@@ -2963,7 +3072,7 @@ body.cockpit-body {
 .brain-strategy-groups__chip {
   padding: 2px 8px;
   border-radius: 4px;
-  border: 1px solid #333333;
+  border: 1px solid var(--gnq-border-strong);
 }
 
 .brain-strategy-groups__chip--tech {
@@ -2977,8 +3086,8 @@ body.cockpit-body {
 }
 
 .brain-strategy-groups__chip--whale {
-  border-color: #39ff14;
-  color: #39ff14 !important;
+  border-color: var(--gnq-green);
+  color: var(--gnq-green) !important;
 }
 
 .cockpit-signal-mix-table--spaced {
@@ -3032,7 +3141,7 @@ body.cockpit-body {
 }
 
 .cockpit-logo {
-  color: #00d1ff !important;
+  color: var(--gnq-cyan) !important;
   font-size: 18px;
   line-height: 1;
 }
@@ -3053,7 +3162,7 @@ body.cockpit-body {
   font-weight: 700;
   color: #ffffff !important;
   background: #000000 !important;
-  border: 1px solid #222222;
+  border: 1px solid var(--gnq-border-subtle);
   border-radius: 4px;
   padding: 4px 8px;
   max-width: 140px;
@@ -3065,7 +3174,7 @@ body.cockpit-body {
   font-family: var(--genesis-mono, "JetBrains Mono", monospace);
   font-size: 15px;
   font-weight: 700;
-  color: #39ff14 !important;
+  color: var(--gnq-green) !important;
   white-space: nowrap;
   transition: color 0.15s ease, text-shadow 0.15s ease;
 }
@@ -3114,13 +3223,13 @@ body.cockpit-body {
 }
 
 .cockpit-hw span[id^="headerStat"] {
-  border: 1px solid #222222;
+  border: 1px solid var(--gnq-border-subtle);
   padding: 2px 8px;
   border-radius: 4px;
 }
 
 .cockpit-gpu-neon {
-  color: #00d1ff !important;
+  color: var(--gnq-cyan) !important;
   text-shadow: 0 0 8px rgba(0, 209, 255, 0.45);
 }
 
@@ -3161,7 +3270,7 @@ body.cockpit-body {
   font-size: 12px;
   font-weight: 600;
   padding: 2px 8px;
-  border: 1px solid #222222;
+  border: 1px solid var(--gnq-border-subtle);
   border-radius: 4px;
   background: #000000 !important;
   color: #ffffff !important;
@@ -3171,7 +3280,8 @@ body.cockpit-body {
   white-space: nowrap;
 }
 
-/* Terminal-tab: kolom onder header + Elite-strip tot onderkant scherm */
+/* Terminal-tab: vult beschikbare stage-hoogte (parent = flex/grid stage; geen calc i.v.m. meerdere headerrijen) */
+#tab-terminal.bv-terminal.cockpit-shell,
 #terminalTab.cockpit-shell {
   display: flex !important;
   flex-direction: column !important;
@@ -3179,8 +3289,8 @@ body.cockpit-body {
   min-height: 0 !important;
   overflow: hidden !important;
   background: var(--oled-bg);
-  height: calc(100vh - var(--cockpit-header-h) - var(--cockpit-sticky-ticker-h)) !important;
-  max-height: calc(100vh - var(--cockpit-header-h) - var(--cockpit-sticky-ticker-h)) !important;
+  height: 100% !important;
+  max-height: 100% !important;
 }
 
 .cockpit-shell {
@@ -3190,8 +3300,8 @@ body.cockpit-body {
   min-height: 0;
   overflow: hidden;
   background: #000000;
-  height: calc(100vh - var(--cockpit-header-h) - var(--cockpit-sticky-ticker-h));
-  max-height: calc(100vh - var(--cockpit-header-h) - var(--cockpit-sticky-ticker-h));
+  height: 100%;
+  max-height: 100%;
 }
 
 /* Terminal workspace: 12-koloms raster, linker kolom 9 = chart+ticker+ledger */
@@ -3323,7 +3433,7 @@ body.cockpit-body {
 
 .cockpit-ticker-chip {
   color: #ffffff !important;
-  border: 1px solid #333333;
+  border: 1px solid var(--gnq-border-strong);
   border-radius: 4px;
   padding: 2px 8px;
   white-space: nowrap;
@@ -3407,7 +3517,7 @@ body.cockpit-body {
   padding: 6px 8px;
   margin: 0;
   box-sizing: border-box;
-  border: 1px solid #222222;
+  border: 1px solid var(--gnq-border-subtle);
   border-radius: 4px;
   background: #000000;
   color: #ffffff !important;
@@ -3436,7 +3546,7 @@ body.cockpit-body {
 
 .cockpit-ticker-item-badge--bull {
   color: #000000 !important;
-  background: #39ff14 !important;
+  background: var(--gnq-green) !important;
   box-shadow:
     0 0 6px rgba(57, 255, 20, 0.95),
     0 0 14px rgba(57, 255, 20, 0.55),
@@ -3446,7 +3556,7 @@ body.cockpit-body {
 
 .cockpit-ticker-item-badge--bear {
   color: #ffffff !important;
-  background: #ff3131 !important;
+  background: var(--gnq-red) !important;
   box-shadow:
     0 0 6px rgba(255, 49, 49, 0.95),
     0 0 16px rgba(255, 49, 49, 0.55),
@@ -3614,7 +3724,7 @@ body.cockpit-body {
   font-size: 13px;
   line-height: 1;
   border: 1px solid #444;
-  background: #0b0e11;
+  background: var(--gnq-bg-card);
 }
 
 .social-buzz-strip__bar {
@@ -3629,7 +3739,7 @@ body.cockpit-body {
 .social-buzz-strip__fill {
   height: 100%;
   border-radius: 999px;
-  background: linear-gradient(90deg, #00d1ff, #39ff14);
+  background: linear-gradient(90deg, var(--gnq-cyan), var(--gnq-green));
   width: 0%;
   transition: width 0.35s ease-out;
 }
@@ -3658,7 +3768,7 @@ body.cockpit-body {
   padding: 8px 10px;
   border: 2px solid #333333;
   border-radius: 8px;
-  background: #0b0e11;
+  background: var(--gnq-bg-card);
 }
 
 .whale-radar-widget__title {
@@ -3668,7 +3778,7 @@ body.cockpit-body {
   text-transform: uppercase;
   margin-bottom: 6px;
   color: #ffffff !important;
-  border-bottom: 1px solid #333333;
+  border-bottom: 1px solid var(--gnq-border-strong);
   padding-bottom: 4px;
 }
 
@@ -3927,7 +4037,7 @@ body.cockpit-body {
 
   .cockpit-chart-panel {
     border-right: none;
-    border-bottom: 1px solid #222222;
+    border-bottom: 1px solid var(--gnq-border-subtle);
   }
 
   .cockpit-ai-panel {
@@ -4019,8 +4129,8 @@ body.cockpit-body {
 }
 
 .elite8-ai-pill--in-position {
-  border-color: #6aa6ff;
-  box-shadow: 0 0 0 1px rgba(106, 166, 255, 0.35) inset;
+  border-color: var(--oled-border, #2a2a2e);
+  box-shadow: none;
 }
 
 .elite8-ai-pill__pos {
@@ -4213,7 +4323,7 @@ body.sniper-fullscreen .cockpit-chart-panel {
   height: 5px;
   flex-shrink: 0;
   border-radius: 50%;
-  background: #39ff14;
+  background: var(--gnq-green);
   box-shadow: 0 0 5px rgba(57, 255, 20, 0.75);
   animation: cockpit-ledger-pulse 1.8s ease-in-out infinite;
 }
@@ -4240,9 +4350,9 @@ body.sniper-fullscreen .cockpit-chart-panel {
   padding: 1px 6px;
   margin-left: auto;
   border-radius: 2px;
-  border: 1px solid #39ff14;
+  border: 1px solid var(--gnq-green);
   font-size: 9px;
-  color: #39ff14 !important;
+  color: var(--gnq-green) !important;
   font-weight: 800;
   text-shadow: 0 0 8px rgba(57, 255, 20, 0.45);
 }
@@ -4291,7 +4401,7 @@ body.sniper-fullscreen .cockpit-chart-panel {
 
 .cockpit-ledger-panel .trade-table th,
 .cockpit-ledger-panel .trade-table td {
-  border: 1px solid #222222;
+  border: 1px solid var(--gnq-border-subtle);
   padding: 8px 10px;
   text-align: left;
   color: #ffffff !important;
@@ -4339,7 +4449,7 @@ body.sniper-fullscreen .cockpit-chart-panel {
 .cockpit-body .mode-paper {
   background: #000000 !important;
   color: #ffffff !important;
-  border: 1px solid #222222 !important;
+  border: 1px solid var(--gnq-border-subtle) !important;
 }
 
 .btn-outline {
@@ -4448,14 +4558,14 @@ body.sniper-fullscreen .cockpit-chart-panel {
   min-height: 0;
   padding: 12px;
   box-sizing: border-box;
-  border: 1px solid #222222;
+  border: 1px solid var(--gnq-border-subtle);
   border-radius: 4px;
   background: #000000;
   color: #ffffff !important;
 }
 
 .dashboard-card {
-  border: 1px solid #333333 !important;
+  border: 1px solid var(--gnq-border-strong) !important;
   padding: 15px !important;
   margin-bottom: 10px;
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
@@ -4512,7 +4622,7 @@ body.sniper-fullscreen .cockpit-chart-panel {
   justify-content: space-between;
   gap: 8px 12px;
   padding-bottom: 8px;
-  border-bottom: 1px solid #222222;
+  border-bottom: 1px solid var(--gnq-border-subtle);
 }
 
 .brain-noir-stats__row:last-child {
@@ -4601,7 +4711,7 @@ body.sniper-fullscreen .cockpit-chart-panel {
 .ledger-noir-chart {
   flex: 0 0 auto;
   min-height: 140px;
-  border: 1px solid #222222;
+  border: 1px solid var(--gnq-border-subtle);
   border-radius: 4px;
   background: #000000;
   padding: 8px;
@@ -4641,7 +4751,7 @@ body.sniper-fullscreen .cockpit-chart-panel {
   flex-direction: column;
   gap: 4px;
   padding-bottom: 10px;
-  border-bottom: 1px solid #222222;
+  border-bottom: 1px solid var(--gnq-border-subtle);
 }
 
 .ledger-performance-row:last-child {
@@ -4698,69 +4808,114 @@ body.sniper-fullscreen .cockpit-chart-panel {
    ============================================================================= */
 
 :root {
-  --cockpit-layout-header-h: 60px;
+  /* Twee headerrijen (nav + asset-rail): geen enkele vaste px — natuurlijke hoogte, strip ticker apart */
   --cockpit-layout-ticker-h: 40px;
-  --cockpit-layout-ledger-h: 250px;
+  --cockpit-terminal-ledger-fixed-h: 180px;
 }
 
-/* --- Body: 3-rij grid (header | elite strip | hoofdstage) --- */
+/* --- Body: viewport-lock (flex); header+ticker krimpen niet weg; stage vult rest --- */
 body.cockpit-body {
-  display: grid !important;
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: var(--cockpit-layout-header-h) var(--cockpit-layout-ticker-h) minmax(0, 1fr);
-  grid-template-areas:
-    "hdr"
-    "gtx"
-    "stage";
-  min-height: 100vh !important;
+  display: flex !important;
+  flex-direction: column !important;
+  min-height: 0 !important;
   height: 100vh !important;
   max-height: 100vh !important;
   overflow: hidden !important;
 }
 
 .cockpit-header {
-  grid-area: hdr;
+  flex: 0 0 auto;
+  flex-shrink: 0;
   flex-wrap: wrap !important;
   row-gap: 6px;
-  min-height: var(--cockpit-layout-header-h);
+  min-height: 0;
   max-height: none;
-  align-self: start;
+  align-self: stretch;
 }
 
 .cockpit-global-ticker-strip {
-  grid-area: gtx;
+  flex: 0 0 auto;
+  flex-shrink: 0;
   min-height: var(--cockpit-layout-ticker-h);
   max-height: var(--cockpit-layout-ticker-h);
   overflow: hidden;
-  flex-shrink: 0;
 }
 
 .cockpit-main-stage {
-  grid-area: stage;
+  flex: 1 1 0;
   min-height: 0;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
 }
 
 .cockpit-tab-root {
-  grid-area: 1 / 1 / -1 / -1;
+  flex: 1 1 0;
   min-height: 0;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* AI Brain Lab — scroll binnen het tabvlak; geen afsnijden onder Parameters / learning rate */
+#tab-aibrain.brain-tab.cockpit-tab-root,
+#tab-aibrain.cockpit-tab-root--brain {
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  -webkit-overflow-scrolling: touch;
+}
+
+#tab-aibrain .brain-tab-inner.genesis-tab-inner {
+  flex: 0 0 auto;
+  min-height: min-content;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-bottom: 50px;
+  box-sizing: border-box;
+}
+
+#tab-aibrain .brain-tab-grid-wrap {
+  flex: 0 0 auto;
+  min-height: auto;
+  grid-template-rows: auto;
+  align-content: start;
+}
+
+#tab-aibrain .brain-tab-grid {
+  grid-template-rows: none !important;
+  grid-auto-rows: minmax(220px, auto) !important;
+  min-height: auto;
+}
+
+#tab-aibrain .brain-noir-card {
+  min-height: 0;
+  flex: 0 1 auto;
+}
+
+#tab-aibrain .brain-noir-card__chart {
+  min-height: 160px;
+  flex: 0 1 auto;
 }
 
 .cockpit-tab-root.hidden {
   display: none !important;
 }
 
-.cockpit-shell:not(#terminalTab) {
+#tab-terminal.cockpit-tab-root { contain: layout style paint; }
+#tab-aibrain.cockpit-tab-root  { contain: layout style; }
+#tab-ledger.cockpit-tab-root   { contain: layout style paint; }
+#tab-logs.cockpit-tab-root     { contain: layout style paint; }
+
+#tab-terminal.bv-terminal.cockpit-shell,
+#terminalTab.cockpit-shell,
+.cockpit-shell:not(#tab-terminal):not(#terminalTab) {
   height: 100%;
   max-height: 100%;
   min-height: 0;
 }
 
-/* Prijsgrafiek-host: min. 500px (terminal specificatie) */
+/* Prijsgrafiek-host: vaste min. buiten terminal (terminal = flex, zie style.css #tab-terminal) */
 .cockpit-chart-host.cockpit-chart-anchor {
   display: grid !important;
   grid-template: minmax(500px, 1fr) / minmax(0, 1fr);
@@ -4786,6 +4941,21 @@ body.cockpit-body {
   z-index: 0;
   min-height: 500px !important;
   width: 100%;
+}
+
+/* Terminal-tab: geen 500px-min — anders body-scroll / overlap met ledger */
+#tab-terminal .cockpit-chart-host.cockpit-chart-anchor {
+  min-height: 0 !important;
+  height: auto !important;
+  max-height: none !important;
+  flex: 1 1 0 !important;
+  grid-template: minmax(0, 1fr) / minmax(0, 1fr) !important;
+}
+
+#tab-terminal #priceChart,
+#tab-terminal #priceChart.bv-price-chart-root {
+  min-height: 0 !important;
+  height: 100% !important;
 }
 
 /* Compacte ticker-tape onder de grafiek (niet over het canvas) */
@@ -4967,6 +5137,9 @@ body.cockpit-body {
 }
 
 /* Non-terminal tabs vullen het hoofdstage-raster */
+#tab-aibrain,
+#tab-ledger,
+#tab-hardware,
 #brainTab.brain-tab,
 #ledgerTab,
 #hardwareTab {

@@ -109,7 +109,7 @@ window.BrainView = {
             ma.push(sum / Math.min(i + 1, this.REWARD_MA_WINDOW));
         }
         
-        window.ChartUtils.upsertChart("brainTabRewardChart", {
+        window.ChartUtils.upsertChart("brainTabRewardErrorChart", {
             type: "line",
             data: {
                 labels: (normRewards.length ? normRewards : [0]).map((_, i) => i + 1),

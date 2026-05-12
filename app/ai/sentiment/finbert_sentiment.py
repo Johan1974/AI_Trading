@@ -1,14 +1,22 @@
 """
-BESTANDSNAAM: /home/johan/AI_Trading/app/ai/sentiment/finbert_sentiment.py
+BESTANDSNAAM: app/ai/sentiment/finbert_sentiment.py
 FUNCTIE: Sentiment analyzer met HuggingFace Transformers FinBERT.
+         Bevat ook RedisSentimentReader voor de news-container architectuur.
 """
 
+import json
 import os
 import threading
 from collections.abc import Sequence
 
-import torch
-from transformers import pipeline
+try:
+    import torch
+    from transformers import pipeline
+    _TORCH_AVAILABLE = True
+except ImportError:
+    torch = None  # type: ignore[assignment]
+    pipeline = None  # type: ignore[assignment]
+    _TORCH_AVAILABLE = False
 
 from app.ai.base import SentimentAnalyzer
 from app.ai.types import SentimentResult
@@ -104,3 +112,65 @@ class LazyFinBertSentimentAnalyzer(SentimentAnalyzer):
 
     def score_with_breakdown(self, texts: Sequence[str]) -> dict[str, object]:
         return self._ensure().score_with_breakdown(texts)
+
+
+class RedisSentimentReader(SentimentAnalyzer):
+    """
+    Leest FinBERT-scores uit Redis (geschreven door de news-container).
+    Valt terug op `fallback` als de Redis-key ontbreekt of verlopen is (TTL).
+    Gebruikt threading.local voor thread-safe markt-context.
+    """
+
+    def __init__(self, redis_url: str, fallback: SentimentAnalyzer | None = None) -> None:
+        self._redis_url = redis_url
+        self._fallback = fallback
+        self._local = threading.local()
+        self._r: object | None = None
+        self._r_lock = threading.Lock()
+
+    def _redis(self):
+        if self._r is None:
+            with self._r_lock:
+                if self._r is None:
+                    try:
+                        import redis as redis_lib
+                        self._r = redis_lib.from_url(
+                            self._redis_url,
+                            decode_responses=True,
+                            socket_connect_timeout=1,
+                            socket_timeout=1,
+                        )
+                    except Exception:
+                        self._r = None
+        return self._r
+
+    def set_market(self, market: str) -> None:
+        """Stel de markt-context in voor de huidige thread (roep aan vóór score_with_breakdown)."""
+        self._local.market = str(market or "").strip().upper().replace("/", "-")
+
+    def score(self, texts: Sequence[str]) -> SentimentResult:
+        return self.score_with_breakdown(texts)["aggregate"]
+
+    def score_with_breakdown(self, texts: Sequence[str]) -> dict[str, object]:
+        market = getattr(self._local, "market", "")
+        if market:
+            try:
+                r = self._redis()
+                if r is not None:
+                    raw = r.get(f"news:sentiment:{market}")
+                    if raw:
+                        data = json.loads(raw)
+                        agg = SentimentResult(
+                            score=float(data.get("score", 0.0)),
+                            confidence=float(data.get("confidence", 0.0)),
+                            model_name="redis-cached-finbert",
+                        )
+                        return {"aggregate": agg, "items": data.get("items", [])}
+            except Exception:
+                pass
+        if self._fallback is not None:
+            return self._fallback.score_with_breakdown(texts)
+        return {
+            "aggregate": SentimentResult(score=0.0, confidence=0.0, model_name="neutral-fallback"),
+            "items": [],
+        }

@@ -1,5 +1,5 @@
 """
-BESTANDSNAAM: /home/johan/AI_Trading/app/worker_entry.py
+BESTANDSNAAM: app/worker_entry.py
 FUNCTIE: Worker-proces: trading/AI-bootstrap zonder FastAPI of Jinja2 (docker-compose worker service).
 """
 

@@ -130,11 +130,15 @@ class PortalRLAgentStub:
 
     def decide(self, **kwargs: Any) -> Any:
         return SimpleNamespace(
+            action=0,
             action_name="HOLD",
             confidence=0.0,
             expected_reward_pct=0.0,
             feature_weights={},
             reasoning="portal_stub",
+            prob_hold=0.34,
+            prob_buy=0.33,
+            prob_sell=0.33,
         )
 
 

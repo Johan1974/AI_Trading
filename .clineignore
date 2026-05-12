@@ -1,0 +1,73 @@
+# --- AI TOKEN SAVER: IGNORE LIST ---
+
+# Versiebeheer & IDE
+.git/
+.vscode/
+.idea/
+.cursor/
+.gemini/
+.claude/
+*.sh
+*.bat
+
+# Python rommel
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.venv/
+venv/
+env/
+.env*
+!.env.example
+
+# Data & Logs (De grootste token-slurpers)
+_logs_hub/
+logs/
+*.log
+storage/
+artifacts/
+temp/
+tmp/
+
+# Specifieke grote data-bestanden
+# We negeren de hele data-map, maar maken een uitzondering als je 
+# specifiek over de structuur wilt praten.
+data/*.json
+data/*.csv
+data/*.sqlite3
+data/*.db
+
+# Media & Documentatie
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.svg
+*.pdf
+*.md
+!README.md
+!CLAUDE.md
+!MEMORY.md
+
+# Build & OS
+build/
+dist/
+.DS_Store
+thumbs.db
+
+# Blokkeer zware AI-modellen en checkpoints
+artifacts/rl/*.gz
+artifacts/rl/*.zip
+artifacts/rl/*.json
+# Tenzij je specifiek aan het trainen bent, negeer de venv volledig
+venv/
+.venv/
+
+# Voorkom indexeren van zware data
+data/*.parquet
+data/*.db-journal
+artifacts/rl/**
+_logs_hub/**
+*.gz
+*.zip

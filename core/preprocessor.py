@@ -64,7 +64,10 @@ def normalize_rl_feature_frame(df: pd.DataFrame) -> pd.DataFrame:
     out["macro_volatility_window"] = _safe_minmax(out.get("macro_volatility_window", 0.0))
     out["bollinger_width"] = _safe_minmax(out.get("bollinger_width", 0.0))
     out["bollinger_position"] = _safe_minmax(out.get("bollinger_position", 0.5))
-    out["orderbook_imbalance"] = _safe_zscore_tanh(out.get("orderbook_imbalance", 0.0))
+    imb_raw = out.get("orderbook_imbalance_raw", out.get("orderbook_imbalance", 0.0))
+    out["orderbook_imbalance"] = _safe_zscore_tanh(imb_raw)
+    spr_raw = out.get("bid_ask_spread_raw", 0.0)
+    out["bid_ask_spread"] = _safe_minmax(spr_raw)
     out["macd"] = _safe_zscore_tanh(out.get("macd", 0.0))
     out["rsi_14"] = _safe_minmax(out.get("rsi_14", 50.0))
     out["ema_gap_pct"] = _safe_zscore_tanh(out.get("ema_gap_pct", 0.0))
@@ -88,6 +91,7 @@ def normalize_rl_feature_frame(df: pd.DataFrame) -> pd.DataFrame:
         "bollinger_width",
         "bollinger_position",
         "orderbook_imbalance",
+        "bid_ask_spread",
         "macd",
         "rsi_14",
         "ema_gap_pct",

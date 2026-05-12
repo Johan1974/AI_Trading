@@ -9,3 +9,6 @@ requests
 psutil
 pytz
 feedparser
+numpy
+pandas
+pyarrow

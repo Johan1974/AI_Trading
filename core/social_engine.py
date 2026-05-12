@@ -232,6 +232,14 @@ def format_ledger_social_whale_context(market: str, state: dict[str, Any]) -> st
     return " · ".join(parts)[: 280]
 
 
+def _rl_greedy_inference_flag(state: dict[str, Any]) -> bool:
+    """True = greedy policy (ε=0) tijdens inferentie; portal/worker via STATE of env RL_INFERENCE_GREEDY."""
+    if isinstance(state, dict) and state.get("rl_inference_greedy") is True:
+        return True
+    raw = str(os.getenv("RL_INFERENCE_GREEDY", "") or "").strip().lower()
+    return raw in ("1", "true", "yes", "on", "live")
+
+
 def build_trade_decision_context(market: str, state: dict[str, Any]) -> dict[str, Any]:
     """Bundle for RL decide(): whale bias + conflict hints."""
     wf = whale_bias_for_market(market, state)
@@ -247,6 +255,7 @@ def build_trade_decision_context(market: str, state: dict[str, Any]) -> dict[str
         "whale_strength": float(wf.get("strength", 0.0) or 0.0),
         "whale_headline": str(wf.get("headline") or ""),
         "social_headline": buzz_line,
+        "rl_greedy_inference": _rl_greedy_inference_flag(state if isinstance(state, dict) else {}),
     }
 
 

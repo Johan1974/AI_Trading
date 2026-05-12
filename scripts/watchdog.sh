@@ -2,7 +2,7 @@
 # Watchdog System for AI Trading Bot
 
 # Laad vault voor Telegram configuratie
-source "$HOME/.trading_vault" 2>/dev/null || true
+source "${VAULT_PATH:-$HOME/.trading_vault}" 2>/dev/null || true
 
 # AFDWINGEN TIJDZONE (MANDAAT)
 export TZ="Europe/Amsterdam"
@@ -65,13 +65,43 @@ if [ ! -f "$RETRY_FILE" ]; then
 fi
 RETRIES=$(cat "$RETRY_FILE" | tr -dc '0-9')
 RETRIES=${RETRIES:-0}
+WORKER_DID_RESTART=0
+PORTAL_DID_RESTART=0
 
 # Stap 4: Freshness Check (worker activiteit)
 WORKER_LOG="$LOGS_DIR/worker_execution.log"
 FRESH_WORKER=false
-if [ -f "$WORKER_LOG" ] && [ -n "$(find "$WORKER_LOG" -mmin -10 2>/dev/null)" ]; then
+if [ -f "$WORKER_LOG" ] && [ -n "$(find "$WORKER_LOG" -mmin -30 2>/dev/null)" ]; then
     FRESH_WORKER=true
 fi
+
+# Portal-stall: laatste geslaagde snapshot/API-flow ouder dan 20 minuten (lexicografische tijd-vergelijking).
+portal_stalled_now() {
+    local log="$LOGS_DIR/portal_api.log"
+    if [ ! -f "$log" ]; then
+        echo true
+        return
+    fi
+    local last_line
+    last_line=$(grep -E 'GET /api/v1/snapshot HTTP/.* 200 OK|sent .* bytes from Redis' "$log" | tail -n 1)
+    if [ -z "$last_line" ]; then
+        echo true
+        return
+    fi
+    local last_ts
+    last_ts=$(echo "$last_line" | grep -oE '20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}' | head -1)
+    if [ -z "$last_ts" ]; then
+        echo true
+        return
+    fi
+    local thresh
+    thresh=$(date -d "20 minutes ago" +%Y-%m-%dT%H:%M:%S 2>/dev/null || date -v-20M +%Y-%m-%dT%H:%M:%S 2>/dev/null)
+    if [ -n "$thresh" ] && [[ "$last_ts" < "$thresh" ]]; then
+        echo true
+    else
+        echo false
+    fi
+}
 
 # Stap 5: Telegram & Auto-Healing Logic
 send_telegram() {
@@ -100,12 +130,19 @@ else
     if [ "$RETRIES" -lt 2 ]; then
         NEW_RETRIES=$((RETRIES + 1))
         echo "$NEW_RETRIES" > "$RETRY_FILE"
-        LAST_ACTION="Auto-restart performed due to stall (Retry $NEW_RETRIES/2)"
-        MSG="⚠️ *Watchdog Auto-Heal*
-
-Worker logs gestopt voor >10 min. Initiating auto-restart ($NEW_RETRIES/2)..."
-        send_telegram "$MSG"
-        docker restart ai-trading-worker
+        docker restart ai-trading-worker >/dev/null 2>&1
+        WORKER_DID_RESTART=1
+        sleep 35
+        FRESH_AFTER=false
+        if [ -f "$WORKER_LOG" ] && [ -n "$(find "$WORKER_LOG" -mmin -30 2>/dev/null)" ]; then
+            FRESH_AFTER=true
+        fi
+        if [ "$FRESH_AFTER" = true ]; then
+            echo "0" > "$RETRY_FILE"
+            LAST_ACTION="Auto-restart recovered worker (poging $NEW_RETRIES/2)"
+        else
+            LAST_ACTION="Auto-restart attempted — worker logs nog niet vers (poging $NEW_RETRIES/2)"
+        fi
     else
         LAST_ACTION="Emergency Stop performed after 2 failed retries"
         MSG="🚨 *Watchdog EMERGENCY STOP*
@@ -116,31 +153,21 @@ Worker kon na 2 auto-restarts niet herstellen. Bot is gestopt om schade te voork
     fi
 fi
 
-# Stap 5b: Force Refresh Portal if no 200 OK
+# Stap 5b: Force Refresh Portal if geen recente snapshot-200 / API-flow
 PORTAL_STALLED=false
-if [ -f "$LOGS_DIR/portal_api.log" ]; then
-    # Zoek naar de laatste snapshot data-request of API-FLOW log
-    LAST_SNAPSHOT_LINE=$(grep -E 'GET /api/v1/snapshot HTTP/.* 200 OK|sent .* bytes from Redis' "$LOGS_DIR/portal_api.log" | tail -n 1)
-    if [ -n "$LAST_SNAPSHOT_LINE" ]; then
-        # Haal de ISO timestamp eruit
-        LAST_TS=$(echo "$LAST_SNAPSHOT_LINE" | grep -oE '20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}' | head -1)
-        if [ -n "$LAST_TS" ]; then
-            FIVE_MINS_AGO=$(date -d "5 minutes ago" +%Y-%m-%dT%H:%M:%S 2>/dev/null || date -v-5m +%Y-%m-%dT%H:%M:%S 2>/dev/null)
-            # Lexicografische string vergelijking is 100% veilig en omzeilt timezone wiskunde
-            if [ -n "$FIVE_MINS_AGO" ] && [[ "$LAST_TS" < "$FIVE_MINS_AGO" ]]; then
-                PORTAL_STALLED=true
-            fi
-        fi
-    else
-        PORTAL_STALLED=true
-    fi
+if [ "$(portal_stalled_now)" = true ]; then
+    PORTAL_STALLED=true
 fi
 
 if [ "$PORTAL_STALLED" = true ]; then
-    LAST_ACTION="Portal restarted (No successful 200 OK for snapshot in 5 mins)"
-    MSG="⚠️ *Watchdog Auto-Heal*%0APortal gaf langer dan 5 min geen 200 OK voor de data request. Restarting ai-trading-portal..."
-    send_telegram "$MSG"
-    docker restart ai-trading-portal
+    docker restart ai-trading-portal >/dev/null 2>&1
+    PORTAL_DID_RESTART=1
+    sleep 30
+    if [ "$(portal_stalled_now)" = false ]; then
+        LAST_ACTION="Portal restarted — snapshot/API-flow weer actueel (20 min drempel gehaald)"
+    else
+        LAST_ACTION="Portal restarted — nog steeds geen verse snapshot-lijn (volgende run opnieuw beoordelen)"
+    fi
 fi
 
 # Stap 6: DB Check (RL metrics database)
@@ -159,6 +186,31 @@ fi
 DATA_VALID=false
 if [[ "$RAW_DATA" == *"\"p\":"* ]]; then
     DATA_VALID=true
+fi
+
+# Stap 6c: Telegram alleen bij écht gestopte containers (eenmalig per down-periode), niet bij herstart-pogingen.
+if [[ "$LAST_ACTION" != *"Emergency Stop"* ]]; then
+    for CN in ai-trading-portal ai-trading-worker; do
+        if [ "$CN" = "ai-trading-portal" ] && [ "$PORTAL_DID_RESTART" -eq 1 ]; then
+            continue
+        fi
+        if [ "$CN" = "ai-trading-worker" ] && [ "$WORKER_DID_RESTART" -eq 1 ]; then
+            continue
+        fi
+        if docker inspect "$CN" >/dev/null 2>&1; then
+            RUN=$(docker inspect -f '{{.State.Running}}' "$CN" 2>/dev/null || echo false)
+            SHORT="${CN##ai-trading-}"
+            FLAG="$LOGS_DIR/watchdog_offline_${SHORT}.flag"
+            if [ "$RUN" != "true" ]; then
+                if [ ! -f "$FLAG" ]; then
+                    touch "$FLAG"
+                    send_telegram "🚨 *Watchdog*%0AContainer \`${CN}\` draait niet (gestopt of gecrasht). Controleer \`docker logs ${CN}\`."
+                fi
+            else
+                rm -f "$FLAG"
+            fi
+        fi
+    done
 fi
 
 # Stap 7: JSON Output genereren
@@ -183,7 +235,7 @@ cat <<EOF > "$OUTPUT_FILE"
   },
   "packet_preview": "${RAW_PREVIEW}...",
   "freshness_check": {
-    "worker_log_updated_last_10m": $FRESH_WORKER,
+    "worker_log_updated_last_30m": $FRESH_WORKER,
     "retries_used": $FINAL_RETRIES
   },
   "db_check": {

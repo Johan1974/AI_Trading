@@ -43,6 +43,9 @@ class PPOTrader:
             "action": decision.action_name,
             "confidence": float(decision.confidence),
             "expected_reward_pct": float(decision.expected_reward_pct),
+            "prob_hold": float(getattr(decision, "prob_hold", 0.0) or 0.0),
+            "prob_buy": float(getattr(decision, "prob_buy", 0.0) or 0.0),
+            "prob_sell": float(getattr(decision, "prob_sell", 0.0) or 0.0),
             "feature_weights": dict(decision.feature_weights),
             "reasoning": str(decision.reasoning),
             "state_features": [

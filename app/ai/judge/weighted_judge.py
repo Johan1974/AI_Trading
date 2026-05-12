@@ -4,6 +4,8 @@ Relatief pad: ./app/ai/judge/weighted_judge.py
 Functie: Weegt technical- en sentiment-scores en bepaalt eindsignaal.
 """
 
+import os
+
 from app.ai.base import Judge
 from app.ai.types import JudgeResult, SentimentResult, TechnicalResult
 
@@ -20,10 +22,13 @@ class WeightedJudge(Judge):
         composite = (technical.score * self.technical_weight) + (
             sentiment.score * self.sentiment_weight
         )
+        band = float(os.getenv("JUDGE_SIGNAL_THRESHOLD", "0.2") or 0.2)
+        if not (band == band) or band <= 0:
+            band = 0.2
         signal = "HOLD"
-        if composite > 0.2:
+        if composite > band:
             signal = "BUY"
-        elif composite < -0.2:
+        elif composite < -band:
             signal = "SELL"
         return JudgeResult(
             composite_score=round(composite, 4),

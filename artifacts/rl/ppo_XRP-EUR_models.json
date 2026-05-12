@@ -1,0 +1,17 @@
+[
+  {
+    "timestamp": "20260512T081909Z",
+    "reward_score": -273.66058,
+    "model_path": "artifacts/rl/ppo_XRP-EUR_20260512T081909Z.zip"
+  },
+  {
+    "timestamp": "20260512T071710Z",
+    "reward_score": -314.24026,
+    "model_path": "artifacts/rl/ppo_XRP-EUR_20260512T071710Z.zip"
+  },
+  {
+    "timestamp": "20260510T210258Z",
+    "reward_score": -4822.248383,
+    "model_path": "artifacts/rl/ppo_XRP-EUR_20260510T210258Z.zip"
+  }
+]

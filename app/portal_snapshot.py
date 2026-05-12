@@ -10,10 +10,26 @@ from datetime import datetime
 from app.datetime_util import UTC
 import json
 import os
+import time
 from typing import Any
 import redis
 
 from app.services.state import get_tenant_state
+
+# Voorkom log-tsunami: portal poll't Redis veel vaker dan de worker naar Redis schrijft.
+_LAST_SNAPSHOT_EMPTY_LOG_TS = 0.0
+_SNAPSHOT_LAST_PRESENT = False
+
+
+def _empty_snapshot_log_interval_sec() -> float:
+    try:
+        return float(os.getenv("PORTAL_REDIS_EMPTY_LOG_INTERVAL_SEC", "45"))
+    except ValueError:
+        return 45.0
+
+
+def _verbose_redis_reads() -> bool:
+    return os.getenv("PORTAL_VERBOSE_REDIS_READS", "").strip().lower() in ("1", "true", "yes")
 
 # Alleen deze specifieke keys mogen vanuit de worker naar de portal gesynchroniseerd worden.
 # Dit voorkomt dat gigantische (per ongeluk gecachete) objecten of dataframes de file opblazen naar gigabytes.
@@ -27,8 +43,11 @@ PORTAL_SYNC_KEYS = {
     "macro_context", "whale_watch", "auto_opt_exploration_eps",
     "auto_opt_risk_cap_pct", "auto_opt_train_chunk_steps",
     "decision_threshold", "stop_loss_pct", "started_at",
-    "rl_last_decision", "rl_last_observation", "rl_last_state", "feature_weights_by_market",
-    "feature_weights", "training_loss", "reward_history"
+    "rl_last_decision", "rl_inference_greedy", "rl_last_observation", "rl_last_state", "feature_weights_by_market",
+    "feature_weights", "training_loss", "reward_history",
+    "trades",
+    "cockpit_log_tail",
+    "rl_optimizer_stats",
 }
 
 def _get_redis_client() -> redis.Redis:
@@ -39,8 +58,22 @@ def _get_redis_client() -> redis.Redis:
     # FORCEER Docker netwerk host als localhost onterecht is doorgegeven in vault
     if "localhost" in url or "127.0.0.1" in url:
         url = f"redis://{host}:{port}/0"
-    
-    return redis.Redis.from_url(url, decode_responses=True)
+
+    try:
+        cto = float(os.getenv("REDIS_SOCKET_CONNECT_TIMEOUT", "3") or 3)
+    except ValueError:
+        cto = 3.0
+    try:
+        sto = float(os.getenv("REDIS_SOCKET_TIMEOUT", "6") or 6)
+    except ValueError:
+        sto = 6.0
+
+    return redis.Redis.from_url(
+        url,
+        decode_responses=True,
+        socket_connect_timeout=cto,
+        socket_timeout=sto,
+    )
 
 
 def _trim_large_data(v: Any, max_len: int = 50) -> Any:
@@ -63,8 +96,19 @@ def _json_safe_dict(d: dict[str, Any]) -> dict[str, Any]:
     for k, v in d.items():
         try:
             # Pre-emptieve trimming: standaardlijsten voor de UI inperken tot max 50 items.
-            if k in {"events", "news_insights", "signal_markers", "news_lag_history", "scanner_intel_feed", "rl_shared_buffer", "paper_portfolio"}:
-                v = _trim_large_data(v, max_len=50)
+            if k in {
+                "events",
+                "news_insights",
+                "signal_markers",
+                "news_lag_history",
+                "scanner_intel_feed",
+                "rl_shared_buffer",
+                "paper_portfolio",
+                "cockpit_log_tail",
+            }:
+                v = _trim_large_data(v, max_len=100 if k == "cockpit_log_tail" else 50)
+            if k == "trades":
+                v = _trim_large_data(v, max_len=25)
 
             v_str = json.dumps(v, default=str)
             v_size = len(v_str)
@@ -110,15 +154,20 @@ def write_worker_portal_snapshot(*, extras: dict[str, Any] | None = None) -> Non
             
         try:
             r = _get_redis_client()
-            
-            # Veiligheidsloop: werkt met ALLE redis-py versies (voorkomt TypeError op 'mapping')
-            for f_key, f_val in mapping_data.items():
-                r.hset("worker_snapshot", f_key, f_val)
-                
-            r.set("ai_trading_snapshot", json_str)
-            
-            print(f"[REDIS SUCCESS] Snapshot ({len(mapping_data)} keys) pushed for {market}.")
-            
+            try:
+                pipe = r.pipeline(transaction=False)
+                for f_key, f_val in mapping_data.items():
+                    pipe.hset("worker_snapshot", f_key, f_val)
+                pipe.set("ai_trading_snapshot", json_str)
+                pipe.execute()
+
+                print(f"[REDIS SUCCESS] Snapshot ({len(mapping_data)} keys) pushed for {market}.")
+            finally:
+                try:
+                    r.close()
+                except Exception:
+                    pass
+
         except Exception as e:
             import traceback
             print(f"[REDIS CRITICAL] Worker kan snapshot niet naar Redis pushen: {e}")
@@ -131,23 +180,46 @@ def write_worker_portal_snapshot(*, extras: dict[str, Any] | None = None) -> Non
 
 
 def read_worker_portal_snapshot() -> dict[str, Any] | None:
+    global _LAST_SNAPSHOT_EMPTY_LOG_TS, _SNAPSHOT_LAST_PRESENT
+    r: redis.Redis | None = None
     try:
         r = _get_redis_client()
-            
+
         data_str = r.hget("worker_snapshot", "data")
         if not data_str:
             data_str = r.get("ai_trading_snapshot")
         if not data_str:
-            print(f"{datetime.now().astimezone().isoformat()} [DATA-FLOW][READ] Fetching 'worker_snapshot' from Redis... Result: Fail (Empty/Not Found).")
+            now = time.monotonic()
+            interval = _empty_snapshot_log_interval_sec()
+            if now - _LAST_SNAPSHOT_EMPTY_LOG_TS >= interval:
+                _LAST_SNAPSHOT_EMPTY_LOG_TS = now
+                print(
+                    f"{datetime.now().astimezone().isoformat()} [DATA-FLOW][READ] "
+                    f"worker_snapshot / ai_trading_snapshot leeg in Redis (worker nog niet gestart of eerste push uitstaand). "
+                    f"Hetzelfde bericht max. elke {interval:.0f}s."
+                )
+            _SNAPSHOT_LAST_PRESENT = False
             return None
         data = json.loads(data_str)
-        print(f"{datetime.now().astimezone().isoformat()} [DATA-FLOW][READ] Fetching 'worker_snapshot' from Redis... Result: Success.")
+        if _verbose_redis_reads():
+            print(f"{datetime.now().astimezone().isoformat()} [DATA-FLOW][READ] Fetching 'worker_snapshot' from Redis... Result: Success.")
+        elif not _SNAPSHOT_LAST_PRESENT:
+            print(
+                f"{datetime.now().astimezone().isoformat()} [DATA-FLOW][READ] Redis snapshot beschikbaar (worker → portal)."
+            )
+        _SNAPSHOT_LAST_PRESENT = True
         return data if isinstance(data, dict) else None
     except Exception as e:
         host = str(os.getenv("REDIS_HOST", "redis")).strip()
         print(f"{datetime.now().astimezone().isoformat()} [DATA-FLOW][READ] Fetching 'worker_snapshot' from Redis... Result: Fail. Context: {e}")
         print(f"{datetime.now().astimezone().isoformat()} [COMM][REDIS][ERROR] Connection failed to host '{host}'. Retrying in 2s...")
         return None
+    finally:
+        if r is not None:
+            try:
+                r.close()
+            except Exception:
+                pass
 
 
 # Voorkom dat de Portal zijn eigen UI 'selected_market' overschrijft met de focus-munt van de worker

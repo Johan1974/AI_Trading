@@ -4,9 +4,9 @@ Single Source of Truth voor planning, voortgang en architecturale keuzes.
 
 ## Voortgang
 
-**Overall voortgang: 85% (166/195 taken)**
+**Overall voortgang: 92% (189/206 taken)**
 
-`[█████████████████░░░] 85%`
+`[█████████████████░░░] 92%`
 
 ---
 
@@ -30,6 +30,21 @@ Doel: betrouwbare, genormaliseerde datafundering voor prijs, nieuws en markt-sen
 - [x] Voeg persistent feature store toe (Parquet partitioned per dag/symbol)
 - [ ] Voeg data drift monitor toe (feature-distributies over tijd)
 
+## Fase 0.1 - Runtime Stabiliteit & Logs
+
+Doel: stabiele worker-startup, bruikbare nachtelijke diagnostics en directe leer-/trade-inzage.
+
+- [x] Fix startup audit crash in `app/trading_core.py` (`build_text_audit_report` -> `build_html_audit_report`) om traceback-spam in `_logs_hub/worker_execution.log` te stoppen.
+- [x] Voeg `scripts/analyze_logs_hub.py` toe voor snelle diagnose van `_logs_hub`, trade-activiteit (`storage/trade_history.db`) en RL-trainingsactiviteit (`_logs_hub/rl_training_metrics.sqlite`).
+- [x] Maak RL-metrics persistent over restarts: `RL_METRICS_DB_PATH=/app/storage/rl_training_metrics.sqlite` + `scripts/run_all.sh` bewaart standaard `rl_training_metrics.sqlite` en `rl_hourly_metrics.jsonl` in `_logs_hub`.
+- [x] Stop mail-spam bij restart-loops: startup-audit e-mail cooldown (`STARTUP_AUDIT_EMAIL_MIN_INTERVAL_SEC`) + cross-process lock rond morning report dispatch.
+- [x] Hard dedupe op rapportage: ochtendrapport markerbestand `last_morning_report.txt` (1x/dag) + startup-audit throttle default 30 min + startup restart diagnostics in `app/main.py`.
+- [x] Stop Telegram-spam bij restart-loops: startup Telegram throttle (`STARTUP_TELEGRAM_MIN_INTERVAL_SEC`, default 1800s) + JARVIS bootstrap ping standaard uit (`JARVIS_TELEGRAM_BOOTSTRAP_CHECK=0`) met eigen interval-guard.
+- [x] Emergency runtime stabilisatie: epsilon bootstrap reset (0.80 bij 0 chunks), vroege micro-train drempel (`RL_MIN_EXPERIENCES_FOR_MICRO_TRAIN=10`), safety-timeout forced SELL na 4 uur, en globale Telegram hard-cap (1 per 10 min).
+- [x] Auto-Repair Bridge: bij fatale portfolio/equity-integriteit schrijft `repair_request.json` (state, traceback, code-uittreksels) voor Cursor/validator (`AUTO_REPAIR_BRIDGE`, `AUTO_REPAIR_IMPOSSIBLE_REL_PCT`).
+- [ ] Voeg automatische alarmmelding toe wanneer `trade_events` > 6 uur stilstaan terwijl paper-run commands wel binnenkomen.
+- [x] `_logs_hub`: uurlijks onderhoud via **dashboard-validator** (`scripts/analyze_logs_hub.py --fix --fix-permissions`), permissies na elke audit (`app/diagnostics/logs_hub_maintenance.py`), geen agressieve wisronde meer voor portal/worker JSON/JSONL.
+
 ## Fase 1.1 - Bitvavo Safety & Compliance
 
 Doel: API-veiligheid, ban-preventie en operationele robuustheid rond exchange-verkeer.
@@ -48,6 +63,7 @@ Doel: projectbesturing, kennisborging en consistente documentatie-cyclus.
 - [x] Leg dynamische updateflow vast voor `ROADMAP.md` en `MEMORY.md`.
 - [x] Voeg executie-startscript toe met Docker-only interactive/background mode.
 - [x] Activeer "Full Agency" proactieve architectuurregels in `.cursorrules`.
+- [x] Dashboard-validator: bij audit-falen `user_actions` + `repairability` in `last_audit_report.json` en `[ACTIE VEREIST]` in containerlogs (`run_ui_tests.py`); pipeline-check op `/api/v1/system/logs` (Hardware-tab).
 
 ## Fase 2 - AI Brain
 
@@ -62,6 +78,10 @@ Doel: signalering op basis van technische en tekstuele signalen met duidelijke m
 - [x] Bouw RL omgeving met reward/penalty constructie
 - [x] Voeg Stable-Baselines3 PPO train-loop toe
 - [x] Simuleer max 10.000 trades in RL env
+- [x] **Helsinki cognitive upgrade:** persistenteer `brain_state_json` op `trade_history` / `trade_events` voor offline training-snapshots.
+- [x] **Helsinki cognitive upgrade:** `Market Regime Detector` (ATR₁₄ vs 24-bar gemiddelde) verhoogt effectieve decision threshold met **+0.05** bij hoog-vol regime (`trade_confidence_threshold_01` + RL gate).
+- [x] **Helsinki cognitive upgrade:** RL observation uitgebreid met **`bid_ask_spread`**; live `/predict`-rollout en infer-loop patchen laatste rij met Bitvavo **spread + orderbook imbalance**.
+- [x] **Helsinki Deep Learning Night Run:** SQLite **`predict_rl_feature_snapshots`** bij elke worker-`/predict` (`RL_PREDICT_FEATURE_LOG`); paper fills **`PAPER_FORCE_ORDERBOOK_EXECUTION_PRICE=1`**; dagelijkse **`AUTO_CALIBRATION`** met extra threshold-stap als 24h Elite **win-rate < 45%**.
 - [ ] Maak judge-gewichten configureerbaar via vault vars
 - [x] Voeg model registry/versionering toe (model + feature schema hash)
 - [x] Behoud enkel top-5 RL modelversies op reward-score (auto cleanup)
@@ -99,6 +119,10 @@ Doel: automatisch liquiditeitsgestuurde marketselectie en live pair switching in
 - [x] **Intelligence ticker elite-mix:** `GET /api/v1/news/ticker?elite_mix=1` + round-robin per Elite-munt; **`scanner_intel_feed`** bij scanner-rotatie (replace-meldingen) in ticker + `/activity`.
 - [x] **Ticker switcher:** scanner-badge + dropdown + Elite-pill roepen `switchEliteMarket` → POST `/markets/select`, chart, balance, **Brain Lab**, nieuws/ticker, activity.
 - [x] **RL-BG verify log:** na geslaagde `asyncio.gather` chunk → `[RL-BG] Parallel PPO chunk OK | Elite-N markets (not UI-only): …`.
+- [x] Stabiliteitsfix op basis van `_logs_hub`: RL multi-inference standaard begrensd (`RL_MULTI_INFER_CONCURRENCY=1`, `RL_MULTI_INFER_MAX_PAIRS=4`) om RAM-pieken en restart-flapping te verminderen.
+- [x] Validator startup-race fix: bij `connection refused` eerst `wait_for_api_health` afwachten vóór container-restart, om portal/worker flapping tijdens boot te voorkomen.
+- [x] Watchdog hardening: startup-grace + ruimere stall-limiet + striktere restart-voorwaarde (`engine stall` + `api_fail_streak`) om valse worker restarts te stoppen.
+- [x] Validator stale-tick anti-loop: `WORKER_TICK_STALE` behandelt nu passief met health-wachtvenster i.p.v. directe restart-heal, zodat worker niet blijft flappen na deploy.
 
 ## Fase 3 - Bitvavo Integratie
 
@@ -143,6 +167,8 @@ Doel: drawdown beperken, executionrisico beheersen en kapitaal beschermen.
 - [ ] Voeg daily max drawdown kill switch toe
 - [ ] Voeg max consecutive losses guard toe
 - [ ] Voeg max exposure per asset toe
+- [x] Allocatie + paper-ledger consistentie: `allocation_snapshot` prijs-fallback via lot-entry + union van open lots; `get_all_trades` vouwt dubbele open-BUY events per markt samen (voorkomt 4× dezelfde munt in ACTIVE-ledger na stacking).
+- [x] Integrity-rapport (SMTP/Jarvis): gedeelde roadmap-parser (`core/roadmap_progress.py`), startup equity vs `implied_equity_eur_from_wallet`, portfolio-snapshot met entry-prijs fallback; mail-label „Open posities (nominaal)” i.p.v. misleidende „P/L” op equity−cash.
 - [ ] Voeg portfolio-level VaR limiet toe
 - [ ] Maak risk parameters per regime dynamisch
 
@@ -156,6 +182,8 @@ Doel: paper trading niet alleen simuleren, maar outcome-gedreven leren op trade-
 - [x] Voeg analytics toe: sentiment bij top-10 verliezen versus top-10 winsten.
 - [x] Voeg `adjust_weights()` suggestie-engine toe voor coin-specifieke judge tuning.
 - [x] Voeg Performance Analytics panel toe (equity curve, win/loss ratio, sentiment vs outcome).
+- [x] Paper reset naar leer-budget: `POST /api/v1/reset-paper` + ledger-archief (`paper_ledger_reset_batches`), Redis `reset_paper` op split worker, Terminal-knop **Reset Balance**.
+- [x] RL overnight observability: uur-JSONL trend (`rl_hourly_metrics.jsonl` / `RL_HOURLY_METRICS_FILE`), canonical `.zip` na `online_update` (throttled), vaste uur-loop + checkpoint; `GET /api/v1/rl/overnight-readiness` + `rl_overnight_learning_snapshot()` in `core/worker_execution.py`.
 
 ## Fase 5 - Portal, Monitoring & Ops
 
@@ -206,6 +234,8 @@ Doel: terminal interactiever maken met klikbare nieuwsdetails en robuuste paper/
 - [x] Voeg paper-mode balance/order storage toe in `bitvavo_manager.py` en koppel `BitvavoClient` hieraan.
 - [x] Voeg `WS /ws/system-stats` toe: elke 5s JSON met `topic: system_stats` (CPU/RAM via `psutil`, GPU/VRAM via `nvidia-smi` wanneer beschikbaar).
 - [x] Terminal header: CPU/RAM/GPU resource-balkjes naast ticker; strakkere `#333` panelranden, witte meta-tekst, neon equity/cash, dieprode panic-glow, witte randen op inputs/knoppen.
+- [x] Tactical Command Center: terminal-grid `280px | 1fr | 340px`, linkerkolom balans · HW/health · strategie (+ scrollbare exposure/sentiment/markt), middenkolom 60/25/15 (prijs · voorspelling · ledger met `min-height: 150px` + scroll), rechterkolom confidence · softmax · live logs (50% hoogte); flow-layout i.p.v. absolute overlays; `ResizeObserver` op `.dashboard-container` + `#priceChart` (`app_core.js`).
+- [x] Clean Dashboard doctrine: slate terminal (`#0f172a`), grid `260px | 1fr | 340px`, Execution Core `65/25/10`, zebra-ledger, compacte AI-logs + clip; critical `index.html` opgeschoond; chart-resize `ResizeObserver` uitgebreid (`app_core.js`).
 - [x] Nieuwsfeed: felgroen/rood impact + sentiment-tags; dikke witte headlines.
 
 ## Fase 5.3 - Chart Sync & News Drilldown
@@ -394,4 +424,17 @@ Bij elke afgeronde taak:
 - Uitgevoerd: Full Autonomous Audit & Trade Integrity voor Elite-8 (ownership guard, round-trip ledger, hourly self-reflection + auto-tuning, AI Zelfreflectie in e-mailrapport).
 - Uitgevoerd: AI Brain Recovery & Visual Polish — floors gezet op `learning_rate >= 1e-5` en `epsilon >= 0.05`, strategy-weights genormaliseerd via `core/analytics.py`, plus high-contrast card borders/padding in Brain Lab.
 - Uitgevoerd: Performance & Doctrine alignment — async worker-queues voor `/predict` en `/paper/run`, cached GPU stats (`SYSTEM_STATS_CACHE_SEC`), tenant-scoped runtime state + tenant-tagged SQLite records, orderbook spread/slippage frictie in paper execution, en dagelijkse auto-calibration (`AUTO_CALIBRATION_INTERVAL_SEC`, default 24h).
+- Uitgevoerd: Paper/GPU/API polish — `PAPER_MIN_SPREAD_BPS`-vloer (default 0,10%), optionele RL-confidence position scaling (`PAPER_CONFIDENCE_POSITION_SCALE`), extra GPU-subprocess-throttle (`SYSTEM_STATS_GPU_MIN_INTERVAL_SEC` + `_nvidia_smi_stats_throttled`), en `asyncio.to_thread` voor worker-nieuws (`_sync_news_ticker_worker`) plus brain state-overview (`_sync_brain_state_overview`).
+- Uitgevoerd: NVML-singleton + worker portal-snapshot (`_compact_worker_portal_system_stats`) — GPU-metrics uit NVML met gecachte host-stats (`get_system_stats`), dubbele Redis-payload-key voor `system_stats` opgeschoond.
 - Uitgevoerd: IP-Whitelisting veiligheidsinstructies toegevoegd aan de README (Fase 1.1).
+- Hotfix: data-pipeline ontdooid — per-market prediction heartbeat (`generated_at` + `prediction_timestamp`) in Redis policy store, `/api/v1/predictions` freshness-gate (max 60s), rollout-throttle standaard >=10s (`PREDICTION_ROLLOUT_CACHE_SEC`/`WORKER_OBSERVATION_INTERVAL_SEC`), en uniforme sidebar/header portfolio-mapping via `/api/v1/stats` in `app_core.js`.
+- Hotfix: observatie-logspam teruggebracht — `_build_observation` logging van INFO naar DEBUG; System Logs anti-spam dedupe negeert timestamp en telt herhalingen (`[×N]`); `/api/v1/stats` fallback levert nu echte `paper_portfolio`/marktprijs i.p.v. lege placeholders.
+- Hotfix: inference-flow stabilisatie — RL multi-worker respecteert nu minimaal observatie-interval (`WORKER_OBSERVATION_INTERVAL_SEC`, min 10s), `/api/v1/predictions` logt expliciet inference-start en valideert dat `model.predict()` echt is aangeroepen; symbol-mismatch op `rl_last_decision` wordt niet meer geaccepteerd.
+- Hotfix: predictions-availability voor multi-market tabs — `/api/v1/predictions?symbol=...` gebruikt nu extra fallback op worker snapshot (`rl_multi_decisions`) en retourneert bij stale heartbeat geen `503` meer maar `prediction_fresh=false` + `prediction_warning`, zodat ETH/SOL/HBAR/JUP vanuit cache/snapshot blijven laden.
+- Hotfix: portal burst-load — compose start uvicorn met **`UVICORN_WORKERS`** (default 2); `/api/v1/predictions` heeft TTL-cache op Bitvavo-historiefallback (`PREDICTION_HISTORY_BITVAVO_CACHE_SEC`) en korte HTTP-response-cache (`PREDICTIONS_HTTP_CACHE_SEC`); Elite-marktenpoll in `module_feeds.js` serialiseert overlappende runs + langzamere stagger. Doel: minder `net::ERR_EMPTY_RESPONSE` wanneer stats, activity en meerdere prediction-requests tegelijk de portal belasten.
+- Hotfix: API-hardening — `/api/v1/stats` vangt Redis/`format_stats`-fouten af (dubbele fallback + nood-JSON); `/api/v1/predictions` antwoordt altijd met geldige JSON bij historie/forecast-fouten (`prediction_degraded`); `/ws/trading-updates` blijft bruikbaar zonder pub/data (heartbeats, timeouts); sync-Redis client krijgt socket timeouts.
+- Hotfix: per‑paar RL‑probs — worker `infer_pair` gebruikt **positie per markt** in de PPO‑observatie i.p.v. globale `position_qty`; optioneel **`RL_INFER_PAIR_JITTER`** op `ema_gap_pct`; stats zet `selected_market` bij `?symbol=`; legacy `main.js` poll met `?symbol=`.
+- Hotfix: GPU-resilience — startup doet nu 1x CUDA recovery-poging; bij falen automatische CPU-fallback (geen bot-stop), met expliciete device-health logs (`cuda`/`cpu`) en `/api/v1/stats` verrijkt met `compute_device` + portfolio-fallback ook tijdens GPU-foutstatus.
+- Hotfix: Auto-Repair Bridge — bij fatale portfolio/equity-integriteit schrijft `app/services/repair_bridge.py` context-rijke `repair_request.json` (state, traceback, code-uittreksels) voor Cursor/validator; env `AUTO_REPAIR_BRIDGE`, `AUTO_REPAIR_IMPOSSIBLE_REL_PCT`.
+- UI herstel: terminal-statusbolletjes (AI Live/GPU/DB) teruggebracht met kleurstaten groen/rood/grijs op basis van `/api/v1/stats`; HW-box toont weer `CPU% | TMP` en geeft rode waarschuwing bij GPU-disconnect zonder UI-elementen te verbergen tijdens haperingen.
+- API/UI contract update: `/api/v1/stats` levert nu runtime-statusvelden (`worker_status`, `gpu_status`, `db_connected`, `last_inference_time`); terminal-header gebruikt deze voor AI Engine/GPU/Live Data indicatoren + HW-box (`CPU | RAM | TMP`) en Market Stats toont weer AI sentimentscore.

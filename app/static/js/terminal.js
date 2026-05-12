@@ -41,9 +41,54 @@ const LEDGER_ROUNDTRIP_FETCH_LIMIT = 500;
 /** Sidebar trade-widget: alleen recente events nodig. */
 const SIDEBAR_TRADES_FETCH_LIMIT = 200;
 
+/** Euro's in NL-notatie (komma decimalen); valt terug als `app_core.js` nog niet geladen is. */
+function formatEurNlTerminal(v) {
+  if (typeof window.formatEurNl === "function") return window.formatEurNl(v);
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "—";
+  const neg = n < 0;
+  const s = Math.abs(n).toLocaleString("nl-NL", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return (neg ? "-€ " : "€ ") + s;
+}
+
+/**
+ * Trade-ledger: meest recente rij eerst (exit- of entry-timestamp).
+ * Platte chronologische tabel (geen groep per munt) staat in ``module_ledger.js`` (`renderTable` / `_renderFlatOpen` / `_renderFlatClosed`).
+ */
+function sortLedgerTradesChronoDesc(rows) {
+  const key = (t) => {
+    const s = String(
+      t.exit_ts_utc || t.close_time_utc || t.entry_ts_utc || t.open_time_utc || t.sort_ts || t.ts || ""
+    ).trim();
+    if (!s) return 0;
+    const ms = Date.parse(s.includes("T") ? s : s.replace(" ", "T"));
+    return Number.isFinite(ms) ? ms : 0;
+  };
+  rows.sort((a, b) => key(b) - key(a));
+}
+
 /** Kleine delay-helper voor sequenced loader: voorkomt network-storm bij startup. */
 function sleepMs(ms) {
   return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
+}
+
+/**
+ * Paper-saldo (`paper_portfolio` in `/activity`); altijd `no-store` + query-bust (geen oude HTTP-cache).
+ * Zie `terminal_live_tail.js` voor `window.buildActivityFetchUrl` / `window.activityFetchInit`.
+ */
+async function fetchBalanceFromActivity() {
+  const url =
+    typeof window.buildActivityFetchUrl === "function" ? window.buildActivityFetchUrl() : "/activity";
+  const init = window.activityFetchInit || { cache: "no-store", credentials: "same-origin" };
+  const res = await fetch(url, init);
+  const text = await res.text();
+  let data = {};
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch (_parseErr) {
+    return { ok: res.ok, status: res.status, data: {}, parseError: true };
+  }
+  return { ok: res.ok, status: res.status, data, parseError: false };
 }
 let lastBufferedPrice = null;
 let priceAtLastSecondTick = null;
@@ -51,6 +96,7 @@ let cockpitHeartbeatTimer = null;
 let wsRef = null;
 let priceChart = null;
 let priceSeries = null;
+let predictionOverlaySeries = null;
 let markerSeries = null;
 let whaleDangerPriceLineHandle = null;
 let priceSeriesIsCandle = false;
@@ -71,13 +117,15 @@ let systemLogsSocket = null;
 /** Redis-bridge: worker → portal WebSocket `/ws/trading-updates`. */
 let tradingUpdatesSocket = null;
 let tradingUpdatesLive = false;
+const TRADING_UPDATES_WS_RECONNECT_MS = 5000;
+let tradingUpdatesReconnectTimer = null;
 /** Laatste Redis/activity-payload (ms); WS kan open staan zonder berichten — dan blijft `/activity` nodig. */
 let lastTradingWsActivityAtMs = 0;
 let systemLogsReconnectTimer = null;
 let systemStatsSocket = null;
 let systemStatsReconnectTimer = null;
 let brainTabTrainingLossChart = null;
-let brainTabRewardChart = null;
+let brainTabRewardErrorChart = null;
 let brainTabFeatureChart = null;
 let brainStatsSocket = null;
 let brainStatsReconnectTimer = null;
@@ -90,14 +138,110 @@ let rawChartLineData = [];
 let rawChartMarkers = [];
 let latestBrainStatsPayload = null;
 let markerRenderState = { thresholdPx: 34, hideText: false, sizeMode: "normal" };
+/** Chart.js: historische prijs + AI-voorspelling (`/api/v1/predictions?symbol=...`). */
+let tradingChart = null;
 
 /** Donkere gridlijnen zodat witte assen en neon datasets contrast houden */
 const CHART_GRID_DARK = "#222222";
 const CHART_AXIS_WHITE = "#FFFFFF";
 
 const HINT_PORTAL_ID = "brainHintPortal";
-let chartInterval = "5m";
+const CHART_INTERVAL_STORAGE_KEY = "trading_timeframe";
+const CHART_INTERVAL_ALLOWED = new Set(["ai", "1m", "5m", "15m", "60m"]);
+
+function normalizeChartIntervalSelection(raw) {
+  const v = String(raw || "").toLowerCase();
+  return CHART_INTERVAL_ALLOWED.has(v) ? v : "ai";
+}
+
+function chartIntervalFromSelection(sel) {
+  const s = normalizeChartIntervalSelection(sel);
+  return s === "ai" ? CHART_CANDLE_INTERVAL : s;
+}
+
+function updateChartIntervalUi(activeSelection) {
+  const chosen = normalizeChartIntervalSelection(activeSelection);
+  try {
+    const btns = document.querySelectorAll("#chartTimeframeControls .chart-timeframe-btn[data-timeframe]");
+    btns.forEach((btn) => {
+      const tf = normalizeChartIntervalSelection(btn.getAttribute("data-timeframe"));
+      btn.classList.toggle("is-active", tf === chosen);
+      btn.setAttribute("aria-pressed", tf === chosen ? "true" : "false");
+    });
+  } catch (_e) {
+    /* ignore */
+  }
+}
+
+let chartIntervalSelection = (() => {
+  try {
+    return normalizeChartIntervalSelection(window.localStorage.getItem(CHART_INTERVAL_STORAGE_KEY));
+  } catch (_e) {
+    return "ai";
+  }
+})();
+let chartInterval = chartIntervalFromSelection(chartIntervalSelection);
 let headlessMode = false;
+let __lastTerminalHwHud = "—";
+
+function setTerminalDotState(dotId, state) {
+  const el = document.getElementById(dotId);
+  if (!el) return;
+  el.classList.remove("is-ok", "is-error", "is-loading");
+  if (state === "ok") el.classList.add("is-ok");
+  else if (state === "error") el.classList.add("is-error");
+  else el.classList.add("is-loading");
+}
+
+function updateTerminalHealthFromStats(stats) {
+  if (!stats || typeof stats !== "object") {
+    setTerminalDotState("termDotAiLive", "loading");
+    setTerminalDotState("termDotGpuStatus", "loading");
+    setTerminalDotState("termDotDbStatus", "loading");
+    return;
+  }
+  const botStatus = String(stats.bot_status || "").toLowerCase();
+  const aiFresh = stats.prediction_fresh === true;
+  const aiOk = aiFresh && botStatus !== "panic_stop";
+  const dev = String(stats.compute_device || "").toLowerCase();
+  const gpuTemp = Number(stats.gpu_temp);
+  const gpuOk = dev.includes("cuda") && Number.isFinite(gpuTemp) && gpuTemp > 0;
+  const dbOk = !!(stats.paper_portfolio && typeof stats.paper_portfolio === "object");
+
+  setTerminalDotState("termDotAiLive", aiOk ? "ok" : aiFresh ? "loading" : "error");
+  setTerminalDotState("termDotGpuStatus", gpuOk ? "ok" : dev ? "error" : "loading");
+  setTerminalDotState("termDotDbStatus", dbOk ? "ok" : "loading");
+
+  const txtAi = document.getElementById("termTxtAiLive");
+  const txtGpu = document.getElementById("termTxtGpuStatus");
+  const txtDb = document.getElementById("termTxtDbStatus");
+  if (txtAi) txtAi.textContent = aiOk ? "AI Live OK" : aiFresh ? "AI Warming" : "AI Stale";
+  if (txtGpu) txtGpu.textContent = gpuOk ? "GPU OK" : dev === "cpu" ? "GPU Error" : "GPU Loading";
+  if (txtDb) txtDb.textContent = dbOk ? "DB Connected" : "DB Syncing";
+
+  const root = document.getElementById("cockpitTerminalHwMini");
+  const hud = document.getElementById("hpMiniHud");
+  const warn = document.getElementById("hpMiniWarnIcon");
+  const cpu = Number(stats.cpu_load);
+  const temp = Number(stats.gpu_temp);
+  if (hud) {
+    if (Number.isFinite(cpu) && cpu >= 0) {
+      const tText = Number.isFinite(temp) && temp > 0 ? `${temp.toFixed(0)}°C` : "—";
+      __lastTerminalHwHud = `CPU ${cpu.toFixed(0)}% | TMP ${tText}`;
+      hud.textContent = __lastTerminalHwHud;
+    } else if (!hud.textContent || hud.textContent.trim() === "—") {
+      hud.textContent = __lastTerminalHwHud;
+    }
+  }
+  const gpuFail = !gpuOk && dev.length > 0;
+  if (root) root.classList.toggle("hp-hw-mini-monitor--alert", gpuFail);
+  if (warn) {
+    warn.textContent = gpuFail ? "⚠" : "●";
+    warn.style.color = gpuFail ? "#ef4444" : "#6b7280";
+  }
+}
+
+window.updateTerminalHealthFromStats = updateTerminalHealthFromStats;
 
 /** Per-base accent (hex) voor actieve Elite-8 / scanner highlight */
 const ELITE8_COIN_ACCENTS = Object.freeze({
@@ -274,6 +418,434 @@ function highContrastChartOptions(base = {}) {
   Chart.defaults.font.weight = "700";
 })();
 
+/** Chart.js x = ms; LWC `rawChartLineData.time` = zelfde schaal als toEpochSeconds (sec). */
+function _normMkChart(s) {
+  return String(s || "").toUpperCase().replace("/", "-");
+}
+
+function buildChartJsRealPriceFromMainLw(symbol) {
+  const want = _normMkChart(symbol);
+  const cur = _normMkChart(selectedChartPair || selectedMarket || "");
+  if (!want || want !== cur) return null;
+  const arr = Array.isArray(rawChartLineData) ? rawChartLineData : [];
+  if (!arr.length) return null;
+  const take = Math.min(arr.length, 96);
+  const slice = arr.slice(-take);
+  const out = [];
+  for (let i = 0; i < slice.length; i += 1) {
+    const p = slice[i];
+    const t = Number(p.time);
+    const y = Number(p.value);
+    if (!Number.isFinite(t) || !Number.isFinite(y)) continue;
+    out.push({ x: t * 1000, y });
+  }
+  return out.length ? out : null;
+}
+
+/** Chart.js lineaire x-as in ms: tick → HH:mm:ss (zelfde tijdlijn als worker candles). */
+function formatPredictionChartTickTime(axisValue) {
+  const n = Number(axisValue);
+  if (!Number.isFinite(n)) return "";
+  const ms = n >= 1e11 ? n : n * 1000;
+  if (!Number.isFinite(ms) || ms <= 0) return "";
+  try {
+    return new Date(ms).toLocaleTimeString("nl-NL", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    });
+  } catch (_e) {
+    return "";
+  }
+}
+
+function inferChartJsYDecimalsFromRange(yMin, yMax) {
+  const lo = Math.min(yMin, yMax);
+  const hi = Math.max(yMin, yMax);
+  const span = Math.abs(hi - lo);
+  if (!(span > 0) && hi > 0) return Math.max(4, Math.min(8, Math.ceil(-Math.log10(hi)) + 2));
+  if (!(span > 0)) return 4;
+  return Math.max(4, Math.min(8, Math.ceil(-Math.log10(span / 6)) + 1));
+}
+window.inferChartJsYDecimalsFromRange = inferChartJsYDecimalsFromRange;
+
+/** Y-as alleen op recent venster + voorspelling → kleine prijsbewegingen blijven zichtbaar (geen platte lijn). */
+function computePredictionChartYBounds(historicalPoints, predictedPoints) {
+  const hp = Array.isArray(historicalPoints) ? historicalPoints : [];
+  const pp = Array.isArray(predictedPoints) ? predictedPoints : [];
+  const tailN = Math.max(12, Math.min(64, Number(window.PREDICTION_CHART_Y_TAIL || 32)));
+  const histTail = hp.slice(-Math.min(tailN, Math.max(1, hp.length)));
+  const ys = [...histTail, ...pp].map((p) => Number(p && p.y)).filter((y) => Number.isFinite(y) && y > 0);
+  if (!ys.length) return null;
+  let yMin = Math.min(...ys);
+  let yMax = Math.max(...ys);
+  let spanY = yMax - yMin;
+  const mid = (yMin + yMax) / 2;
+  const minRel =
+    Number.isFinite(Number(window.PREDICTION_CHART_MIN_REL_Y_SPAN)) && Number(window.PREDICTION_CHART_MIN_REL_Y_SPAN) > 0
+      ? Number(window.PREDICTION_CHART_MIN_REL_Y_SPAN)
+      : 0.0015;
+  const minAbsSpan = Math.max(Math.abs(mid) * minRel, 1e-12);
+  if (spanY < minAbsSpan) {
+    const half = minAbsSpan / 2;
+    yMin = mid - half;
+    yMax = mid + half;
+    spanY = minAbsSpan;
+  }
+  const yPad = Math.max(spanY * 0.14, Math.abs(mid) * 0.00025);
+  return { min: yMin - yPad, max: yMax + yPad };
+}
+
+(function injectPredictionChartWaitingStyles() {
+  if (typeof document === "undefined" || document.getElementById("predictionChartWaitingSpinStyle")) return;
+  const s = document.createElement("style");
+  s.id = "predictionChartWaitingSpinStyle";
+  s.textContent =
+    "@keyframes predChartSpin{to{transform:rotate(360deg)}} .prediction-chart-ai-waiting{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;background:rgba(0,0,0,0.62);color:#67e8f9;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:14px;font-weight:600;z-index:4;pointer-events:none;letter-spacing:0.02em}" +
+    ".prediction-chart-ai-waiting[hidden]{display:none!important}" +
+    ".prediction-chart-ai-waiting .prediction-chart-ai-waiting__spin{width:26px;height:26px;border:3px solid rgba(103,232,249,0.22);border-top-color:#67e8f9;border-radius:50%;animation:predChartSpin 0.75s linear infinite}";
+  document.head.appendChild(s);
+})();
+
+function ensurePredictionChartWaitingOverlay() {
+  const canvas = document.getElementById("tradingPredictionChart");
+  if (!canvas || typeof document === "undefined") return null;
+  let el = document.getElementById("predictionChartAiWaiting");
+  if (!el) {
+    const wrap = canvas.parentElement;
+    if (!wrap) return null;
+    const pos = window.getComputedStyle(wrap).position;
+    if (pos === "static" || !pos) wrap.style.position = "relative";
+    el = document.createElement("div");
+    el.id = "predictionChartAiWaiting";
+    el.className = "prediction-chart-ai-waiting";
+    el.setAttribute("role", "status");
+    el.setAttribute("aria-live", "polite");
+    el.hidden = true;
+    const spin = document.createElement("span");
+    spin.className = "prediction-chart-ai-waiting__spin";
+    spin.setAttribute("aria-hidden", "true");
+    const txt = document.createElement("span");
+    txt.textContent = "Waiting for AI…";
+    el.appendChild(spin);
+    el.appendChild(txt);
+    wrap.appendChild(el);
+  }
+  return el;
+}
+
+function setPredictionChartWaitingVisible(show) {
+  const el = ensurePredictionChartWaitingOverlay();
+  if (!el) return;
+  el.hidden = !show;
+}
+
+window.computePredictionChartYBounds = computePredictionChartYBounds;
+window.ensurePredictionChartWaitingOverlay = ensurePredictionChartWaitingOverlay;
+window.setPredictionChartWaitingVisible = setPredictionChartWaitingVisible;
+
+/** Optioneel: RL buy/sell-kanteling op voorspellingspunten. Niet meer gebruikt op Chart.js — liever zelfde curve als LW-overlay (`refreshMainChartGhostLine`). */
+function applyRlSellConfidenceToPredictedPoints(predictedPoints, dataPayload) {
+  if (!Array.isArray(predictedPoints) || predictedPoints.length < 2) return predictedPoints;
+  const ap = dataPayload && dataPayload.ai_action_probs;
+  const rld = dataPayload && dataPayload.rl_last_decision;
+  let buy = NaN;
+  let sell = NaN;
+  if (ap && typeof ap === "object") {
+    buy = Number(ap.buy_pct);
+    sell = Number(ap.sell_pct);
+  }
+  if (dataPayload && dataPayload.buy != null) {
+    buy = Number(dataPayload.buy);
+    sell = Number(dataPayload.sell);
+  }
+  if (!Number.isFinite(buy) && rld && typeof rld === "object") buy = Number(rld.prob_buy) * 100;
+  if (!Number.isFinite(sell) && rld && typeof rld === "object") sell = Number(rld.prob_sell) * 100;
+  if (!Number.isFinite(buy)) buy = 33.33;
+  if (!Number.isFinite(sell)) sell = 33.33;
+  let conf = Number(dataPayload && dataPayload.rl_confidence);
+  if (!Number.isFinite(conf) && rld) conf = Number(rld.confidence);
+  if (!Number.isFinite(conf)) conf = 0.5;
+  conf = Math.min(1, Math.max(0, conf));
+  const bear = (sell - buy) / 100;
+  const mag = conf * 0.055;
+  return predictedPoints.map((p, i) => {
+    if (i === 0) return p;
+    const t = i / (predictedPoints.length - 1);
+    const mult = 1 - bear * mag * t;
+    return { x: p.x, y: Math.max(1e-12, Number(p.y) * mult) };
+  });
+}
+
+window.__terminalPredictionChartHelpers = {
+  buildChartJsRealPriceFromMainLw,
+  formatPredictionChartTickTime,
+  inferChartJsYDecimalsFromRange,
+  computePredictionChartYBounds,
+  applyRlSellConfidenceToPredictedPoints,
+};
+window.formatPredictionChartTickTime = formatPredictionChartTickTime;
+
+function initTradingPredictionChart() {
+  const canvas = document.getElementById("tradingPredictionChart");
+  if (!canvas || typeof Chart === "undefined") return null;
+  const U = window.ChartUtils;
+  if (U && U.registry && U.registry.tradingPredictionChart) {
+    tradingChart = U.registry.tradingPredictionChart;
+    window.tradingChart = tradingChart;
+    return tradingChart;
+  }
+  if (tradingChart) {
+    window.tradingChart = tradingChart;
+    return tradingChart;
+  }
+
+  const lineData = {
+    datasets: [
+      {
+        label: "Real Price",
+        data: [],
+        parsing: false,
+        borderColor: "#00ff88",
+        backgroundColor: "rgba(0, 255, 136, 0.08)",
+        borderWidth: 2,
+        pointRadius: 0,
+        tension: 0.18,
+        fill: false,
+      },
+      {
+        label: "AI Prediction",
+        data: [],
+        parsing: false,
+        borderColor: "#67e8f9",
+        backgroundColor: "transparent",
+        borderWidth: 3,
+        borderDash: [7, 5],
+        borderCapStyle: "round",
+        pointRadius: 0,
+        tension: 0.18,
+        fill: false,
+      },
+    ],
+  };
+
+  const baseOptions = highContrastChartOptions({
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: false,
+    interaction: { mode: "nearest", intersect: false },
+    layout: {
+      padding: { top: 28, bottom: 36, left: 4, right: 8 },
+    },
+    plugins: {
+      legend: {
+        display: true,
+        position: "top",
+        align: "end",
+        labels: {
+          boxWidth: 12,
+          padding: 10,
+          usePointStyle: false,
+        },
+      },
+    },
+    scales: {
+      x: {
+        type: "linear",
+        offset: false,
+        title: {
+          display: true,
+          text: "Tijd",
+          color: "#888888",
+          padding: { top: 10, bottom: 0 },
+        },
+        ticks: {
+          maxTicksLimit: 12,
+          maxRotation: 0,
+          autoSkip: true,
+          padding: 6,
+          callback(v) {
+            return formatPredictionChartTickTime(v);
+          },
+        },
+      },
+      y: {
+        beginAtZero: false,
+        ticks: {
+          maxTicksLimit: 10,
+        },
+      },
+    },
+  });
+
+  if (U && typeof U.upsertChart === "function") {
+    tradingChart = U.upsertChart("tradingPredictionChart", {
+      type: "line",
+      data: lineData,
+      options: baseOptions,
+    });
+    window.tradingChart = tradingChart;
+    return tradingChart;
+  }
+
+  const ctx = canvas.getContext("2d");
+  tradingChart = new Chart(ctx, {
+    type: "line",
+    data: lineData,
+    options: baseOptions,
+  });
+  window.tradingChart = tradingChart;
+  return tradingChart;
+}
+
+async function updatePredictionChart(symbol) {
+  const symU = _normMkChart(symbol || selectedMarket || "BTC-EUR");
+  const sym = encodeURIComponent(symU);
+  try {
+    const response = await fetch(`/api/v1/predictions?symbol=${sym}`);
+    if (!response.ok) throw new Error(`Netwerkfout bij ophalen predicties (${response.status})`);
+    const data = await response.json();
+    const dataPolicy = mergePolicySnapshotIntoPredictionData(symU, data);
+
+    const hist = Array.isArray(dataPolicy.historical) ? dataPolicy.historical : [];
+    const pred = Array.isArray(dataPolicy.predicted) ? dataPolicy.predicted : [];
+    const lwSeries = buildChartJsRealPriceFromMainLw(symU);
+    if (!hist.length && !(lwSeries && lwSeries.length)) {
+      throw new Error("Geen historische punten in API-response");
+    }
+
+    let historicalPoints = hist.length
+      ? hist
+          .map((item) => {
+            const x = new Date(item.timestamp);
+            const y = Number(item.price);
+            return { x: x.getTime(), y };
+          })
+          .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y))
+      : [];
+
+    if (lwSeries && lwSeries.length) {
+      historicalPoints = lwSeries;
+    } else if (historicalPoints.length && Array.isArray(rawChartLineData) && rawChartLineData.length && hist.length) {
+      const cur = _normMkChart(selectedChartPair || selectedMarket || "");
+      if (cur === symU) {
+        const anchor = rawChartLineData[rawChartLineData.length - 1];
+        const yA = Number(anchor && anchor.value);
+        if (Number.isFinite(yA) && yA > 0) {
+          const last = historicalPoints[historicalPoints.length - 1];
+          historicalPoints[historicalPoints.length - 1] = { ...last, y: yA };
+        }
+      }
+    }
+
+    if (!historicalPoints.length) throw new Error("Geen bruikbare prijspunten voor voorspellingsgrafiek");
+
+    const lastHistoricalPoint = historicalPoints[historicalPoints.length - 1];
+
+    let predictedPoints = pred
+      .map((item) => {
+        const x = new Date(item.timestamp);
+        const y = Number(item.predicted_price);
+        return { x: x.getTime(), y };
+      })
+      .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
+
+    if (lastHistoricalPoint && predictedPoints.length) {
+      predictedPoints.unshift({ x: lastHistoricalPoint.x, y: lastHistoricalPoint.y });
+    }
+
+    predictedPoints = applyRlSellConfidenceToPredictedPoints(predictedPoints, dataPolicy);
+    setPredictionChartWaitingVisible(predictedPoints.length === 0);
+
+    const chart = initTradingPredictionChart();
+    if (chart) {
+      chart.data.datasets[0].data = historicalPoints;
+      chart.data.datasets[1].data = predictedPoints;
+      if (chart.data.datasets[1]) chart.data.datasets[1].borderWidth = 3;
+      const merged = [...historicalPoints, ...predictedPoints];
+      const allXs = merged.map((p) => p.x).filter(Number.isFinite);
+      if (allXs.length) {
+        const tMin = Math.min(...allXs);
+        const tMax = Math.max(...allXs);
+        const span = Math.max(60_000, tMax - tMin);
+        const pad = Math.max(60_000, span * 0.12);
+        chart.options.scales = chart.options.scales || {};
+        chart.options.scales.x = chart.options.scales.x || {};
+        chart.options.scales.x.type = "linear";
+        chart.options.scales.x.suggestedMin = tMin - pad * 0.05;
+        chart.options.scales.x.suggestedMax = tMax + pad;
+        chart.options.scales.x.ticks = chart.options.scales.x.ticks || {};
+        chart.options.scales.x.ticks.maxTicksLimit = 12;
+        chart.options.scales.x.ticks.callback = (v) => formatPredictionChartTickTime(v);
+      }
+      const yb = computePredictionChartYBounds(historicalPoints, predictedPoints);
+      if (yb) {
+        const prec = inferChartJsYDecimalsFromRange(yb.min, yb.max);
+        chart.options.scales.y = {
+          ...(chart.options.scales.y || {}),
+          beginAtZero: false,
+          min: yb.min,
+          max: yb.max,
+          suggestedMin: undefined,
+          suggestedMax: undefined,
+          ticks: {
+            ...(chart.options.scales.y && chart.options.scales.y.ticks ? chart.options.scales.y.ticks : {}),
+            maxTicksLimit: 8,
+            callback(v) {
+              const nv = Number(v);
+              if (!Number.isFinite(nv)) return "";
+              return nv.toLocaleString("nl-NL", { minimumFractionDigits: prec, maximumFractionDigits: prec });
+            },
+          },
+        };
+      }
+      try {
+        if (typeof chart.resize === "function") chart.resize();
+      } catch (_e) {
+        /* noop */
+      }
+      chart.update("none");
+      scheduleSyncPredictionChartJsXFromLightweight();
+    }
+
+    const predEl = document.getElementById("prediction");
+    if (predEl && historicalPoints.length) {
+      const tx = String(predEl.textContent || "");
+      if (/^laden/i.test(tx) || tx.includes("Laden…") || tx.includes("Laden...")) predEl.textContent = "";
+    }
+    if (typeof setChartTimeHint === "function" && historicalPoints.length) {
+      const hiRow = hist.length ? hist[hist.length - 1] : null;
+      const prRow = pred.length ? pred[pred.length - 1] : null;
+      setChartTimeHint({
+        market: symU,
+        updated_at: hiRow && hiRow.timestamp != null ? String(hiRow.timestamp) : new Date().toISOString(),
+        predicted_at: prRow && prRow.timestamp != null ? String(prRow.timestamp) : null,
+      });
+    }
+
+    const accuracyElement = document.getElementById("ai-accuracy-score");
+    if (accuracyElement) {
+      const raw = data.accuracy_score;
+      if (raw != null && Number.isFinite(Number(raw))) {
+        const ac = Number(raw);
+        accuracyElement.innerText = `${ac.toFixed(1)}%`;
+        accuracyElement.style.color = ac > 80 ? "#00ff88" : "#ff3e3e";
+      } else {
+        accuracyElement.innerText = "—";
+        accuracyElement.style.color = "#888888";
+      }
+    }
+  } catch (error) {
+    console.error("Fout bij updaten van de AI voorspellingsgrafiek:", error);
+    try {
+      setPredictionChartWaitingVisible(true);
+    } catch (_e) {
+      /* noop */
+    }
+  }
+}
+
 function ensureBrainHintPortal() {
   let el = document.getElementById(HINT_PORTAL_ID);
   if (!el) {
@@ -301,7 +873,7 @@ function positionBrainHintPortal(wrap, bubbleEl) {
   div.textContent = text;
   portal.appendChild(div);
   const vw = window.innerWidth;
-  const maxW = Math.min(320, vw - 16);
+  const maxW = Math.min(420, vw - 16);
   div.style.cssText = [
     "position:fixed",
     "z-index:99999",
@@ -383,7 +955,7 @@ function renderModeBanner(mode) {
   const el = document.getElementById("modeBanner");
   if (!el) return;
   const live = String(mode || "").toLowerCase() === "live";
-  el.className = `cockpit-mode mode-toggle mode-banner ${live ? "mode-live" : "mode-paper"}`;
+  el.className = `cockpit-mode-pill mode-banner ${live ? "mode-live" : "mode-paper"}`;
   el.textContent = live ? "LIVE" : "PAPER";
 }
 
@@ -430,11 +1002,871 @@ function escapeHtmlText(text) {
     .replace(/>/g, "&gt;");
 }
 
-function formatBrainReasoningHtml(raw) {
+/**
+ * BTC-posities: soms `position_qty` in satoshi's i.p.v. hele BTC.
+ * Corrigeer vóór allocatie: (qty × prijs) / saldo × 100.
+ */
+function normalizePositionQtyForAllocation(market, qtyRaw, priceEur, totalBalanceEur) {
+  let q = Number(qtyRaw);
+  if (!Number.isFinite(q) || q <= 0) return q;
+  const mku = String(market || "").toUpperCase();
+  if (!mku.startsWith("BTC-")) return q;
+  const px = Number(priceEur);
+  const bal = Number(totalBalanceEur);
+  if (!Number.isFinite(px) || px <= 0 || !Number.isFinite(bal) || bal <= 0) return q;
+  let actualAllocation = (q * px) / bal * 100;
+  if (actualAllocation > 250 || (q >= 1e5 && actualAllocation > 150)) {
+    q /= 1e8;
+    actualAllocation = (q * px) / bal * 100;
+  }
+  return q;
+}
+
+/** Markten met open paper-positie (qty > 0) — scanner + positielampje in header. */
+function buildMarketsInPositionSet(data) {
+  const p = (data && data.paper_portfolio) || {};
+  const out = new Set();
+  const pbm = p.position_by_market && typeof p.position_by_market === "object" ? p.position_by_market : null;
+  if (pbm && Object.keys(pbm).length) {
+    for (const [k, raw] of Object.entries(pbm)) {
+      const q = typeof raw === "number" ? raw : Number(raw);
+      const mku = String(k || "").toUpperCase().trim();
+      if (mku && Number.isFinite(q) && q > 0) out.add(mku);
+    }
+  }
+  if (out.size === 0) {
+    const sym = String(p.position_symbol || "").toUpperCase();
+    const qty = Number(p.position_qty);
+    if (sym && sym !== "NONE" && Number.isFinite(qty) && qty > 0) out.add(sym);
+  }
+  return out;
+}
+
+/**
+ * Allocatie % = (Pos Qty × prijs EUR) / totaal saldo (equity) × 100.
+ * Bij corrupte qty×prijs (>> saldo) val terug op serverregel voor die markt.
+ */
+function allocationDisplayLines(data) {
+  const alloc = (data && data.allocation_snapshot) || {};
+  const serverLines = Array.isArray(alloc.lines) ? alloc.lines : [];
+  const p = (data && data.paper_portfolio) || {};
+  const eq = Number(p.equity);
+  const cashN = Number(p.cash);
+  let totalSaldo = Number.isFinite(eq) && eq > 0 ? eq : 0;
+  if (totalSaldo <= 0 && Number.isFinite(cashN) && cashN > 0) totalSaldo = cashN;
+  if (totalSaldo <= 0) return serverLines;
+
+  const lpm = p.last_prices_by_market && typeof p.last_prices_by_market === "object" ? p.last_prices_by_market : {};
+  const posSym = String(p.position_symbol || "").toUpperCase();
+  const am = Array.isArray(data.active_markets) ? data.active_markets : [];
+
+  function priceForMarket(mku) {
+    let px = Number(lpm[mku]);
+    if (!Number.isFinite(px) || px <= 0) {
+      if (mku === posSym) px = Number(p.last_price);
+    }
+    if (!Number.isFinite(px) || px <= 0) {
+      for (let i = 0; i < am.length; i++) {
+        const row = am[i];
+        if (!row || String(row.market || "").toUpperCase() !== mku) continue;
+        const lp = row.last_price != null ? row.last_price : row.price;
+        const n = Number(lp);
+        if (Number.isFinite(n) && n > 0) {
+          px = n;
+          break;
+        }
+      }
+    }
+    return Number.isFinite(px) && px > 0 ? px : 0;
+  }
+
+  const pbm = p.position_by_market && typeof p.position_by_market === "object" ? p.position_by_market : null;
+  const entries =
+    pbm && Object.keys(pbm).length
+      ? Object.entries(pbm)
+      : (() => {
+          const qty = Number(p.position_qty);
+          if (!posSym || posSym === "NONE" || !Number.isFinite(qty) || qty <= 0) return [];
+          return [[posSym, qty]];
+        })();
+
+  const out = [];
+  for (let i = 0; i < entries.length; i++) {
+    const mku = String(entries[i][0] || "").toUpperCase();
+    let qty = Number(entries[i][1]);
+    const px = priceForMarket(mku);
+    if (!Number.isFinite(qty) || qty <= 0 || px <= 0) continue;
+    qty = normalizePositionQtyForAllocation(mku, qty, px, totalSaldo);
+    const posEur = qty * px;
+    let actualAllocation = (posEur / totalSaldo) * 100;
+    if (!Number.isFinite(actualAllocation) || actualAllocation < 0) actualAllocation = 0;
+    if (actualAllocation > 500) {
+      const prev = serverLines.find((r) => String((r && r.market) || "").toUpperCase() === mku);
+      if (prev && Number.isFinite(Number(prev.weight_pct))) {
+        out.push({
+          ...prev,
+          weight_pct: Math.round(Math.min(100, Math.max(0, Number(prev.weight_pct))) * 100) / 100,
+        });
+      }
+      continue;
+    }
+    const wPct = Math.round(actualAllocation * 100) / 100;
+    const base = mku.includes("-") ? mku.split("-")[0] : mku;
+    const prev = serverLines.find((r) => String((r && r.market) || "").toUpperCase() === mku);
+    out.push({
+      market: mku,
+      coin: base,
+      weight_pct: wPct,
+      notional_eur: Math.round(posEur * 100) / 100,
+      in_position: prev ? Boolean(prev.in_position) : true,
+    });
+  }
+  return out.length ? out : serverLines;
+}
+
+/** Eén tijdstempel + tekst: strip herhaalde ``ISO [LEVEL]`` prefixes (Python logger + dubbele injectie). */
+function bvWorkerHintDisplayParts(raw) {
+  let s = String(raw || "").trim();
+  const re = /^(\d{4}-\d{2}-\d{2}T[\d:+\-Z.]+)\s+\[[^\]]+\]\s*/i;
+  let lastClock = null;
+  for (let i = 0; i < 4; i += 1) {
+    const m = s.match(re);
+    if (!m) break;
+    lastClock = m[1];
+    s = s.slice(m[0].length).trim();
+  }
+  return { clock: lastClock, text: s || String(raw || "").trim() };
+}
+
+function formatBvAiTradeClock(d) {
+  try {
+    return new Intl.DateTimeFormat("nl-NL", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    }).format(d);
+  } catch (_e) {
+    return "—";
+  }
+}
+
+function bvAiTradeRowClass(text) {
+  const t = String(text || "").toUpperCase();
+  if (/\b(BUY|BULL|LONG|KOOP|POSITIEF|STIJG|▲)\b/.test(t) || (t.includes("BUY") && !t.includes("SELL"))) {
+    return "bv-ai-trade-row--pos";
+  }
+  if (/\b(SELL|BEAR|SHORT|VERKOOP|NEGATIEF|PANIC|DAL|▼)\b/.test(t) || /\bSELL\b/.test(t)) {
+    return "bv-ai-trade-row--neg";
+  }
+  return "bv-ai-trade-row--neu";
+}
+
+function bvAiTradeSideGlyph(text) {
+  const t = String(text || "").toUpperCase();
+  if ((/\bBUY\b/.test(t) || t.includes("BUY")) && !t.includes("SELL")) return "▲";
+  if (/\bSELL\b/.test(t) || t.includes("SELL")) return "▼";
+  return "·";
+}
+
+// Freeze / auto-scroll / HOLD-groepering state voor bvAiThoughtFeed
+let _bvLogsFrozen = false;
+let _bvLogsPinned = false;
+let _bvLogsPrevProbs = null; // { buy, hold, sell }
+
+(function _initBvLogControls() {
+  document.addEventListener("DOMContentLoaded", function () {
+    const freezeBtn = document.getElementById("bvLogsFreezeBtn");
+    if (freezeBtn && !freezeBtn.dataset.bvBound) {
+      freezeBtn.dataset.bvBound = "1";
+      freezeBtn.addEventListener("click", function () {
+        _bvLogsFrozen = !_bvLogsFrozen;
+        freezeBtn.textContent = _bvLogsFrozen ? "Unfreeze" : "Freeze";
+        freezeBtn.style.color = _bvLogsFrozen ? "#39ff14" : "";
+        freezeBtn.style.borderColor = _bvLogsFrozen ? "#39ff14" : "";
+      });
+    }
+    const feed = document.getElementById("bvAiThoughtFeed");
+    if (feed && !feed.dataset.scrollBound) {
+      feed.dataset.scrollBound = "1";
+      feed.addEventListener("scroll", function () {
+        const nearBottom = feed.scrollHeight - (feed.scrollTop + feed.clientHeight) < 48;
+        _bvLogsPinned = !nearBottom;
+      });
+    }
+  });
+})();
+
+/** Actieve-berekeningen feed: layout + white-space via CSS (bv-ai-trades-feed--scroll-body). */
+function renderBvThoughtFeed(data) {
+  if (_bvLogsFrozen) return;
+  const root = document.getElementById("bvAiThoughtFeed");
+  if (!root) return;
+  if (!payloadSymbolMatchesActive(data)) return;
+  const activeMarket = getActiveMarketForPolicyUi();
+  const activeU = normPairKey(activeMarket);
+  const chunks = [];
+  const hintsByMarket =
+    data && data.worker_calc_hints_by_market && typeof data.worker_calc_hints_by_market === "object"
+      ? data.worker_calc_hints_by_market
+      : null;
+  const perHints = resolveMultiMapEntry(hintsByMarket, activeMarket);
+  let hintsRaw = [];
+  if (Array.isArray(perHints) && perHints.length) {
+    hintsRaw = perHints;
+  } else if (Array.isArray(data && data.worker_calc_hints)) {
+    hintsRaw = data.worker_calc_hints.filter((x) => workerHintLineMatchesPair(x, activeU));
+  }
+  const hints = hintsRaw
+    .map((x) => String(x || "").trim())
+    .filter((x) => x.length > 4);
+  hints.slice(-6).forEach((h) => chunks.push(h));
+  let rld = resolveMultiMapEntry(data && data.rl_multi_decisions, activeMarket);
+  if (!rld || typeof rld !== "object") rld = data && data.rl_last_decision;
+  if (rld && typeof rld === "object") {
+    const dk = normPairKey(rld.market || rld.ticker || rld.symbol || "");
+    if (dk && dk !== activeU) rld = null;
+  }
+  if (rld && typeof rld === "object" && typeof rld.reasoning === "string") {
+    const raw = String(rld.reasoning || "").trim();
+    if (raw) {
+      const parts = raw.split(/\.\s+/).map((x) => x.trim()).filter((x) => x.length > 12);
+      for (const p of parts.slice(-12)) {
+        chunks.push(p.endsWith(".") ? p : `${p}.`);
+      }
+    }
+  }
+  if (!chunks.length && data && typeof data.decision_reasoning === "string") {
+    const scopeMk = normPairKey(data.market || data.ticker || "");
+    if (!scopeMk || scopeMk === activeU) {
+      const dr = String(data.decision_reasoning || "").trim();
+      if (dr.length > 20) {
+        dr.split(/\n+/)
+          .map((x) => x.trim())
+          .filter((x) => x.length > 15)
+          .slice(-6)
+          .forEach((line) => chunks.push(line));
+      }
+    }
+  }
+  const lp = data && data.last_prediction;
+  if (lp && typeof lp === "object") {
+    const sig = String(lp.signal || "").toUpperCase();
+    const tk = normPairKey(lp.ticker || "");
+    if (sig && tk && tk === activeU) chunks.push(`Signaal ${sig} · ${tk}`);
+  }
+  // Importance filter: extract current policy probs and check for >5% shift
+  let rldForProbs = data && data.rl_multi_decisions
+    ? resolveMultiMapEntry(data.rl_multi_decisions, getActiveMarketForPolicyUi())
+    : null;
+  if (!rldForProbs) rldForProbs = data && data.rl_last_decision;
+  const curProbs = rldForProbs ? {
+    buy: Number(rldForProbs.prob_buy || 0),
+    hold: Number(rldForProbs.prob_hold || 0),
+    sell: Number(rldForProbs.prob_sell || 0),
+  } : null;
+  const sigFilterEl = document.getElementById("bvLogsSignificantOnly");
+  const sigFilterOn = sigFilterEl && sigFilterEl.checked;
+  if (sigFilterOn && curProbs && _bvLogsPrevProbs) {
+    const delta = Math.max(
+      Math.abs(curProbs.buy - _bvLogsPrevProbs.buy),
+      Math.abs(curProbs.hold - _bvLogsPrevProbs.hold),
+      Math.abs(curProbs.sell - _bvLogsPrevProbs.sell)
+    );
+    if (delta < 0.05) return; // minder dan 5% verschil — skip render
+  }
+  if (curProbs) _bvLogsPrevProbs = curProbs;
+
+  // HOLD-grouping: verklein opeenvolgende HOLD-regels tot één met teller
+  const rawChunks = chunks.slice(-20);
+  const grouped = [];
+  for (const t of rawChunks) {
+    const isHold = /Uitgevoerde actie:\s*HOLD/i.test(t) || /^Signaal HOLD/i.test(t);
+    const last = grouped[grouped.length - 1];
+    if (isHold && last && last._holdGroup) {
+      last._holdCount = (last._holdCount || 1) + 1;
+      last.text = last._baseText + ` (×${last._holdCount})`;
+    } else {
+      const entry = { text: t, _holdGroup: isHold, _baseText: t, _holdCount: 1 };
+      grouped.push(entry);
+    }
+  }
+  const show = grouped.slice(-10).map(e => e.text);
+
+  if (!show.length) {
+    root.innerHTML = `<div class="bv-ai-trade-row bv-ai-trade-row--neu bv-ai-trade-row--empty"><span class="bv-ai-trade-ts">—</span><span class="bv-ai-trade-txt">Nog geen worker-updates.</span><span class="bv-ai-trade-side">·</span></div>`;
+    if (typeof window.__rlHeartbeatRefresh === "function") window.__rlHeartbeatRefresh();
+    return;
+  }
+  const baseMs = Date.now();
+  root.innerHTML = show
+    .map((t, idx) => {
+      const parts = bvWorkerHintDisplayParts(t);
+      const rowCls = bvAiTradeRowClass(parts.text);
+      const txtRaw = parts.text;
+      const hlCls =
+        /\bconfidence\b/i.test(txtRaw) || /\bsoftmax\b/i.test(txtRaw) ? " bv-ai-trade-row--confidence-highlight" : "";
+      let ts;
+      try {
+        ts = parts.clock
+          ? formatBvAiTradeClock(new Date(parts.clock))
+          : formatBvAiTradeClock(new Date(baseMs - (show.length - 1 - idx) * 900));
+      } catch (_e) {
+        ts = "—";
+      }
+      const side = escapeHtmlText(bvAiTradeSideGlyph(parts.text));
+      return `<div class="bv-ai-trade-row ${rowCls}${hlCls}"><span class="bv-ai-trade-ts">${escapeHtmlText(ts)}</span><span class="bv-ai-trade-txt">${escapeHtmlText(parts.text)}</span><span class="bv-ai-trade-side">${side}</span></div>`;
+    })
+    .join("");
+  // Auto-scroll: stop als gebruiker handmatig omhoog heeft gescrolld
+  if (!_bvLogsPinned) root.scrollTop = root.scrollHeight;
+  if (typeof window.__rlHeartbeatRefresh === "function") window.__rlHeartbeatRefresh();
+}
+
+function normalizeProbToPercent(x) {
+  const n = Number(x);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return n <= 1.0 + 1e-9 ? n * 100.0 : Math.min(100, n);
+}
+
+/** Zelfde sleutelvorm als backend (BTC-EUR). */
+function normPairKey(s) {
+  return String(s || "").toUpperCase().replace("/", "-");
+}
+
+/** Zoekt waarde in rl_multi_decisions / worker_calc_hints_by_market ongeacht slash/hoofdletters. */
+function resolveMultiMapEntry(obj, market) {
+  if (!obj || typeof obj !== "object") return null;
+  const u = normPairKey(market);
+  const raw = String(market || "").toUpperCase();
+  if (Object.prototype.hasOwnProperty.call(obj, raw)) return obj[raw];
+  if (Object.prototype.hasOwnProperty.call(obj, u)) return obj[u];
+  for (const k of Object.keys(obj)) {
+    if (normPairKey(k) === u) return obj[k];
+  }
+  return null;
+}
+
+/** Chart.js voorspellingslijn: gebruik actuele policy-softmax (dashboard) i.p.v. alleen poll-JSON — blijft meebewegen met koers/policy. */
+function mergePolicySnapshotIntoPredictionData(symU, apiData) {
+  const out = { ...(apiData && typeof apiData === "object" ? apiData : {}) };
+  const st = window.__lastDashboardStats;
+  if (!st || typeof st !== "object") return out;
+  const m = normPairKey(symU);
+  const multi = st.rl_multi_decisions;
+  let d = null;
+  if (multi && typeof multi === "object") {
+    d = resolveMultiMapEntry(multi, m);
+  }
+  if (d && typeof d === "object") {
+    out.rl_last_decision = { ...d, market: m, ticker: m };
+    out.ai_action_probs = {
+      buy_pct: Number(d.prob_buy) * 100,
+      hold_pct: Number(d.prob_hold) * 100,
+      sell_pct: Number(d.prob_sell) * 100,
+      market: m,
+      ticker: m,
+    };
+    return out;
+  }
+  if (st.rl_last_decision && typeof st.rl_last_decision === "object") {
+    const g = st.rl_last_decision;
+    const gk = normPairKey(g.market || g.ticker || g.symbol || "");
+    if (!gk || gk === m) {
+      out.rl_last_decision = g;
+      if (st.ai_action_probs && typeof st.ai_action_probs === "object") out.ai_action_probs = st.ai_action_probs;
+    }
+  }
+  return out;
+}
+
+/** Globale worker-hints: alleen tonen als regel naar dit paar verwijst (voorkomt dezelfde RSI-tekst op elke tab). */
+function workerHintLineMatchesPair(text, activeU) {
+  const t = String(text || "").toUpperCase();
+  const u = normPairKey(activeU);
+  if (!u || t.length < 5) return false;
+  if (t.includes(u)) return true;
+  const alt = u.replace(/-/g, "/");
+  if (alt !== u && t.includes(alt.toUpperCase())) return true;
+  return false;
+}
+
+function getActiveMarketForPolicyUi() {
+  const fromSelect = document.getElementById("marketSelect")?.value;
+  const fromState = window.AppCore && window.AppCore.state ? window.AppCore.state.selectedMarket : null;
+  return String(fromSelect || fromState || selectedMarket || "BTC-EUR").toUpperCase();
+}
+
+function inferIncomingSymbol(raw) {
+  if (!raw || typeof raw !== "object") return "";
+  const activeU = normPairKey(getActiveMarketForPolicyUi());
+  const multi = raw.rl_multi_decisions && typeof raw.rl_multi_decisions === "object" ? raw.rl_multi_decisions : null;
+  if (multi && activeU) {
+    if (multi[activeU] && typeof multi[activeU] === "object") return activeU;
+    for (const k of Object.keys(multi)) {
+      if (normPairKey(k) === activeU) return activeU;
+    }
+  }
+  const direct = raw.symbol || raw.market || raw.ticker;
+  if (direct) return normPairKey(direct);
+  const lp = raw.last_prediction && typeof raw.last_prediction === "object" ? raw.last_prediction : null;
+  if (lp && lp.ticker) return normPairKey(lp.ticker);
+  const lo = raw.last_order && typeof raw.last_order === "object" ? raw.last_order : null;
+  const ord = lo && lo.order && typeof lo.order === "object" ? lo.order : null;
+  if (ord && (ord.ticker || ord.market)) return normPairKey(ord.ticker || ord.market);
+  const ap = raw.ai_action_probs && typeof raw.ai_action_probs === "object" ? raw.ai_action_probs : null;
+  if (ap && (ap.market || ap.ticker || ap.symbol)) return normPairKey(ap.market || ap.ticker || ap.symbol);
+  return "";
+}
+
+function payloadHasActiveSymbolData(raw, activeU) {
+  if (!raw || typeof raw !== "object") return false;
+  const multi = raw.rl_multi_decisions && typeof raw.rl_multi_decisions === "object" ? raw.rl_multi_decisions : null;
+  if (multi) {
+    if (multi[activeU] && typeof multi[activeU] === "object") return true;
+    for (const k of Object.keys(multi)) {
+      if (normPairKey(k) === activeU && multi[k] && typeof multi[k] === "object") return true;
+    }
+  }
+  const hints = raw.worker_calc_hints_by_market && typeof raw.worker_calc_hints_by_market === "object" ? raw.worker_calc_hints_by_market : null;
+  if (hints) {
+    if (Array.isArray(hints[activeU]) && hints[activeU].length) return true;
+    for (const k of Object.keys(hints)) {
+      if (normPairKey(k) === activeU && Array.isArray(hints[k]) && hints[k].length) return true;
+    }
+  }
+  return false;
+}
+
+function payloadSymbolMatchesActive(raw) {
+  const activeU = normPairKey(getActiveMarketForPolicyUi());
+  const incomingU = inferIncomingSymbol(raw);
+  if (!incomingU) return true;
+  if (incomingU === activeU) return true;
+  return payloadHasActiveSymbolData(raw, activeU);
+}
+
+function resetMarketScopedUi(market) {
+  const mk = normPairKey(market || getActiveMarketForPolicyUi());
+  const feed = document.getElementById("bvAiThoughtFeed");
+  if (feed) {
+    feed.innerHTML =
+      `<div class="bv-ai-trade-row bv-ai-trade-row--neu bv-ai-trade-row--empty">` +
+      `<span class="bv-ai-trade-ts">—</span>` +
+      `<span class="bv-ai-trade-txt">Wisselen naar ${escapeHtmlText(mk)}… wacht op markt-specifieke updates.</span>` +
+      `<span class="bv-ai-trade-side">·</span>` +
+      `</div>`;
+  }
+  const setProb = (valueId, barId) => {
+    const v = document.getElementById(valueId);
+    const b = document.getElementById(barId);
+    if (v) v.textContent = "—";
+    if (b) b.style.width = "0%";
+  };
+  setProb("hpAiProbBuy", "hpAiProbBuyBar");
+  setProb("hpAiProbHold", "hpAiProbHoldBar");
+  setProb("hpAiProbSell", "hpAiProbSellBar");
+  setClassText(".js-sentiment-value", "—");
+  setClassText(".js-sentiment-confidence", "—");
+  document.querySelectorAll(".js-sentiment-bar").forEach((el) => {
+    el.style.width = "0%";
+  });
+  if (window.TerminalLiveTail && typeof window.TerminalLiveTail.clear === "function") {
+    window.TerminalLiveTail.clear();
+  }
+  if (typeof window.updatePayloadFilterDebugBadge === "function") {
+    window.updatePayloadFilterDebugBadge({ active: mk, incoming: "", dropped: false, src: "switch" });
+  }
+  const brainWrap = document.getElementById("hpAiBrainPulseWrap");
+  const brainRo = document.getElementById("hpAiBrainConfReadout");
+  if (brainWrap) brainWrap.classList.remove("hp-ai-brain-pulse--strong");
+  if (brainRo) brainRo.textContent = "";
+}
+
+/** LW UTCTimestamp = unix seconden; voorspellings-API kan per ongeluk ms doorgeven. */
+function normalizeChartTimeSeconds(t) {
+  if (t == null) return t;
+  const n = Number(t);
+  if (!Number.isFinite(n)) return t;
+  if (n > 1e12) return Math.floor(n / 1000);
+  return n;
+}
+
+/** Prijsas: voorkomt dat alles als 0.08 wordt afgerond bij munten < €1. */
+function inferLwPriceFormatFromSamples(values) {
+  const finite = (values || []).filter((v) => Number.isFinite(v) && v > 0);
+  if (!finite.length) return { type: "price", precision: 2, minMove: 0.01 };
+  const sorted = finite.slice().sort((a, b) => a - b);
+  const med = sorted[Math.floor(sorted.length / 2)] || sorted[0];
+  const abs = Math.abs(Number(med));
+  if (abs >= 50000) return { type: "price", precision: 0, minMove: 1 };
+  if (abs >= 1000) return { type: "price", precision: 2, minMove: 0.01 };
+  if (abs >= 1) return { type: "price", precision: 4, minMove: 0.0001 };
+  if (abs >= 0.01) return { type: "price", precision: 6, minMove: 1e-6 };
+  return { type: "price", precision: 8, minMove: 1e-8 };
+}
+
+function applyLwSeriesPriceFormat(series, values) {
+  if (!series || typeof series.applyOptions !== "function") return;
+  try {
+    series.applyOptions({ priceFormat: inferLwPriceFormatFromSamples(values) });
+  } catch (_e) {
+    /* oudere LW-build */
+  }
+}
+
+/** Lightweight Charts: `Time` = unix seconden | BusinessDay-object | soms string. */
+function lightweightChartsTimeToUnixSeconds(time) {
+  if (time == null) return NaN;
+  if (typeof time === "number" && Number.isFinite(time)) {
+    /* UTCTimestamp in LW = unix seconden; sommige series geven per ongeluk ms door (>1e12). */
+    if (time > 1e12) return time / 1000;
+    return time;
+  }
+  if (typeof time === "string") {
+    const n = Number(time);
+    if (Number.isFinite(n) && n > 1e8) return n > 1e12 ? n / 1000 : n;
+    const ms = Date.parse(time);
+    if (Number.isFinite(ms)) return ms / 1000;
+    return NaN;
+  }
+  if (typeof time === "object") {
+    if (typeof time.timestamp === "number" && Number.isFinite(time.timestamp)) {
+      const t = time.timestamp;
+      return t > 1e12 ? t / 1000 : t;
+    }
+    const y = time.year;
+    const m = time.month;
+    const d = time.day;
+    if (y != null && m != null && d != null) {
+      return Date.UTC(Number(y), Number(m) - 1, Number(d), 12, 0, 0) / 1000;
+    }
+  }
+  return NaN;
+}
+
+function formatChartAxisTimeHm(timeSecOrLwTime) {
+  const sec = lightweightChartsTimeToUnixSeconds(timeSecOrLwTime);
+  if (!Number.isFinite(sec)) return "";
+  const dt = new Date(sec * 1000);
+  if (!Number.isFinite(dt.getTime())) return "";
+  return dt.toLocaleTimeString("nl-NL", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
+let __lwPredXSyncRaf = null;
+
+function scheduleSyncPredictionChartJsXFromLightweight() {
+  if (__lwPredXSyncRaf != null) return;
+  __lwPredXSyncRaf = requestAnimationFrame(() => {
+    __lwPredXSyncRaf = null;
+    syncPredictionChartJsXFromLightweight();
+  });
+}
+
+/** Chart.js voorspellingspaneel: x-as = zichtbaar LW-time window (pan/zoom hoofdgrafiek). */
+function syncPredictionChartJsXFromLightweight() {
+  if (typeof activeTab !== "undefined" && activeTab !== "terminal") return;
+  const chart =
+    typeof initTradingPredictionChart === "function" ? initTradingPredictionChart() : window.tradingChart;
+  if (!chart || !chart.options || !chart.options.scales || !chart.options.scales.x) return;
+  if (!priceChart) return;
+  let fromMs = NaN;
+  let toMs = NaN;
+  try {
+    const ts = priceChart.timeScale();
+    const tr = typeof ts.getVisibleRange === "function" ? ts.getVisibleRange() : null;
+    if (tr && tr.from != null && tr.to != null) {
+      const f = lightweightChartsTimeToUnixSeconds(tr.from);
+      const t = lightweightChartsTimeToUnixSeconds(tr.to);
+      if (Number.isFinite(f) && Number.isFinite(t) && t > f) {
+        fromMs = f * 1000;
+        toMs = t * 1000;
+      }
+    }
+  } catch (_e) {
+    /* ignore */
+  }
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) {
+    try {
+      const lr = priceChart.timeScale().getVisibleLogicalRange?.();
+      const arr = Array.isArray(rawChartLineData) ? rawChartLineData : [];
+      if (!lr || !arr.length) return;
+      const n = arr.length;
+      const i0 = Math.max(0, Math.min(n - 1, Math.floor(Number(lr.from))));
+      const i1 = Math.max(0, Math.min(n - 1, Math.ceil(Number(lr.to))));
+      const tA = normalizeChartTimeSeconds(Number(arr[i0].time));
+      const tB = normalizeChartTimeSeconds(Number(arr[i1].time));
+      if (!Number.isFinite(tA) || !Number.isFinite(tB) || tB <= tA) return;
+      fromMs = tA * 1000;
+      toMs = tB * 1000;
+    } catch (_e2) {
+      return;
+    }
+  }
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || toMs <= fromMs) return;
+  const pad = (toMs - fromMs) * 0.02;
+  const xScale = chart.options.scales.x;
+  xScale.type = "linear";
+  xScale.min = fromMs - pad;
+  xScale.max = toMs + pad;
+  delete xScale.suggestedMin;
+  delete xScale.suggestedMax;
+  chart.update("none");
+}
+
+window.syncPredictionChartJsXFromLightweight = syncPredictionChartJsXFromLightweight;
+window.scheduleSyncPredictionChartJsXFromLightweight = scheduleSyncPredictionChartJsXFromLightweight;
+
+function predictionRowToEpochSeconds(row) {
+  if (!row || typeof row !== "object") return null;
+  const raw = row.timestamp ?? row.ts ?? row.time ?? row.t ?? row.generated_at;
+  if (raw == null) return null;
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    const s = raw > 1e12 ? Math.floor(raw / 1000) : Math.floor(raw);
+    return toEpochSeconds(new Date(s * 1000).toISOString());
+  }
+  return toEpochSeconds(String(raw));
+}
+
+function decisionMatchesMarket(decision, market) {
+  if (!decision || typeof decision !== "object") return false;
+  const norm = (s) => String(s || "").toUpperCase().replace("/", "-");
+  const m = norm(market);
+  if (!m) return false;
+  const dk = norm(decision.market || decision.ticker || decision.symbol || "");
+  return !!dk && dk === m;
+}
+
+function hpBotAppearsRunningPayload(data) {
+  const bs = String((data && data.bot_status) || "").toLowerCase();
+  if (!bs) return true;
+  return bs !== "paused" && bs !== "panic_stop" && bs !== "stopped" && bs !== "stop";
+}
+
+function hpPolicyThreePercentsNearlyZero(b, h, s) {
+  const toPct = (x) => {
+    const n = Number(x);
+    if (!Number.isFinite(n) || n < 0) return NaN;
+    return n <= 1.0 + 1e-9 ? n * 100.0 : Math.min(100, n);
+  };
+  const pb = toPct(b);
+  const ph = toPct(h);
+  const ps = toPct(s);
+  if (![pb, ph, ps].every((v) => Number.isFinite(v))) return true;
+  return pb <= 0.05 && ph <= 0.05 && ps <= 0.05;
+}
+
+function hpPaintProbBarsCalculating(elB, elH, elS, barB, barH, barS) {
+  if (elB) elB.textContent = "Calculating…";
+  if (elH) elH.textContent = "Calculating…";
+  if (elS) elS.textContent = "Calculating…";
+  if (barB) barB.style.width = "0%";
+  if (barH) barH.style.width = "0%";
+  if (barS) barS.style.width = "0%";
+}
+
+function paintAiPolicyProbsFromPayload(data) {
+  try {
+  const elB = document.getElementById("hpAiProbBuy");
+  const elH = document.getElementById("hpAiProbHold");
+  const elS = document.getElementById("hpAiProbSell");
+  const barB = document.getElementById("hpAiProbBuyBar");
+  const barH = document.getElementById("hpAiProbHoldBar");
+  const barS = document.getElementById("hpAiProbSellBar");
+  if (!elB || !elH || !elS) return;
+  /* Geen globale payloadSymbolMatchesActive-blokkade: branches filteren op actieve munt (ap/rl_last/dMulti). */
+  const setRow = (valEl, barEl, raw) => {
+    const p = normalizeProbToPercent(raw);
+    if (valEl) valEl.textContent = p == null ? "—" : `${p.toFixed(1)}%`;
+    if (barEl) barEl.style.width = p == null ? "0%" : `${Math.min(100, Math.max(0, p)).toFixed(2)}%`;
+  };
+  const normMk = (s) => String(s || "").toUpperCase().replace("/", "-");
+  const activeMarket = getActiveMarketForPolicyUi();
+  const activeU = normMk(activeMarket);
+
+  const multi = data && data.rl_multi_decisions;
+  let dMulti = null;
+  if (multi && typeof multi === "object") {
+    const raw = multi[activeMarket] || multi[activeU];
+    if (raw && typeof raw === "object") dMulti = raw;
+    if (!dMulti) {
+      for (const k of Object.keys(multi)) {
+        if (normMk(k) === activeU) {
+          dMulti = multi[k];
+          break;
+        }
+      }
+    }
+  }
+  if (dMulti && typeof dMulti === "object") {
+    const bM = normalizeProbToPercent(dMulti.prob_buy);
+    const hM = normalizeProbToPercent(dMulti.prob_hold);
+    const sM = normalizeProbToPercent(dMulti.prob_sell);
+    const hasMulti = [bM, hM, sM].some((v) => v != null && v > 0.01);
+    const taggedOk = decisionMatchesMarket(dMulti, activeU);
+    const untagged = !String(dMulti.market || dMulti.ticker || dMulti.symbol || "").trim();
+    /* Object komt uit rl_multi_decisions[actieve markt]: altijd tekenen bij geldige probs (ticker-tag kan achterlopen). */
+    if (hasMulti) {
+      if (hpPolicyThreePercentsNearlyZero(dMulti.prob_buy, dMulti.prob_hold, dMulti.prob_sell) && hpBotAppearsRunningPayload(data)) {
+        hpPaintProbBarsCalculating(elB, elH, elS, barB, barH, barS);
+        return;
+      }
+      setRow(elB, barB, dMulti.prob_buy);
+      setRow(elH, barH, dMulti.prob_hold);
+      setRow(elS, barS, dMulti.prob_sell);
+      if (typeof window.applyHpAiProbThresholdMarkers === "function") {
+        window.applyHpAiProbThresholdMarkers(
+          data && data.rl_decision_threshold_pct != null ? data : window.__lastDashboardStats || data
+        );
+      }
+      return;
+    }
+    if ((taggedOk || untagged) && hpBotAppearsRunningPayload(data)) {
+      hpPaintProbBarsCalculating(elB, elH, elS, barB, barH, barS);
+      return;
+    }
+  }
+
+  const ap = data && data.ai_action_probs;
+  const apUseful =
+    ap &&
+    typeof ap === "object" &&
+    (ap.buy_pct != null || ap.hold_pct != null || ap.sell_pct != null);
+  if (apUseful) {
+    const apMarket = normMk(ap.market || ap.ticker || ap.symbol || data?.market || data?.ticker || "");
+    if (apMarket && apMarket !== activeU) {
+      return;
+    }
+    if (apMarket) {
+      const b = normalizeProbToPercent(ap.buy_pct);
+      const h = normalizeProbToPercent(ap.hold_pct);
+      const s = normalizeProbToPercent(ap.sell_pct);
+      const hasAny = [b, h, s].some((v) => v != null && v > 0.01);
+      if (!hasAny) {
+        if (hpBotAppearsRunningPayload(data)) hpPaintProbBarsCalculating(elB, elH, elS, barB, barH, barS);
+        else {
+          if (elB) elB.textContent = "Thinking...";
+          if (elH) elH.textContent = "Thinking...";
+          if (elS) elS.textContent = "Thinking...";
+          if (barB) barB.style.width = "0%";
+          if (barH) barH.style.width = "0%";
+          if (barS) barS.style.width = "0%";
+        }
+        return;
+      }
+      setRow(elB, barB, ap.buy_pct);
+      setRow(elH, barH, ap.hold_pct);
+      setRow(elS, barS, ap.sell_pct);
+      if (typeof window.applyHpAiProbThresholdMarkers === "function") {
+        window.applyHpAiProbThresholdMarkers(
+          data && data.rl_decision_threshold_pct != null ? data : window.__lastDashboardStats || data
+        );
+      }
+      return;
+    }
+  }
+  let d = data && data.rl_last_decision;
+  if (!d && dMulti && typeof dMulti === "object") d = dMulti;
+  if (d && typeof d === "object") {
+    const dk = normMk(d.market || d.ticker || d.symbol || "");
+    if (dk && dk !== activeU) {
+      setRow(elB, barB, null);
+      setRow(elH, barH, null);
+      setRow(elS, barS, null);
+      if (typeof window.applyHpAiProbThresholdMarkers === "function") {
+        window.applyHpAiProbThresholdMarkers(window.__lastDashboardStats || data || {});
+      }
+      return;
+    }
+  }
+  if (!d || typeof d !== "object") {
+    setRow(elB, barB, null);
+    setRow(elH, barH, null);
+    setRow(elS, barS, null);
+    if (typeof window.applyHpAiProbThresholdMarkers === "function") {
+      window.applyHpAiProbThresholdMarkers(window.__lastDashboardStats || data || {});
+    }
+    return;
+  }
+  if (hpPolicyThreePercentsNearlyZero(d.prob_buy, d.prob_hold, d.prob_sell) && hpBotAppearsRunningPayload(data)) {
+    hpPaintProbBarsCalculating(elB, elH, elS, barB, barH, barS);
+    if (typeof window.applyHpAiProbThresholdMarkers === "function") {
+      window.applyHpAiProbThresholdMarkers(data && data.rl_decision_threshold_pct != null ? data : window.__lastDashboardStats || data);
+    }
+    return;
+  }
+  setRow(elB, barB, d.prob_buy);
+  setRow(elH, barH, d.prob_hold);
+  setRow(elS, barS, d.prob_sell);
+  if (typeof window.applyHpAiProbThresholdMarkers === "function") {
+    window.applyHpAiProbThresholdMarkers(
+      data && data.rl_decision_threshold_pct != null ? data : window.__lastDashboardStats || data
+    );
+  }
+  } finally {
+    if (typeof window.syncHpAiBrainConfidenceGlow === "function") {
+      try {
+        window.syncHpAiBrainConfidenceGlow(data);
+      } catch (_e) {
+        /* noop */
+      }
+    }
+  }
+}
+
+window.paintAiPolicyProbsFromPayload = paintAiPolicyProbsFromPayload;
+
+function formatBrainReasoningBodyHtml(raw) {
   let t = escapeHtmlText(String(raw || ""));
   t = t.replace(/(Besluit:\s*(?:HOLD|BUY|SELL)\.)/gi, '<span class="cockpit-besluit-callout">$1</span>');
   t = t.replace(/\n/g, "<br>");
   return t;
+}
+
+/** Badge + label: Scanner vs RL policy vs wachten (zelfde logica als module_brain.js). */
+function brainReasoningSourceMeta(metaCtx, bodyLower) {
+  const st = String((metaCtx && metaCtx.status) || "").toLowerCase();
+  if (st === "model_loading") {
+    return { badge: "Model", variant: "model", note: "Weights laden of worker koppelt…" };
+  }
+  if (st === "warming_up") {
+    return { badge: "Scanner", variant: "scanner", note: "RL-snapshot nog niet gevuld" };
+  }
+  const t = bodyLower || "";
+  if (t.includes("rl-snapshot nog leeg") || t.includes("scanner (") || /^\s*scanner:/i.test(t)) {
+    return { badge: "Scanner", variant: "scanner", note: "Context tot RL inferentie klaar is" };
+  }
+  if (t.includes("laatste voorspelling")) {
+    return { badge: "Voorspelling", variant: "prediction", note: "Signaal uit last_prediction" };
+  }
+  if (/besluit:\s*(hold|buy|sell)/i.test(t)) {
+    return { badge: "RL policy", variant: "rl", note: "Policy-tekst van de agent" };
+  }
+  if (t.includes("engine draait")) {
+    return { badge: "Status", variant: "status", note: "Worker actief" };
+  }
+  if (t.includes("geen rl-policytekst nog") || t.includes("model aan het inladen") || t.includes("wachten op eerste besluit")) {
+    return { badge: "Wacht", variant: "wait", note: "Nog geen volledige policy-tekst" };
+  }
+  return { badge: "Context", variant: "mixed", note: "Payload of mix" };
+}
+
+function formatBrainReasoningPanelHtml(raw, metaCtx) {
+  const body = formatBrainReasoningBodyHtml(raw);
+  const meta = brainReasoningSourceMeta(metaCtx || {}, String(raw || "").toLowerCase());
+  return (
+    `<div class="brain-reasoning-stack">` +
+    `<header class="brain-reasoning-kicker" aria-label="Bron van de tekst">` +
+    `<span class="brain-reasoning-badge brain-reasoning-badge--${meta.variant}">${escapeHtmlText(meta.badge)}</span>` +
+    `<span class="brain-reasoning-kicker-note">${escapeHtmlText(meta.note)}</span>` +
+    `</header>` +
+    `<div class="brain-reasoning-body">${body}</div>` +
+    `</div>`
+  );
 }
 
 function classifyLogLine(line) {
@@ -448,37 +1880,12 @@ function classifyLogLine(line) {
 }
 
 function formatSystemLogLineForDisplay(line) {
-  let text = String(line || "");
-  const fmt = new Intl.DateTimeFormat("nl-NL", {
-    timeZone: "Europe/Amsterdam",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  });
-
-  // ISO UTC timestamps: 2026-04-20T15:42:31Z (or with milliseconds)
-  text = text.replace(
-    /\b(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)\b/g,
-    (raw) => {
-      const d = new Date(raw);
-      if (!Number.isFinite(d.getTime())) return raw;
-      return fmt.format(d).replace(",", "");
-    }
-  );
-
-  // Naive timestamps often emitted in UTC by backend loggers: 2026-04-20 15:42:31
-  text = text.replace(/\b(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\b/g, (raw) => {
-    const asUtc = raw.replace(" ", "T") + "Z";
-    const d = new Date(asUtc);
-    if (!Number.isFinite(d.getTime())) return raw;
-    return fmt.format(d).replace(",", "");
-  });
-
-  return text;
+  // Behoud exact de logger-regel; geen extra timestamp-transformaties op de client.
+  let s = String(line || "");
+  // Cleanup: soms komt "[HH:MM:SS] HH:MM:SS ..." binnen; bewaar dan één tijd.
+  s = s.replace(/^\[(\d{2}:\d{2}:\d{2})\]\s+\1\b/, "[$1]");
+  s = s.replace(/^(\d{2}:\d{2}:\d{2})\s+\1\b/, "$1");
+  return s;
 }
 
 function shouldAutoScroll(consoleEl) {
@@ -486,8 +1893,113 @@ function shouldAutoScroll(consoleEl) {
   return consoleEl.scrollHeight - (consoleEl.scrollTop + consoleEl.clientHeight) < threshold;
 }
 
+/** Dedupe-key: zelfde logpayload zonder leidende timestamp / [LEVEL]-prefixen. */
+function cockpitLogMessageKey(line) {
+  let s = String(line || "");
+  // Strip alle datum/tijd-fragmenten zodat anti-spam op inhoud dedupet.
+  s = s.replace(/\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?\b/gi, "");
+  s = s.replace(/\b\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\b/g, "");
+  while (/^\[[^\]]+\]\s+/.test(s)) s = s.replace(/^\[[^\]]+\]\s+/, "");
+  return s.replace(/\s+/g, " ").trim();
+}
+
+if (typeof window.__terminalLogMessageKey !== "function") {
+  window.__terminalLogMessageKey = cockpitLogMessageKey;
+}
+
+function cockpitLogSplitTsRest(text) {
+  const s = String(text);
+  let m = s.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)\s+(.*)$/i);
+  if (m) return { ts: m[1], rest: m[2] };
+  m = s.match(/^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+(.*)$/);
+  if (m) return { ts: m[1], rest: m[2] };
+  return { ts: "", rest: s };
+}
+
+function cockpitLogTailKind(line) {
+  const s = String(line || "");
+  const u = s.toUpperCase();
+  if (u.includes("EXCEPTION") || u.includes("TRACEBACK") || u.includes("CRITICAL") || /\bERROR\b/.test(s)) return "error";
+  if (/\bINFO\b/.test(s)) return "info";
+  return "system";
+}
+
+function flashCockpitTailRow(el) {
+  el.classList.remove("tail-row--flash");
+  void el.offsetWidth;
+  el.classList.add("tail-row--flash");
+  window.setTimeout(() => {
+    try {
+      el.classList.remove("tail-row--flash");
+    } catch (_) {}
+  }, 480);
+}
+
+function pushLogsTabLineFallback(line) {
+  const root = document.getElementById("cockpitLogConsole");
+  if (!root || systemLogsMuted) return;
+  const displayText = formatSystemLogLineForDisplay(line);
+  const key = cockpitLogMessageKey(displayText);
+  const last = root.lastElementChild;
+  if (last && key.length > 0 && last.dataset.dedupeKey === key) {
+    const n = Number(last.dataset.dedupeCount || "1") + 1;
+    last.dataset.dedupeCount = String(n);
+    let badge = last.querySelector(".tail-dup-badge");
+    if (!badge) {
+      badge = document.createElement("span");
+      badge.className = "tail-dup-badge";
+      badge.setAttribute("aria-label", `${n} keer herhaald`);
+      const tsEl = last.querySelector(".tail-ts");
+      if (tsEl) tsEl.insertAdjacentElement("afterend", badge);
+      else last.insertBefore(badge, last.firstChild);
+    }
+    badge.textContent = `[x${n}]`;
+    if (cockpitLogTailKind(displayText) === "error") {
+      last.className = "tail-row tail-row--error";
+    }
+    const prevTop = root.scrollTop;
+    flashCockpitTailRow(last);
+    root.scrollTop = prevTop;
+    return;
+  }
+
+  const kind = cockpitLogTailKind(displayText);
+  const div = document.createElement("div");
+  div.className = `tail-row tail-row--${kind}`;
+  div.dataset.dedupeKey = key;
+  div.dataset.dedupeCount = "1";
+  const { ts, rest } = cockpitLogSplitTsRest(displayText);
+  if (ts) {
+    const tsSpan = document.createElement("span");
+    tsSpan.className = "tail-ts";
+    tsSpan.textContent = `${ts} `;
+    div.appendChild(tsSpan);
+  }
+  const msg = document.createElement("span");
+  msg.className = "tail-msg";
+  msg.textContent = ts ? rest : displayText;
+  div.appendChild(msg);
+  root.appendChild(div);
+  while (root.children.length > 100) root.removeChild(root.firstChild);
+  root.scrollTop = root.scrollHeight;
+}
+
 function appendSystemLogLine(line) {
   if (systemLogsMuted) return;
+  const raw = String(line || "");
+  const upper = raw.toUpperCase();
+  // Actieve ruisfilter: onderdruk observatie-spam op INFO-niveau.
+  if (raw.includes("_build_observation completed") && !(/\bERROR\b|\bCRITICAL\b|\bWARN(?:ING)?\b/i.test(raw))) {
+    return;
+  }
+  if (activeTab === "logs") {
+    if (window.TerminalLiveTail && typeof window.TerminalLiveTail.push === "function") {
+      window.TerminalLiveTail.push(raw);
+      return;
+    }
+    pushLogsTabLineFallback(raw);
+    return;
+  }
   let consoleEl = document.getElementById("systemLogConsole");
   
   // Auto-inject container als deze in de HTML dev-tab ontbreekt
@@ -509,8 +2021,27 @@ function appendSystemLogLine(line) {
   }
 
   const autoscroll = shouldAutoScroll(consoleEl);
+  const displayText = formatSystemLogLineForDisplay(raw);
+  const dedupeKey = cockpitLogMessageKey(displayText);
+  const last = consoleEl.lastElementChild;
+  if (last && dedupeKey.length > 0 && last.dataset && last.dataset.dedupeKey === dedupeKey) {
+    const n = Number(last.dataset.dedupeCount || "1") + 1;
+    last.dataset.dedupeCount = String(n);
+    let badge = last.querySelector(".tail-dup-badge");
+    if (!badge) {
+      badge = document.createElement("span");
+      badge.className = "tail-dup-badge";
+      badge.style.marginLeft = "8px";
+      last.appendChild(badge);
+    }
+    badge.textContent = `[x${n}]`;
+    if (autoscroll) consoleEl.scrollTop = consoleEl.scrollHeight;
+    return;
+  }
   const div = document.createElement("div");
   div.className = `system-log-line ${classifyLogLine(line)}`;
+  div.dataset.dedupeKey = dedupeKey;
+  div.dataset.dedupeCount = "1";
   
   // Fallback styling voor het geval dev-tab CSS mist
   div.style.fontFamily = "'JetBrains Mono', ui-monospace, monospace";
@@ -519,14 +2050,13 @@ function appendSystemLogLine(line) {
   div.style.borderBottom = "1px solid rgba(255,255,255,0.05)";
   div.style.wordBreak = "break-all";
   
-  const textUpper = String(line || "").toUpperCase();
-  if (textUpper.includes("ERROR") || textUpper.includes("CRITICAL")) div.style.color = "#ff3131";
-  else if (textUpper.includes("WARN")) div.style.color = "#ffb84d";
-  else if (textUpper.includes("SUCCESS") || textUpper.includes("OK")) div.style.color = "#39ff14";
-  else if (textUpper.includes("[RL-BRAIN]")) div.style.color = "#00f8ff";
+  if (upper.includes("ERROR") || upper.includes("CRITICAL")) div.style.color = "#ff3131";
+  else if (upper.includes("WARN")) div.style.color = "#ffb84d";
+  else if (upper.includes("SUCCESS") || upper.includes("OK")) div.style.color = "#39ff14";
+  else if (upper.includes("[RL-BRAIN]")) div.style.color = "#00f8ff";
   else div.style.color = "#cccccc";
 
-  div.textContent = formatSystemLogLineForDisplay(line);
+  div.textContent = displayText;
   consoleEl.appendChild(div);
   while (consoleEl.children.length > MAX_SYSTEM_LOG_LINES) {
     consoleEl.removeChild(consoleEl.firstChild);
@@ -538,9 +2068,14 @@ function appendSystemLogLine(line) {
 
 function clearSystemLogConsole() {
   const consoleEl = document.getElementById("systemLogConsole");
-  if (!consoleEl) return;
-  consoleEl.innerHTML = "";
+  if (consoleEl) consoleEl.innerHTML = "";
   systemLogsBuffer = [];
+  if (window.TerminalLiveTail && typeof window.TerminalLiveTail.clear === "function") {
+    window.TerminalLiveTail.clear();
+  } else {
+    const cockpit = document.getElementById("cockpitLogConsole");
+    if (cockpit) cockpit.innerHTML = "";
+  }
 }
 
 function updateSystemPauseButton() {
@@ -721,6 +2256,33 @@ function normalizeBrainWsPayload(raw) {
   return d;
 }
 
+/** Prijs uit Redis/worker snapshot (/activity + WS); voorkomt vastlopende header bij market-switch. Gebruikt `active_markets` als wallet-map per pair incompleet of corrupt is. */
+function applySelectedMarketPriceFromPaperPortfolio(p, data) {
+  if (!p || typeof p !== "object") p = {};
+  const mk = String(selectedMarket || "BTC-EUR").toUpperCase();
+  const lpm = p.last_prices_by_market;
+  let raw =
+    lpm && typeof lpm === "object" && lpm[mk] != null && lpm[mk] !== "" ? lpm[mk] : null;
+  const numOk = (x) => {
+    const v = Number(x);
+    return Number.isFinite(v) && v > 0 ? v : null;
+  };
+  let n = numOk(raw);
+  if (n == null && data && Array.isArray(data.active_markets)) {
+    for (const row of data.active_markets) {
+      if (String((row && row.market) || "").toUpperCase() !== mk) continue;
+      const lp = row.last_price != null ? row.last_price : row.price;
+      n = numOk(lp);
+      if (n != null) break;
+    }
+  }
+  if (n == null) return;
+  lastBufferedPrice = { n, mkt: mk };
+  window.__lastPricePushByMkt = window.__lastPricePushByMkt || Object.create(null);
+  window.__lastPricePushByMkt[mk] = performance.now();
+  flushHeaderPriceTick();
+}
+
 function flushHeaderPriceTick() {
   const lp = document.getElementById("btc-price");
   if (!lp || lastBufferedPrice === null) return;
@@ -747,6 +2309,9 @@ function flushHeaderPriceTick() {
     }
   }
   priceAtLastSecondTick = n;
+  if (typeof window.tickTerminalPredictionChartLivePrice === "function") {
+    window.tickTerminalPredictionChartLivePrice(n);
+  }
 }
 
 function updateLastScanLabel() {
@@ -855,7 +2420,28 @@ async function refreshHealthMode() {
 function syncHeaderMarketChip() {
   const chip = document.getElementById("headerPairDisplay");
   if (chip) chip.textContent = String(selectedMarket || selectedChartPair || "BTC-EUR").toUpperCase();
+  syncHeaderPositionLamp();
 }
+
+/** Positie-indicator in cockpit-header (open positie op geselecteerde markt). */
+function syncHeaderPositionLamp() {
+  const lamp = document.getElementById("headerMarketPosLamp");
+  if (!lamp) return;
+  const mk = String(
+    document.getElementById("marketSelect")?.value || selectedMarket || selectedChartPair || "BTC-EUR"
+  ).toUpperCase();
+  const held = window.__marketsInPosition instanceof Set ? window.__marketsInPosition : new Set();
+  const on = held.has(mk);
+  lamp.classList.toggle("cockpit-pos-lamp--on", on);
+  lamp.classList.toggle("cockpit-pos-lamp--off", !on);
+  const msgOn = `Open paper-positie op ${mk}`;
+  const msgOff = `Geen open positie op ${mk}`;
+  lamp.setAttribute("aria-label", on ? msgOn : msgOff);
+  lamp.title = on ? msgOn : msgOff;
+}
+
+window.buildMarketsInPositionSet = buildMarketsInPositionSet;
+window.syncHeaderPositionLamp = syncHeaderPositionLamp;
 
 async function refreshSelectedMarket() {
   try {
@@ -864,6 +2450,7 @@ async function refreshSelectedMarket() {
     const data = await res.json();
     selectedMarket = data.selected_market || "BTC-EUR";
     syncHeaderMarketChip();
+    syncElite8AssetToolbarSelection();
   } catch (err) {
     console.warn("[markets/selected] Fetch failed:", err);
   }
@@ -904,25 +2491,37 @@ async function refreshMarkets() {
       cockpitLedgerStatusParts.markets = `Markten: ${n} geladen`;
     }
     paintCockpitLedgerStatus();
-    rows.sort((a, b) => {
-      const pa = a.is_pillar === true ? 0 : 1;
-      const pb = b.is_pillar === true ? 0 : 1;
-      if (pa !== pb) return pa - pb;
-      return String(a.market || "").localeCompare(String(b.market || ""));
-    });
+    const bitvavoVolTop =
+      rows.some((r) => r && r.list_profile === "bitvavo_eur_volume_top") ||
+      rows.some((r) => String(r && r.selection_reason).includes("Bitvavo EUR #"));
+    if (bitvavoVolTop) {
+      rows.sort((a, b) => Number(b.volume_quote_24h || 0) - Number(a.volume_quote_24h || 0));
+    } else {
+      rows.sort((a, b) => {
+        const pa = a.is_pillar === true ? 0 : 1;
+        const pb = b.is_pillar === true ? 0 : 1;
+        if (pa !== pb) return pa - pb;
+        return String(a.market || "").localeCompare(String(b.market || ""));
+      });
+    }
     for (const m of rows) {
       const opt = document.createElement("option");
       opt.value = m.market;
-      const star = m.is_pillar === true ? "* " : "";
+      const star = m.is_pillar === true ? "★ " : "";
       const q = Number(m.quality_score || 0);
-      opt.textContent = `${star}${m.market} | Q:${q}/3 | Vol24h: ${m.volume_quote_24h}`;
-      if (m.selection_reason) opt.title = String(m.selection_reason);
+      opt.textContent = `${star}${m.market}`;
+      const hintParts = [];
+      if (m.selection_reason) hintParts.push(String(m.selection_reason));
+      if (m.volume_quote_24h != null) hintParts.push(`Vol24h: ${m.volume_quote_24h}`);
+      hintParts.push(`Quality: ${q}/3`);
+      opt.title = hintParts.join(" · ");
       if (m.market === selectedMarket) opt.selected = true;
       select.appendChild(opt);
     }
     void refreshActivity();
     renderScannerTickerBar(rows);
     syncHeaderMarketChip();
+    syncElite8AssetToolbarSelection();
     if (wsRef) connectBitvavoPriceStream();
   } catch (err) {
     console.warn("[markets/active]", err);
@@ -931,13 +2530,86 @@ async function refreshMarkets() {
   }
 }
 
+function normalizeElite8PairKey(x) {
+  return String(x || "")
+    .toUpperCase()
+    .replace("/", "-");
+}
+
+function syncScannerTickerBarSelection() {
+  const root = document.getElementById("scannerTickerBar");
+  if (!root) return;
+  const sm = normalizeElite8PairKey(
+    document.getElementById("marketSelect")?.value || selectedMarket || selectedChartPair || "BTC-EUR"
+  );
+  root.querySelectorAll("button.scanner-ticker-badge[data-market]").forEach((btn) => {
+    const mk = normalizeElite8PairKey(btn.getAttribute("data-market"));
+    btn.classList.toggle("active-asset", mk === sm);
+  });
+}
+
+function syncElite8AssetToolbarSelection() {
+  const root = document.getElementById("elite8AiStatusBar");
+  if (!root) return;
+  const sm = normalizeElite8PairKey(
+    document.getElementById("marketSelect")?.value || selectedMarket || selectedChartPair || "BTC-EUR"
+  );
+  root.querySelectorAll("button.elite8-ai-pill[data-market]").forEach((btn) => {
+    const mk = normalizeElite8PairKey(btn.getAttribute("data-market"));
+    const on = mk === sm;
+    btn.classList.toggle("active-asset", on);
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+  });
+  syncScannerTickerBarSelection();
+}
+
+window.syncElite8AssetToolbarSelection = syncElite8AssetToolbarSelection;
+
+function refreshDashboardStatsForActiveMarket() {
+  const mk = encodeURIComponent(
+    String(
+      document.getElementById("marketSelect")?.value ||
+        selectedMarket ||
+        selectedChartPair ||
+        (window.AppCore && window.AppCore.state && window.AppCore.state.selectedMarket) ||
+        "BTC-EUR"
+    )
+      .trim()
+      .toUpperCase()
+  );
+  fetch(`/api/v1/stats?symbol=${mk}`)
+    .then((r) => (r.ok ? r.json() : null))
+    .then((d) => {
+      if (d && typeof d === "object") {
+        document.dispatchEvent(new CustomEvent("ai-trading-stats", { detail: d }));
+      }
+    })
+    .catch(() => {});
+}
+
+window.refreshDashboardStatsForActiveMarket = refreshDashboardStatsForActiveMarket;
+
 async function switchEliteMarket(market, marketsSnapshot) {
   const m = String(market || "").toUpperCase();
   if (!m) return;
   selectedMarket = m;
   selectedChartPair = m;
+  lastBufferedPrice = null;
+  priceAtLastSecondTick = null;
   const sel = document.getElementById("marketSelect");
-  if (sel) sel.value = m;
+  if (sel) {
+    const match = Array.from(sel.options || []).find((o) => normalizeElite8PairKey(o.value) === normalizeElite8PairKey(m));
+    if (match) sel.value = match.value;
+  }
+  syncElite8AssetToolbarSelection();
+  const hdr = document.getElementById("headerPairDisplay");
+  if (hdr) hdr.textContent = m;
+  if (window.AppCore && window.AppCore.state) window.AppCore.state.selectedMarket = m;
+  resetMarketScopedUi(m);
+  void updateChart(m);
+  if (typeof window.__reloadTerminalPredictionChart === "function") window.__reloadTerminalPredictionChart();
+  const lpHdr = document.getElementById("btc-price");
+  if (lpHdr) lpHdr.textContent = `${m}  …`;
 
   // Senior Fix: Zorg dat de frontend state daadwerkelijk de active market syncs heeft 
   if (window.botMetrics) {
@@ -950,10 +2622,13 @@ async function switchEliteMarket(market, marketsSnapshot) {
   } catch (_e) {}
   syncHeaderMarketChip();
   connectBitvavoPriceStream();
-  await Promise.all([updateChart(m), refreshBalanceCheck(), refreshBrainLab(), refreshNewsInsights()]);
+  refreshDashboardStatsForActiveMarket();
+  await Promise.all([refreshBalanceCheck(), refreshBrainLab(), refreshNewsInsights()]);
   await refreshActivity();
+  await refreshSentiment();
   const snap = marketsSnapshot && marketsSnapshot.length ? marketsSnapshot : lastActiveMarketsRows;
   if (snap && snap.length) renderScannerTickerBar(snap);
+  syncElite8AssetToolbarSelection();
 }
 
 // Senior Fix: Expose de functie globaal als updateMarket voor universele DOM controls.
@@ -962,87 +2637,90 @@ window.updateMarket = switchEliteMarket;
 function renderElite8AiStatusBar(signals) {
   const root = document.getElementById("elite8AiStatusBar");
   if (!root) return;
-  
+
   const list = Array.isArray(signals) ? signals : [];
-  
-  // Voorkom DOM thrashing door te diffen
   const sigHash = JSON.stringify(list);
-  if (root.dataset.lastHash === sigHash) return;
-  root.dataset.lastHash = sigHash;
-  
-  root.innerHTML = "";
-  
-  if (!list.length) {
-    root.innerHTML = `<span class="elite8-ai-status-bar__empty">Elite-8 AI-status wordt geladen…</span>`;
-    return;
+  if (root.dataset.elite8SignalsHash !== sigHash) {
+    root.dataset.elite8SignalsHash = sigHash;
+    root.dataset.lastHash = sigHash;
+
+    root.innerHTML = "";
+
+    if (!list.length) {
+      root.innerHTML = `<span class="elite8-ai-status-bar__empty">Elite-8 AI-status wordt geladen…</span>`;
+    } else {
+    for (const s of list) {
+      const mk = String(s.market || "").toUpperCase();
+      const base = String(s.base || (mk.includes("-") ? mk.split("-")[0] : mk) || "?").toUpperCase();
+      const st = String(s.state || "neutral");
+      const action = String(s.action || "").toUpperCase() || "…";
+      const conf = Number(s.confidence || 0);
+      const inPos = Boolean(s.in_position);
+      const pill = document.createElement("button");
+      pill.type = "button";
+      pill.className = `elite8-ai-pill elite8-ai-pill--${st}${inPos ? " elite8-ai-pill--in-position" : ""}`;
+      pill.setAttribute("data-market", mk);
+      pill.style.setProperty("--coin-accent", baseAccentForMarket(mk));
+      const dotClass = st === "panic" ? "panic" : st === "bear" ? "bear" : st === "bull" ? "bull" : "neutral";
+      pill.innerHTML =
+        `<span class="elite8-ai-pill__dot elite8-ai-pill__dot--${dotClass}" aria-hidden="true"></span>` +
+        `<span class="elite8-ai-pill__sym">${escapeHtmlText(base)}</span>` +
+        (inPos ? `<span class="elite8-ai-pill__pos" aria-label="In positie">POS</span>` : "");
+      const extra =
+        (inPos ? " | IN POSITIE (paper)" : "") +
+        (s.whale_danger ? " | Whale danger zone" : "") +
+        (s.panic_cooldown ? " | Panic cooldown (geen BUY)" : "");
+      pill.title = `${mk} — AI ${action} (${conf.toFixed(2)})${extra}. Klik: volledige portal-switch.`;
+      pill.addEventListener("click", async () => {
+        await switchEliteMarket(mk, lastActiveMarketsRows);
+      });
+      root.appendChild(pill);
+    }
+    }
   }
-  for (const s of list) {
-    const mk = String(s.market || "").toUpperCase();
-    const base = String(s.base || (mk.includes("-") ? mk.split("-")[0] : mk) || "?").toUpperCase();
-    const st = String(s.state || "neutral");
-    const action = String(s.action || "").toUpperCase() || "…";
-    const conf = Number(s.confidence || 0);
-    const inPos = Boolean(s.in_position);
-    const pill = document.createElement("button");
-    pill.type = "button";
-    pill.className = `elite8-ai-pill elite8-ai-pill--${st}${inPos ? " elite8-ai-pill--in-position" : ""}${
-      mk === selectedMarket ? " is-active" : ""
-    }`;
-    pill.style.setProperty("--coin-accent", baseAccentForMarket(mk));
-    const dotClass = st === "panic" ? "panic" : st === "bear" ? "bear" : st === "bull" ? "bull" : "neutral";
-    pill.innerHTML =
-      `<span class="elite8-ai-pill__dot elite8-ai-pill__dot--${dotClass}" aria-hidden="true"></span>` +
-      `<span class="elite8-ai-pill__sym">${escapeHtmlText(base)}</span>` +
-      (inPos ? `<span class="elite8-ai-pill__pos" aria-label="In positie">POS</span>` : "");
-    const extra =
-      (inPos ? " | IN POSITIE (paper)" : "") +
-      (s.whale_danger ? " | Whale danger zone" : "") +
-      (s.panic_cooldown ? " | Panic cooldown (geen BUY)" : "");
-    pill.title = `${mk} — AI ${action} (${conf.toFixed(2)})${extra}. Klik: volledige portal-switch.`;
-    pill.addEventListener("click", async () => {
-      await switchEliteMarket(mk, lastActiveMarketsRows);
-    });
-    root.appendChild(pill);
-  }
+  syncElite8AssetToolbarSelection();
 }
 
 function renderScannerTickerBar(markets) {
   const root = document.getElementById("scannerTickerBar");
   if (!root) return;
-  
+
   const rows = Array.isArray(markets) ? markets.slice(0, 8) : [];
-  
-  // Voorkom DOM thrashing door te diffen op markeringsdata
-  const hash = JSON.stringify(rows);
-  if (root.dataset.lastHash === hash) return;
-  root.dataset.lastHash = hash;
-  
-  root.innerHTML = "";
-  
-  const held = window.__marketsInPosition instanceof Set ? window.__marketsInPosition : new Set();
-  for (const m of rows) {
-    const market = String(m.market || "-");
-    const mku = market.toUpperCase();
-    const inPos = held.has(mku);
-    const pct = Number(m.price_change_pct_24h || 0);
-    const el = document.createElement("button");
-    el.type = "button";
-    el.className = `scanner-ticker-badge ${pct >= 0 ? "is-up" : "is-down"} ${market === selectedMarket ? "is-active" : ""}${inPos ? " scanner-ticker-badge--in-position" : ""}`;
-    el.style.setProperty("--coin-accent", baseAccentForMarket(mku));
-    const star = m.is_pillar === true ? "* " : "";
-    el.textContent = `${star}${market} ${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%${inPos ? " ·POS" : ""}`;
-    const baseTitle = m.selection_reason ? String(m.selection_reason) : "";
-    el.title = (baseTitle ? baseTitle + " — " : "") + (inPos ? "IN POSITIE (paper wallet)" : "Geen paper-positie");
-    el.addEventListener("click", async () => {
-      await switchEliteMarket(market, markets);
-    });
-    root.appendChild(el);
+  const rowHash = JSON.stringify(rows);
+  if (root.dataset.scannerRowsHash !== rowHash) {
+    root.dataset.scannerRowsHash = rowHash;
+    root.dataset.lastHash = rowHash;
+
+    root.innerHTML = "";
+
+    const held = window.__marketsInPosition instanceof Set ? window.__marketsInPosition : new Set();
+    for (const row of rows) {
+      const market = String(row.market || "-");
+      const mku = market.toUpperCase();
+      const inPos = held.has(mku);
+      const pct = Number(row.price_change_pct_24h || 0);
+      const el = document.createElement("button");
+      el.type = "button";
+      el.className = `scanner-ticker-badge ${pct >= 0 ? "is-up" : "is-down"}${inPos ? " scanner-ticker-badge--in-position" : ""}`;
+      el.setAttribute("data-market", mku);
+      el.style.setProperty("--coin-accent", baseAccentForMarket(mku));
+      const star = row.is_pillar === true ? "* " : "";
+      el.textContent = `${star}${market} ${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%${inPos ? " ·POS" : ""}`;
+      const baseTitle = row.selection_reason ? String(row.selection_reason) : "";
+      el.title = (baseTitle ? baseTitle + " — " : "") + (inPos ? "IN POSITIE (paper wallet)" : "Geen paper-positie");
+      el.addEventListener("click", async () => {
+        await switchEliteMarket(market, markets);
+      });
+      root.appendChild(el);
+    }
   }
+  syncScannerTickerBarSelection();
 }
 
 async function selectMarketFromDropdown() {
   const market = document.getElementById("marketSelect").value;
   await switchEliteMarket(market, lastActiveMarketsRows);
+  void updatePredictionChart(market);
 }
 
 async function refreshBalanceCheck() {
@@ -1267,48 +2945,52 @@ function renderAdaptiveMarkers() {
 }
 
 function ensureChartAndSeries(host) {
-  const hostWidth = Math.max(320, Number(host.clientWidth || 0));
-  const hostHeight = Math.max(260, Number(host.clientHeight || 0));
+  const rect0 = host.getBoundingClientRect();
+  const hostWidth = Math.max(280, Math.floor(rect0.width || host.clientWidth || 0) || 320);
+  let hostHeight = Math.floor(rect0.height || host.clientHeight || 0);
+  if (!Number.isFinite(hostHeight) || hostHeight < 1) hostHeight = Math.floor(host.offsetHeight || 280);
+  hostHeight = Math.max(200, hostHeight);
 
   if (!priceChart) {
     priceChart = LightweightCharts.createChart(host, {
-      autoSize: true,
-      layout: { background: { color: "#000000" }, textColor: "#888888" },
+      autoSize: false,
+      layout: {
+        background: { color: "#000000" },
+        textColor: "#888888",
+        fontSize: 11,
+      },
       grid: {
         vertLines: { color: "rgba(255, 255, 255, 0.2)" },
         horzLines: { color: "rgba(255, 255, 255, 0.2)" },
       },
       width: hostWidth,
       height: hostHeight,
+      leftPriceScale: { visible: false },
       rightPriceScale: {
         borderColor: "#FFFFFF",
         textColor: "#FFFFFF",
-        scaleMargins: { top: 0.08, bottom: 0.12 },
+        scaleMargins: { top: 0.06, bottom: 0.22 },
       },
       timeScale: {
+        visible: true,
+        ticksVisible: true,
         borderColor: "#FFFFFF",
+        borderVisible: true,
         rightOffset: 20,
         timeVisible: true,
         secondsVisible: false,
         barSpacing: 16,
-        tickMarkFormatter: (time) => {
-          try {
-            // Epoch is al handmatig met 7200s verhoogd (Time-Force)
-            const dt = new Date(Number(time) * 1000);
-            const hh = String(dt.getUTCHours()).padStart(2, "0");
-            const mm = String(dt.getUTCMinutes()).padStart(2, "0");
-            return `${hh}:${mm}`;
-          } catch (_err) {
-            return "";
-          }
-        },
+        tickMarkFormatter: (time) => formatChartAxisTimeHm(time),
         textColor: "#888888",
       },
       localization: { locale: "nl-NL" },
     });
-    priceChart.timeScale().subscribeVisibleLogicalRangeChange?.(() => {
+    const onLwViewportChange = () => {
       renderAdaptiveMarkers();
-    });
+      scheduleSyncPredictionChartJsXFromLightweight();
+    };
+    priceChart.timeScale().subscribeVisibleLogicalRangeChange?.(onLwViewportChange);
+    priceChart.timeScale().subscribeVisibleTimeRangeChange?.(onLwViewportChange);
     window.addEventListener("resize", () => {
       resizePriceChart(host);
     });
@@ -1317,8 +2999,17 @@ function ensureChartAndSeries(host) {
   if (!priceChartResizeObserver && typeof ResizeObserver !== "undefined") {
     priceChartResizeObserver = new ResizeObserver(() => {
       resizePriceChart(host);
+      if (typeof window.resizeChartsAfterTerminalMidLayout === "function") {
+        window.resizeChartsAfterTerminalMidLayout();
+      }
     });
     priceChartResizeObserver.observe(host);
+    const midCol = document.querySelector("#tab-terminal .dashboard-col-main.tcc-market-col");
+    if (midCol) priceChartResizeObserver.observe(midCol);
+    const cmd =
+      document.querySelector("#tab-terminal #dashboard.tcc-command-grid") ||
+      document.querySelector("#tab-terminal .dashboard-container.tcc-command-grid");
+    if (cmd) priceChartResizeObserver.observe(cmd);
   }
 
   if (!priceSeries) {
@@ -1339,13 +3030,48 @@ function ensureChartAndSeries(host) {
       markerSeries = priceSeries;
     }
   }
+
+  if (!predictionOverlaySeries && priceChart && window.LightweightCharts) {
+    const LW = window.LightweightCharts;
+    const dashStyle = LW.LineStyle !== undefined ? LW.LineStyle.Dashed : 2;
+    predictionOverlaySeries = createLineSeries(priceChart, {
+      color: "#38bdf8",
+      lineWidth: 2,
+      lineStyle: dashStyle,
+      lastValueVisible: true,
+      priceLineVisible: false,
+    });
+  }
 }
 
 function resizePriceChart(host) {
   if (!priceChart || !host) return;
-  const w = Math.max(320, Number(host.clientWidth || host.offsetWidth || 0));
-  const h = Math.max(500, Number(host.clientHeight || host.offsetHeight || 0));
+  const rect = host.getBoundingClientRect();
+  let w = Math.floor(rect.width || host.clientWidth || host.offsetWidth || 0);
+  let h = Math.floor(rect.height || host.clientHeight || 0);
+  if (!Number.isFinite(w) || w < 1) w = Math.floor(host.offsetWidth || 320);
+  if (!Number.isFinite(h) || h < 1) h = Math.floor(host.offsetHeight || 280);
+  w = Math.max(280, w);
+  h = Math.max(200, h);
   priceChart.applyOptions({ width: w, height: h });
+  updateChartTimeline();
+}
+
+function updateChartTimeline() {
+  const el = document.getElementById("chartTimeline");
+  if (!el) return;
+  const pair = _normMkChart(selectedChartPair || selectedMarket || "");
+  const arr = Array.isArray(rawChartLineData) ? rawChartLineData : [];
+  if (!arr.length) {
+    el.style.display = "none";
+    return;
+  }
+  el.style.display = "block";
+  const fmt = (t) => formatChartAxisTimeHm(t) || "--:--";
+  const first = arr[0];
+  const mid = arr[Math.floor(arr.length / 2)];
+  const last = arr[arr.length - 1];
+  el.textContent = `${pair} · ${fmt(first?.time)}  |  ${fmt(mid?.time)}  |  ${fmt(last?.time)}`;
 }
 
 function buildOrUpdateChart(labels, prices, markers, whaleDangerZone = null, isNewPair = false) {
@@ -1382,15 +3108,21 @@ function buildOrUpdateChart(labels, prices, markers, whaleDangerZone = null, isN
   }
 
   const lineData = labels
-    .map((d, i) => ({ time: toEpochSeconds(d), value: Number(prices[i]) }))
+    .map((d, i) => {
+      const t0 = toEpochSeconds(d);
+      const time = t0 === null || t0 === undefined ? null : normalizeChartTimeSeconds(t0);
+      return { time, value: Number(prices[i]) };
+    })
     .filter((p) => p.time !== null && Number.isFinite(p.value))
     .sort((a, b) => Number(a.time) - Number(b.time));
   if (!lineData.length) {
     const skelEmpty = document.getElementById("priceChartSkeleton");
     if (skelEmpty) skelEmpty.classList.remove("is-visible");
+    updateChartTimeline();
     return;
   }
   rawChartLineData = lineData;
+  updateChartTimeline();
   if (priceSeriesIsCandle) {
     const candles = [];
     for (let i = 0; i < lineData.length; i += 1) {
@@ -1408,8 +3140,16 @@ function buildOrUpdateChart(labels, prices, markers, whaleDangerZone = null, isN
       });
     }
     priceSeries.setData(candles);
+    applyLwSeriesPriceFormat(
+      priceSeries,
+      candles.map((c) => c.close)
+    );
   } else {
     priceSeries.setData(lineData);
+    applyLwSeriesPriceFormat(
+      priceSeries,
+      lineData.map((p) => p.value)
+    );
   }
   rawChartMarkers = Array.isArray(markers) ? markers.slice() : [];
   renderAdaptiveMarkers();
@@ -1478,17 +3218,99 @@ function buildOrUpdateChart(labels, prices, markers, whaleDangerZone = null, isN
   }
 
   priceChart.applyOptions({
+    rightPriceScale: {
+      scaleMargins: { top: 0.06, bottom: 0.22 },
+    },
     timeScale: {
+      visible: true,
+      ticksVisible: true,
+      borderVisible: true,
       rightOffset: 20,
       timeVisible: true,
       secondsVisible: false,
+      tickMarkFormatter: (time) => formatChartAxisTimeHm(time),
     },
+  });
+
+  void refreshMainChartGhostLine(selectedChartPair || selectedMarket || "BTC-EUR");
+  void updatePredictionChart(String(selectedChartPair || selectedMarket || "BTC-EUR")).then(() => {
+    scheduleSyncPredictionChartJsXFromLightweight();
   });
 }
 
-function setPanelCollapsed(panelEl, collapsed) {
-  if (!panelEl) return;
-  panelEl.classList.toggle("is-collapsed", Boolean(collapsed));
+/** API predicted_price als blauwe stippellijn op de hoofdgrafiek (LightweightCharts). */
+async function refreshMainChartGhostLine(ticker) {
+  if (headlessMode || activeTab !== "terminal") return;
+  const sym = encodeURIComponent(String(ticker || "BTC-EUR").toUpperCase());
+  try {
+    const response = await fetch(`/api/v1/predictions?symbol=${sym}`);
+    if (!response.ok) return;
+    const data = await response.json();
+    const pred = Array.isArray(data.predicted) ? data.predicted : [];
+    const host = document.getElementById("priceChart");
+    if (!host || !priceChart) return;
+    ensureChartAndSeries(host);
+    if (!predictionOverlaySeries) return;
+
+    const pts = [];
+    for (let i = 0; i < pred.length; i += 1) {
+      const row = pred[i];
+      const tRaw = predictionRowToEpochSeconds(row);
+      const t = tRaw == null ? null : normalizeChartTimeSeconds(tRaw);
+      const v = Number(row.predicted_price ?? row.price ?? row.value);
+      if (t !== null && Number.isFinite(v) && v > 0) {
+        pts.push({ time: t, value: v });
+      }
+    }
+    pts.sort((a, b) => a.time - b.time);
+    const dedup = [];
+    let lastT = null;
+    for (let j = 0; j < pts.length; j += 1) {
+      if (lastT !== null && pts[j].time === lastT) {
+        dedup[dedup.length - 1] = pts[j];
+      } else {
+        dedup.push(pts[j]);
+        lastT = pts[j].time;
+      }
+    }
+    if (rawChartLineData.length && dedup.length) {
+      const last = rawChartLineData[rawChartLineData.length - 1];
+      if (dedup[0].time > last.time) {
+        dedup.unshift({ time: last.time, value: last.value });
+      }
+    }
+    try {
+      predictionOverlaySeries.setData(dedup);
+      const priceSample = (Array.isArray(rawChartLineData) ? rawChartLineData : [])
+        .map((p) => p.value)
+        .concat(dedup.map((p) => p.value));
+      applyLwSeriesPriceFormat(priceSeries, priceSample);
+      applyLwSeriesPriceFormat(predictionOverlaySeries, dedup.map((p) => p.value));
+      const predLast = dedup.length ? dedup[dedup.length - 1] : null;
+      setChartTimeHint({
+        market: decodeURIComponent(sym),
+        updated_at: window.__lastEngineTickIso || null,
+        predicted_at: predLast ? new Date(predLast.time * 1000).toISOString() : null,
+      });
+      try {
+        window.__lastApiPredictionResponse = Object.assign({}, data, {
+          symbol: decodeURIComponent(sym),
+        });
+      } catch (_e3) {
+        /* ignore */
+      }
+      if (typeof window.updateTerminalChartJsPredictionDataset === "function") {
+        window.updateTerminalChartJsPredictionDataset(data);
+      }
+    } catch (_e) {
+      /* tijd niet strikt oplopend i.v.m. history offset — leegmaken voorkomt crash */
+      try {
+        predictionOverlaySeries.setData([]);
+      } catch (_e2) {}
+    }
+  } catch (_err) {
+    /* stil falen: Chart.js-paneel heeft nog fallback */
+  }
 }
 
 function toggleChartFullscreen() {
@@ -1498,24 +3320,8 @@ function toggleChartFullscreen() {
 }
 
 function bindSniperPanelControls() {
-  const tickerBtn = document.getElementById("toggleTickerBtn");
-  const ledgerBtn = document.getElementById("toggleLedgerBtn");
   const headlessBtn = document.getElementById("toggleHeadlessBtn");
   const fsBtn = document.getElementById("toggleChartFullscreenBtn");
-  const tickerPanel = document.getElementById("intelligenceTickerPanel");
-  const ledgerPanel = document.getElementById("liveLedgerPanel");
-  tickerBtn?.addEventListener("click", () => {
-    const next = !tickerPanel?.classList.contains("is-collapsed");
-    setPanelCollapsed(tickerPanel, next);
-    const host = document.getElementById("priceChart");
-    if (host) resizePriceChart(host);
-  });
-  ledgerBtn?.addEventListener("click", () => {
-    const next = !ledgerPanel?.classList.contains("is-collapsed");
-    setPanelCollapsed(ledgerPanel, next);
-    const host = document.getElementById("priceChart");
-    if (host) resizePriceChart(host);
-  });
   headlessBtn?.addEventListener("click", () => {
     headlessMode = !headlessMode;
     document.body.classList.toggle("headless-mode", headlessMode);
@@ -1674,10 +3480,6 @@ function renderNewsBlock(containerId, items, withInsights = false) {
   root.innerHTML = "";
   const sorted = [...items].sort((a, b) => Number(Boolean(b.is_urgent)) - Number(Boolean(a.is_urgent)));
   for (const item of sorted.slice(0, 5)) {
-    const score = Number(item.finbert_score ?? 0);
-    const impactClass = score > 0.2 ? "impact-positive" : (score < -0.2 ? "impact-negative" : "impact-neutral");
-    const neonClass = Math.abs(score) >= 0.65 ? (score >= 0 ? "impact-neon-positive" : "impact-neon-negative") : "";
-    const finLabel = item.finbert_label || "neutral";
     const div = document.createElement("div");
     div.className = `news-item ${item.is_urgent ? "news-item-urgent" : ""}`;
     div.innerHTML =
@@ -1686,12 +3488,9 @@ function renderNewsBlock(containerId, items, withInsights = false) {
       `<div class="impact-row">` +
       `${sourceBadge(item.source_icon, item.source)}` +
       `<span class="impact-left tag ${coinBadgeClass(item.ticker_tag)}">${item.ticker_tag || "-"}</span>` +
-      `<span class="impact-score ${impactClass} ${neonClass}">Impact ${score.toFixed(3)}</span>` +
       `</div>` +
       (withInsights
-        ? `<div class="muted">FinBERT: <span class="${sentimentTagClass(finLabel)}">${finLabel}</span> (${Number(item.finbert_confidence || 0).toFixed(3)}) | Impacts ticker: ${Boolean(item.impacts_ticker)}</div>` +
-          `<div class="muted">Social Volume: ${Number(item.social_volume || 0).toFixed(2)}</div>` +
-          `<div class="muted">${item.explanation || "No AI explanation available."}</div>`
+        ? `<div class="muted">${item.explanation || "No AI explanation available."}</div>`
         : "");
     div.addEventListener("click", () => openNewsModal(item));
     root.appendChild(div);
@@ -1701,7 +3500,10 @@ function renderNewsBlock(containerId, items, withInsights = false) {
 async function refreshNewsInsights() {
   const [newsRes, actRes] = await Promise.allSettled([
     fetch("/api/v1/news/ticker?elite_mix=1"),
-    fetch("/activity"),
+    fetch(
+      typeof window.buildActivityFetchUrl === "function" ? window.buildActivityFetchUrl() : "/activity",
+      window.activityFetchInit || { cache: "no-store", credentials: "same-origin" }
+    ),
   ]);
   const data = newsRes.status === "fulfilled" && newsRes.value.ok ? await newsRes.value.json() : [];
   const act = actRes.status === "fulfilled" && actRes.value.ok ? await actRes.value.json() : {};
@@ -1813,27 +3615,128 @@ function renderTickerTape(items) {
   renderTickerTrack("tickerTrack", items);
 }
 
+function setChartTimeHint(meta) {
+  const el = document.getElementById("chartTimeHint");
+  if (!el) return;
+  const m = meta && typeof meta === "object" ? meta : {};
+  const market = String(m.market || getActiveMarketForPolicyUi() || "BTC-EUR").toUpperCase().replace("/", "-");
+  const updRaw = m.updated_at || m.last_engine_tick_utc || m.generated_at || m.ts || null;
+  const predRaw = m.predicted_at || m.prediction_timestamp || null;
+
+  const parse = (v) => {
+    if (!v) return null;
+    const d = new Date(v);
+    return Number.isFinite(d.getTime()) ? d : null;
+  };
+  const fmtClock = (d) => (d ? d.toLocaleTimeString("nl-NL", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—");
+  const fmtAgo = (d) => {
+    if (!d) return "—";
+    const sec = Math.max(0, Math.round((Date.now() - d.getTime()) / 1000));
+    if (sec < 60) return `${sec}s geleden`;
+    const min = Math.round(sec / 60);
+    return `${min}m geleden`;
+  };
+
+  const updDt = parse(updRaw);
+  const predDt = parse(predRaw);
+  const updTxt = fmtClock(updDt);
+  const updAgo = fmtAgo(updDt);
+  const predTxt = fmtClock(predDt);
+
+  if (predDt) {
+    el.textContent = `${market} · update ${updTxt} (${updAgo}) · voorspelling ${predTxt}`;
+  } else {
+    el.textContent = `${market} · update ${updTxt} (${updAgo})`;
+  }
+
+  const ageMs = updDt ? Date.now() - updDt.getTime() : 0;
+  el.classList.toggle("is-stale", ageMs > 5 * 60 * 1000);
+  el.classList.toggle("is-very-stale", ageMs > 15 * 60 * 1000);
+}
+window.setChartTimeHint = setChartTimeHint;
+
+/** Shallow merge activity/WS payloads zodat policy-balkjes blijven werken bij gedeeltelijke updates (HOLD incl.). */
+function mergeTerminalActivityPayload(data) {
+  if (!data || typeof data !== "object") return {};
+  const prev = window.__lastDashboardStats && typeof window.__lastDashboardStats === "object" ? window.__lastDashboardStats : {};
+  window.__lastDashboardStats = { ...prev, ...data };
+  return window.__lastDashboardStats;
+}
+
 function applyActivityResponse(data) {
   if (!data || typeof data !== "object") return;
+  const merged = mergeTerminalActivityPayload(data);
+  const activeU = normPairKey(getActiveMarketForPolicyUi());
+  const incomingU = inferIncomingSymbol(merged);
+  const symOk = payloadSymbolMatchesActive(merged);
+  if (typeof window.updatePayloadFilterDebugBadge === "function") {
+    window.updatePayloadFilterDebugBadge({
+      active: activeU,
+      incoming: incomingU || "",
+      dropped: !symOk,
+      src: "activity",
+    });
+  }
+  if (!symOk) {
+    if (payloadHasActiveSymbolData(merged, activeU)) {
+      setChartTimeHint({
+        market: merged.market || merged.selected_market || getActiveMarketForPolicyUi(),
+        updated_at: merged.last_engine_tick_utc || (merged.last_prediction && merged.last_prediction.generated_at) || null,
+        predicted_at: (merged.last_prediction && merged.last_prediction.generated_at) || null,
+      });
+      paintAiPolicyProbsFromPayload(merged);
+    }
+    return;
+  }
+  const inferTgl = document.getElementById("rlInferenceGreedyToggle");
+  if (inferTgl && typeof merged.rl_inference_greedy === "boolean") {
+    inferTgl.checked = merged.rl_inference_greedy;
+  }
+  updateTerminalHealthFromStats(merged);
+  if (window.TerminalLiveTail && typeof window.TerminalLiveTail.bootstrapFromServerTail === "function") {
+    window.TerminalLiveTail.bootstrapFromServerTail(merged.cockpit_log_tail);
+  }
   window.__lastEngineTickIso =
-    data.last_engine_tick_utc ||
-    (data.last_prediction && data.last_prediction.generated_at) ||
+    merged.last_engine_tick_utc ||
+    (merged.last_prediction && merged.last_prediction.generated_at) ||
     null;
   updateLastScanLabel();
-  const p = data.paper_portfolio || {};
-  const alloc = data.allocation_snapshot || {};
-  const heldMk = Array.isArray(alloc.markets_in_position)
-    ? alloc.markets_in_position.map((x) => String(x || "").toUpperCase())
-    : [];
-  window.__marketsInPosition = new Set(heldMk);
+  setChartTimeHint({
+    market: merged.market || merged.selected_market || getActiveMarketForPolicyUi(),
+    updated_at: merged.last_engine_tick_utc || (merged.last_prediction && merged.last_prediction.generated_at) || null,
+    predicted_at: (merged.last_prediction && merged.last_prediction.generated_at) || null,
+  });
+  const ls = merged.last_scores;
+  if (ls && typeof ls === "object") {
+    const lsMarket = normPairKey(ls.market || ls.ticker || ls.symbol || merged.market || merged.symbol || "");
+    const activeForScores = normPairKey(getActiveMarketForPolicyUi());
+    /* Alleen sentiment overslaan bij mismatch — niet de hele cockpit (BUY/HOLD/SELL bleef dan “vast”). */
+    if (!lsMarket || lsMarket === activeForScores) {
+      const score = Number(ls.sentiment_score);
+      const conf = Number(ls.sentiment_confidence ?? 0);
+      if (Number.isFinite(score)) {
+        setClassText(".js-sentiment-value", score.toFixed(3));
+        setClassText(".js-sentiment-confidence", conf.toFixed(3));
+        const pct = Math.max(0, Math.min(100, ((score + 1) / 2) * 100));
+        document.querySelectorAll(".js-sentiment-bar").forEach((el) => {
+          el.style.width = `${pct}%`;
+        });
+        window.botMetrics.sentiment = { score, confidence: conf, barPct: pct };
+      }
+    }
+  }
+  const p = merged.paper_portfolio || {};
+  const alloc = merged.allocation_snapshot || {};
+  const linesForUi = allocationDisplayLines(merged);
+  window.__marketsInPosition = buildMarketsInPositionSet(merged);
   const allocRoot = document.getElementById("executiveAllocationSnapshot");
   if (allocRoot) {
     const sum = String(alloc.summary || "Allocatie: —");
-    const lines = Array.isArray(alloc.lines) ? alloc.lines : [];
+    const lines = linesForUi;
     const rows = lines.map((r) => {
       const c = String(r.coin || "?").toUpperCase();
       const w = Number(r.weight_pct || 0);
-      const wTxt = Number.isFinite(w) ? w.toFixed(1) : "—";
+      const wTxt = Number.isFinite(w) ? w.toFixed(2) : "—";
       const wClamp = Math.max(0, Math.min(100, Number.isFinite(w) ? w : 0));
       const pos = r.in_position ? ' <span class="alloc-chip">IN POSITIE</span>' : "";
       return `<li class="alloc-row" style="--weight:${wClamp}%">
@@ -1865,9 +3768,15 @@ function applyActivityResponse(data) {
     hBal.textContent = fmtEur(p.equity);
   }
     setClassText(".js-portfolio-stats-rest", `Pos Qty: ${p.position_qty ?? "-"} | Realized PnL: ${p.realized_pnl_eur ?? p.realized_pnl ?? "-"}`);
-  const lastOrder = data.last_order?.order || {};
-    setClassText(".js-active-orders", `Actieve orders: ${lastOrder.signal || "-"} ${lastOrder.ticker || ""} ${lastOrder.amount_quote_eur || lastOrder.amount_quote || ""}`.trim());
-  const fg = data.fear_greed || {};
+  const lastOrder = merged.last_order?.order || {};
+  {
+    const sig = (lastOrder.signal || "").toUpperCase();
+    const posQty = Number(p.position_qty ?? 0);
+    // Toon SELL/BUY alleen als het signaal ook daadwerkelijk een actieve positie weerspiegelt
+    const sigDisplay = (sig === "SELL" && posQty <= 0) || sig === "HOLD" || !sig ? "—" : `${sig} ${lastOrder.ticker || ""} ${lastOrder.amount_quote_eur || lastOrder.amount_quote || ""}`.trim();
+    setClassText(".js-active-orders", `Signaal: ${sigDisplay}`);
+  }
+  const fg = merged.fear_greed || {};
   const fgMain = document.getElementById("terminalFearGreed");
   const fgSub = document.getElementById("terminalFearGreedSub");
   const tickFg = document.getElementById("tickerMetricFg");
@@ -1884,12 +3793,12 @@ function applyActivityResponse(data) {
   } else if (tickFg) {
     tickFg.textContent = "—";
   }
-  const cyc = data.last_order?.cycle_seq;
+  const cyc = merged.last_order?.cycle_seq;
   if (cyc != null && cyc !== lastLedgerCycleSeq) {
     lastLedgerCycleSeq = cyc;
-    const fs = String(data.last_order?.engine_risk?.final_signal || "").toUpperCase();
+    const fs = String(merged.last_order?.engine_risk?.final_signal || "").toUpperCase();
   }
-  const rp = data.risk_profile;
+  const rp = merged.risk_profile;
   if (rp) {
       const bv = Number(rp.base_trade_eur);
       const mv = Number(rp.max_risk_pct);
@@ -1910,11 +3819,42 @@ function applyActivityResponse(data) {
     riskProfile: rp || null,
   };
   window.__eliteCriticalStream = Boolean(
-    Array.isArray(data.elite_ai_signals) &&
-      data.elite_ai_signals.some((s) => s && (s.state === "panic" || s.whale_danger === true))
+    Array.isArray(merged.elite_ai_signals) &&
+      merged.elite_ai_signals.some((s) => s && (s.state === "panic" || s.whale_danger === true))
   );
-  if (Array.isArray(data.elite_ai_signals)) renderElite8AiStatusBar(data.elite_ai_signals);
+  if (Array.isArray(merged.elite_ai_signals)) renderElite8AiStatusBar(merged.elite_ai_signals);
   void refreshWhaleRadar();
+  applySelectedMarketPriceFromPaperPortfolio(p, merged);
+  paintAiPolicyProbsFromPayload(merged);
+  if (activeTab === "terminal" && !headlessMode) {
+    void updatePredictionChart(getActiveMarketForPolicyUi());
+  }
+  renderBvThoughtFeed(merged);
+
+  const sumEl = document.getElementById("hpDashAllocSummary");
+  const chips = document.getElementById("hpDashAllocChips");
+  if (sumEl) sumEl.textContent = String(alloc.summary || "Allocatie: —");
+  if (chips) {
+    const dashLines = linesForUi.slice(0, 10);
+    chips.innerHTML = dashLines
+      .map((r) => {
+        const c = escapeHtmlText(String(r.coin || "?").toUpperCase());
+        const w = Number(r.weight_pct || 0);
+        const wTxt = Number.isFinite(w) ? `${w.toFixed(2)}%` : "—";
+        const pos = r.in_position ? " in-pos" : "";
+        return `<li class="hp-dash-chip${pos}"><span class="hp-dash-chip__sym">${c}</span><span class="hp-dash-chip__w">${wTxt}</span></li>`;
+      })
+      .join("");
+  }
+  const badgeEl = document.getElementById("hpDashAllocMainBadge");
+  if (badgeEl) {
+    const mkSel = String(document.getElementById("marketSelect")?.value || "BTC-EUR").toUpperCase();
+    const line =
+      linesForUi.find((r) => String((r && r.market) || "").toUpperCase() === mkSel) || linesForUi[0];
+    const w = line ? Number(line.weight_pct) : NaN;
+    badgeEl.textContent = Number.isFinite(w) ? `${w.toFixed(2)}%` : "—";
+  }
+  syncHeaderPositionLamp();
 }
 
 function executiveSnapshotIfStillLoading(msg) {
@@ -1928,17 +3868,17 @@ function executiveSnapshotIfStillLoading(msg) {
 
 async function refreshActivity() {
   try {
-    const res = await fetch("/activity");
-    const text = await res.text();
-    let data = {};
-    try {
-      data = text ? JSON.parse(text) : {};
-    } catch (_parseErr) {
+    const { ok, status, data, parseError } = await fetchBalanceFromActivity();
+    if (parseError) {
       executiveSnapshotIfStillLoading("Kon activity niet lezen (ongeldige JSON).");
       return;
     }
-    if (!res.ok) {
-      executiveSnapshotIfStillLoading(`Activity niet beschikbaar (HTTP ${res.status}).`);
+    if (!data || typeof data !== "object") {
+      executiveSnapshotIfStillLoading("Kon activity niet lezen (ongeldige JSON).");
+      return;
+    }
+    if (!ok) {
+      executiveSnapshotIfStillLoading(`Activity niet beschikbaar (HTTP ${status}).`);
       return;
     }
     applyActivityResponse(data);
@@ -1951,6 +3891,43 @@ async function refreshActivity() {
 function applyTradingRedisPayload(raw) {
   if (!raw || typeof raw !== "object") return;
   if (raw.type === "error" || raw.type === "ping") return;
+  const activeU = normPairKey(getActiveMarketForPolicyUi());
+  const incomingU = inferIncomingSymbol(raw);
+  if (incomingU && incomingU !== activeU && !payloadHasActiveSymbolData(raw, activeU)) {
+    if (typeof window.updatePayloadFilterDebugBadge === "function") {
+      window.updatePayloadFilterDebugBadge({ active: activeU, incoming: incomingU, dropped: true, src: "ws" });
+    }
+    return;
+  }
+  if (raw.type === "cockpit_log_line" && raw.line) {
+    const ln = String(raw.line);
+    const hasPair = /[A-Z0-9]+-[A-Z0-9]+/.test(ln.toUpperCase());
+    if (hasPair && !ln.toUpperCase().includes(activeU)) {
+      if (typeof window.updatePayloadFilterDebugBadge === "function") {
+        window.updatePayloadFilterDebugBadge({
+          active: activeU,
+          incoming: incomingU || "",
+          dropped: true,
+          src: "ws-log",
+        });
+      }
+      return;
+    }
+    if (typeof window.updatePayloadFilterDebugBadge === "function") {
+      window.updatePayloadFilterDebugBadge({
+        active: activeU,
+        incoming: incomingU || "",
+        dropped: false,
+        src: "ws-log",
+      });
+    }
+    if (window.TerminalLiveTail && typeof window.TerminalLiveTail.push === "function") {
+      window.TerminalLiveTail.push(ln);
+    } else if (activeTab === "logs") {
+      pushLogsTabLineFallback(ln);
+    }
+    return;
+  }
   const data = {
     last_engine_tick_utc: raw.last_engine_tick_utc || null,
     last_prediction: raw.last_prediction || null,
@@ -1960,6 +3937,20 @@ function applyTradingRedisPayload(raw) {
     risk_profile: raw.risk_profile || null,
     elite_ai_signals: raw.elite_ai_signals,
     allocation_snapshot: raw.allocation_snapshot || {},
+    last_scores: raw.last_scores,
+    active_markets: Array.isArray(raw.active_markets) ? raw.active_markets : undefined,
+    rl_inference_greedy: typeof raw.rl_inference_greedy === "boolean" ? raw.rl_inference_greedy : undefined,
+    rl_last_decision:
+      raw.rl_last_decision && typeof raw.rl_last_decision === "object" ? raw.rl_last_decision : undefined,
+    rl_multi_decisions:
+      raw.rl_multi_decisions && typeof raw.rl_multi_decisions === "object" ? raw.rl_multi_decisions : undefined,
+    worker_calc_hints_by_market:
+      raw.worker_calc_hints_by_market && typeof raw.worker_calc_hints_by_market === "object"
+        ? raw.worker_calc_hints_by_market
+        : undefined,
+    ai_action_probs:
+      raw.ai_action_probs && typeof raw.ai_action_probs === "object" ? raw.ai_action_probs : undefined,
+    worker_calc_hints: Array.isArray(raw.worker_calc_hints) ? raw.worker_calc_hints : undefined,
   };
   if (!data.last_engine_tick_utc && data.last_prediction && data.last_prediction.generated_at) {
     data.last_engine_tick_utc = data.last_prediction.generated_at;
@@ -1967,22 +3958,55 @@ function applyTradingRedisPayload(raw) {
   applyActivityResponse(data);
   lastTradingWsActivityAtMs = Date.now();
   tradingUpdatesLive = true;
-  const p = data.paper_portfolio || {};
-  const mk = String(selectedMarket || "BTC-EUR").toUpperCase();
-  const lpm = p.last_prices_by_market;
-  const lp = lpm && typeof lpm === "object" ? lpm[mk] : null;
-  if (lp != null && lp !== "") noteLivePriceFromWs(lp, mk);
-  else if (p.last_price != null && p.last_price !== "") noteLivePriceFromWs(p.last_price, mk);
+}
+
+function scheduleTradingUpdatesSocketReconnect() {
+  if (tradingUpdatesReconnectTimer != null) return;
+  tradingUpdatesReconnectTimer = window.setTimeout(() => {
+    tradingUpdatesReconnectTimer = null;
+    connectTradingUpdatesSocket();
+  }, TRADING_UPDATES_WS_RECONNECT_MS);
 }
 
 function connectTradingUpdatesSocket() {
-  if (tradingUpdatesSocket && [WebSocket.OPEN, WebSocket.CONNECTING].includes(tradingUpdatesSocket.readyState)) {
-    return;
+  if (tradingUpdatesSocket && tradingUpdatesSocket.readyState === WebSocket.CONNECTING) return;
+  if (tradingUpdatesSocket && tradingUpdatesSocket.readyState === WebSocket.OPEN) return;
+  if (tradingUpdatesReconnectTimer != null) {
+    window.clearTimeout(tradingUpdatesReconnectTimer);
+    tradingUpdatesReconnectTimer = null;
   }
+  try {
+    if (tradingUpdatesSocket) {
+      try {
+        tradingUpdatesSocket.onclose = null;
+        tradingUpdatesSocket.onerror = null;
+        tradingUpdatesSocket.onmessage = null;
+        if (
+          tradingUpdatesSocket.readyState === WebSocket.OPEN ||
+          tradingUpdatesSocket.readyState === WebSocket.CONNECTING
+        ) {
+          tradingUpdatesSocket.close();
+        }
+      } catch (_) {}
+    }
+  } catch (_) {}
+  tradingUpdatesSocket = null;
   const protocol = window.location.protocol === "https:" ? "wss" : "ws";
   const wsUrl = `${protocol}://${window.location.host}/ws/trading-updates`;
-  const ws = new WebSocket(wsUrl);
+  let ws;
+  try {
+    ws = new WebSocket(wsUrl);
+  } catch (_e) {
+    scheduleTradingUpdatesSocketReconnect();
+    return;
+  }
   tradingUpdatesSocket = ws;
+  ws.onopen = () => {
+    if (tradingUpdatesReconnectTimer != null) {
+      window.clearTimeout(tradingUpdatesReconnectTimer);
+      tradingUpdatesReconnectTimer = null;
+    }
+  };
   ws.onmessage = (event) => {
     try {
       const raw = JSON.parse(String(event.data || "{}"));
@@ -1993,7 +4017,7 @@ function connectTradingUpdatesSocket() {
     tradingUpdatesLive = false;
     lastTradingWsActivityAtMs = 0;
     tradingUpdatesSocket = null;
-    window.setTimeout(connectTradingUpdatesSocket, 5000);
+    scheduleTradingUpdatesSocketReconnect();
   };
   ws.onerror = () => {
     try {
@@ -2120,6 +4144,8 @@ const BRAIN_NEON_REWARD = "#39ff14";
 const BRAIN_NEON_REWARD_MA = "#fff176";
 const BRAIN_MIN_LR = 1.0e-5;
 const BRAIN_MIN_EPS_PCT = 5.0;
+/** Zelfde default als backend (`trading_core`) en `module_brain.js` bij ontbrekende reasoning/API. */
+const BRAIN_REASONING_WAIT = "Wachten op eerste besluit (RL inferentie)...";
 const REWARD_MA_WINDOW = 100;
 
 function rewardMovingAverage(series, windowSize = REWARD_MA_WINDOW) {
@@ -2310,18 +4336,15 @@ function paintBrainTabCharts(monitorData, fiData) {
       `<span class="social-buzz-strip__text"${hi ? ' style="color:#39ff14"' : ""}>${escapeHtmlText(label)}</span>`;
   }
 
-  let n = Math.max(policyLoss.length, valueLoss.length, 1);
-  const labels = Array.from({ length: n }, (_, i) => String(i + 1));
+  let n = hasLoss ? Math.max(policyLoss.length, valueLoss.length, 1) : 0;
+  const labels = n > 0 ? Array.from({ length: n }, (_, i) => String(i + 1)) : [];
   const pl = [];
   const vl = [];
   for (let i = 0; i < n; i += 1) {
     pl.push(i < policyLoss.length ? policyLoss[i] : null);
     vl.push(i < valueLoss.length ? valueLoss[i] : null);
   }
-  if (!policyLoss.length && !valueLoss.length) {
-    pl[0] = 0;
-    vl[0] = 0;
-  }
+  const lossPointR = n <= 1 && hasLoss ? 5 : n <= 4 && hasLoss ? 3 : 0;
   const lossCfg = {
     type: "line",
     data: {
@@ -2333,7 +4356,8 @@ function paintBrainTabCharts(monitorData, fiData) {
           borderColor: BRAIN_NEON_LOSS_POLICY,
           backgroundColor: "rgba(0, 248, 255, 0.06)",
           borderWidth: 3,
-          pointRadius: 0,
+          pointRadius: lossPointR,
+          tension: hasLoss ? 0.25 : 0,
           spanGaps: true,
         },
         {
@@ -2342,7 +4366,8 @@ function paintBrainTabCharts(monitorData, fiData) {
           borderColor: BRAIN_NEON_LOSS_VALUE,
           backgroundColor: "rgba(255, 49, 49, 0.08)",
           borderWidth: 3,
-          pointRadius: 0,
+          pointRadius: lossPointR,
+          tension: hasLoss ? 0.25 : 0,
           spanGaps: true,
         },
       ],
@@ -2408,7 +4433,7 @@ function paintBrainTabCharts(monitorData, fiData) {
       },
     },
   };
-  if (window.ChartUtils) window.ChartUtils.upsertChart("brainTabRewardChart", rewardCfg);
+  if (window.ChartUtils) window.ChartUtils.upsertChart("brainTabRewardErrorChart", rewardCfg);
 
   const entropySeries = Array.isArray(monitor.policy_entropy) ? monitor.policy_entropy : [];
   const lastEntropy = entropySeries.length ? entropySeries[entropySeries.length - 1] : null;
@@ -2448,21 +4473,24 @@ function applyBrainDataPayload(raw) {
   if (data.topic !== "brain_stats" && data.topic !== "brain_data") return;
   
   if (data.generated_at) {
-      window.__lastEngineTickIso = data.generated_at;
-      updateLastScanLabel();
+    window.__lastEngineTickIso = data.generated_at;
+    updateLastScanLabel();
   }
-  if (data.reasoning) {
-      const net = (data.training_monitor && data.training_monitor.network_logs) ? data.training_monitor.network_logs : {};
-      const latestKl = (net.approx_kl || []).slice(-1)[0];
-      const latestValueLoss = (net.value_loss || []).slice(-1)[0];
-      const reasoningText = data.reasoning + 
-        (latestKl !== undefined || latestValueLoss !== undefined
-          ? `\nNetwork health: approx_kl=${Number(latestKl || 0).toFixed(6)}, value_loss=${Number(latestValueLoss || 0).toFixed(6)}.`
-          : "");
-      const rb = document.getElementById("brainReasoningBox");
-      window.botMetrics.reasoningText = reasoningText;
-      if (rb) rb.innerHTML = formatBrainReasoningHtml(reasoningText);
-  }
+  // Altijd reasoning-box bijwerken op WS-tick (ook bij lege reasoning), anders lijkt de tab "dood"
+  // terwijl `tm`/`fw` wél binnenkomen. Gebruik dezelfde wachttext als de API.
+  const rtxt = String(data.reasoning || "").trim();
+  const baseReason = rtxt || BRAIN_REASONING_WAIT;
+  const net = data.training_monitor && data.training_monitor.network_logs ? data.training_monitor.network_logs : {};
+  const latestKl = (net.approx_kl || []).slice(-1)[0];
+  const latestValueLoss = (net.value_loss || []).slice(-1)[0];
+  const reasoningText =
+    baseReason +
+    (latestKl !== undefined || latestValueLoss !== undefined
+      ? `\nNetwork health: approx_kl=${Number(latestKl || 0).toFixed(6)}, value_loss=${Number(latestValueLoss || 0).toFixed(6)}.`
+      : "");
+  const rb = document.getElementById("brainReasoningBox");
+  window.botMetrics.reasoningText = reasoningText;
+  if (rb) rb.innerHTML = formatBrainReasoningPanelHtml(reasoningText, { status: data.status });
 
   paintBrainTabCharts(data.training_monitor, {
     feature_weights: data.feature_weights || {},
@@ -2516,7 +4544,9 @@ function connectBrainStatsSocket() {
   };
   brainStatsSocket.onclose = () => {
     brainStatsSocket = null;
-    brainStatsReconnectTimer = setTimeout(connectBrainStatsSocket, 5000);
+    if (activeTab === "aibrain") {
+      brainStatsReconnectTimer = setTimeout(connectBrainStatsSocket, 5000);
+    }
   };
   brainStatsSocket.onerror = () => {
     try {
@@ -2555,10 +4585,23 @@ async function refreshWhaleRadar() {
 async function refreshHistoryTrades() {
   const body = document.getElementById("cockpitLedgerBody");
   if (!body) return;
+  if (window.ModuleLedger && typeof window.ModuleLedger.refresh === "function") {
+    try {
+      await window.ModuleLedger.refresh();
+      const empty = body.querySelector("td.cockpit-ledger-empty");
+      const n = empty ? 0 : body.querySelectorAll("tr").length;
+      cockpitLedgerStatusParts.ledger = n ? `Ledger: ${n} trade(s)` : "Ledger: 0 trades";
+      paintCockpitLedgerStatus();
+    } catch (_e) {
+      cockpitLedgerStatusParts.ledger = "Ledger: netwerkfout";
+      paintCockpitLedgerStatus();
+    }
+    return;
+  }
   try {
     // Expliciet ophalen van ALLE markten, ongeacht de geselecteerde grafiek
     const res = await fetch(
-      `/api/v1/trades?limit=${LEDGER_ROUNDTRIP_FETCH_LIMIT}&view=roundtrip&market=all`
+      `/api/v1/trades?limit=${LEDGER_ROUNDTRIP_FETCH_LIMIT}&view=events&market=all`
     );
     const data = await res.json();
     if (!res.ok) {
@@ -2566,66 +4609,31 @@ async function refreshHistoryTrades() {
       paintCockpitLedgerStatus();
       return;
     }
-    let rows = Array.isArray(data.trades) ? data.trades.slice() : [];
-    const rowTime = (t) => {
-      const s = String(t.close_time_utc || t.open_time_utc || t.exit_ts_utc || t.entry_ts_utc || t.ts || "").trim();
-      const ms = s ? Date.parse(s) : NaN;
-      return Number.isFinite(ms) ? ms : 0;
-    };
-    rows.sort((a, b) => rowTime(b) - rowTime(a));
-    body.innerHTML = "";
-    if (!rows.length) {
-      cockpitLedgerStatusParts.ledger = "Ledger: 0 rondes (nog geen afgeronde trades)";
+    const rows = Array.isArray(data.trades) ? data.trades.slice() : [];
+    sortLedgerTradesChronoDesc(rows);
+    if (window.ModuleLedger && typeof window.ModuleLedger.renderTable === "function") {
+      let riskProfile = null;
+      try {
+        const ar = await fetch(
+          typeof window.buildActivityFetchUrl === "function" ? window.buildActivityFetchUrl() : "/activity",
+          window.activityFetchInit || { cache: "no-store", credentials: "same-origin" }
+        );
+        if (ar.ok) {
+          const aj = await ar.json();
+          if (aj.risk_profile && typeof aj.risk_profile === "object") riskProfile = aj.risk_profile;
+        }
+      } catch (_e) {}
+      window.ModuleLedger.renderTable({ trades: rows, risk_profile: riskProfile || undefined });
+      cockpitLedgerStatusParts.ledger = rows.length
+        ? `Ledger: ${rows.length} trade(s)`
+        : "Ledger: 0 trades";
       paintCockpitLedgerStatus();
-      const tr = document.createElement("tr");
-      const td = document.createElement("td");
-      td.colSpan = 7;
-      td.className = "cockpit-ledger-empty";
-      td.textContent = "Nog geen trades in de geschiedenis.";
-      tr.appendChild(td);
-      body.appendChild(tr);
       return;
-    }
-    cockpitLedgerStatusParts.ledger = `Ledger: ${rows.length} ronde(s)`;
-    paintCockpitLedgerStatus();
-    const ledgerCoinLabel = (t) => {
-      const raw = String(t.coin || (t.market || "").split("-")[0] || "?").trim().toUpperCase();
-      return raw || "?";
-    };
-
-    for (const t of rows) {
-      const tr = document.createElement("tr");
-      const ts = String(t.open_time_utc || t.entry_ts_utc || t.ts || "").replace("T", " ").slice(0, 19);
-      const pnl = Number(t.pnl_eur || 0);
-      const entryPx = Number(t.entry_price || 0);
-      const hasExit = t.exit_price !== null && t.exit_price !== undefined && String(t.exit_price) !== "";
-      const exitPx = hasExit ? Number(t.exit_price || 0) : null;
-      const pnlPct = Number(t.pnl_pct || 0);
-      const ctx = escapeHtmlText(String(t.ledger_context || "—").slice(0, 200));
-      const coin = escapeHtmlText(ledgerCoinLabel(t));
-      const pairEsc = escapeHtmlText(String(t.market || t.pair || "-"));
-      const chip = `<span class="ledger-asset-chip" data-coin="${coin}" title="${pairEsc}">${coin}</span>`;
-      tr.innerHTML =
-        `<td>${ts || "-"}</td>` +
-        `<td class="cockpit-ledger-asset"><span class="ledger-asset-cell">${chip}<span class="ledger-asset-pair">${pairEsc}</span></span></td>` +
-        `<td>${entryPx.toFixed(4)}</td>` +
-        `<td>${hasExit ? exitPx.toFixed(4) : "ACTIVE"}</td>` +
-        `<td class="${pnl >= 0 ? "positive" : "negative"}">${hasExit ? pnl.toFixed(2) : "ACTIVE"}</td>` +
-        `<td class="${pnlPct >= 0 ? "positive" : "negative"}">${hasExit ? `${pnlPct.toFixed(2)}%` : "ACTIVE"}</td>` +
-        `<td class="cockpit-ledger-context">${ctx}</td>`;
-      body.appendChild(tr);
     }
   } catch (_err) {
     cockpitLedgerStatusParts.ledger = "Ledger: netwerkfout";
     paintCockpitLedgerStatus();
-    body.innerHTML = "";
-    const tr = document.createElement("tr");
-    const td = document.createElement("td");
-    td.colSpan = 7;
-    td.className = "cockpit-ledger-empty";
-    td.textContent = "Kon trades niet laden.";
-    tr.appendChild(td);
-    body.appendChild(tr);
+    // Keep existing rows on network error — do not clear
   }
 }
 
@@ -2646,7 +4654,7 @@ function clearAllCharts() {
 
   const chartIds = [
       "equityCurveChart", "winLossChart", "sentimentOutcomeChart",
-      "brainTabTrainingLossChart", "brainTabRewardChart", "brainTabFeatureChart",
+      "brainTabTrainingLossChart", "brainTabRewardErrorChart", "brainTabFeatureChart",
       "brainBenchmarkChart", "brainCorrelationChart", "brainEpisodeChart",
       "brainEntropyChart", "brainLossChart", "brainNewsLagChart",
       "terminalBenchmarkChart", "terminalCorrelationChart"
@@ -2669,6 +4677,7 @@ function clearAllCharts() {
     priceChart.remove();
     priceChart = null;
     priceSeries = null;
+    predictionOverlaySeries = null;
     markerSeries = null;
     whaleDangerPriceLineHandle = null;
     priceSeriesIsCandle = false;
@@ -2688,22 +4697,36 @@ async function refreshSystemLogsSnapshot() {
   if (toggle && !toggle.checked) return;
   try {
     const res = await fetch("/api/v1/system/logs?limit=200");
-    const data = await res.json();
-    if (!res.ok) return;
+    let data = {};
+    try {
+      data = await res.json();
+    } catch {
+      data = {};
+    }
     let consoleEl = document.getElementById("systemLogConsole");
     if (consoleEl) {
-        consoleEl.innerHTML = "";
+      consoleEl.innerHTML = "";
     }
-    for (const line of data.lines || []) {
+    if (!res.ok) {
+      appendSystemLogLine(
+        `[Hardware] /api/v1/system/logs HTTP ${res.status} — controleer portal-logs en permissies op _logs_hub.`
+      );
+      return;
+    }
+    const lines = Array.isArray(data.lines) ? data.lines : [];
+    for (const line of lines) {
       appendSystemLogLine(line);
     }
-  } catch (_err) {
-    // ignore transient errors
+    if (!lines.length) {
+      appendSystemLogLine("[Hardware] API gaf geen regels terug (lege array).");
+    }
+  } catch (err) {
+    appendSystemLogLine(`[Hardware] Snapshot mislukt: ${String(err)}`);
   }
 }
 
 function connectSystemLogsSocket() {
-  if (activeTab !== "hardware") return;
+  if (activeTab !== "hardware" && activeTab !== "logs") return;
   if (systemLogsSocket && [WebSocket.OPEN, WebSocket.CONNECTING].includes(systemLogsSocket.readyState)) return;
   const status = document.getElementById("systemLogStatus");
   const protocol = window.location.protocol === "https:" ? "wss" : "ws";
@@ -2725,6 +4748,10 @@ function connectSystemLogsSocket() {
       }
       return;
     }
+    if (window.TerminalLiveTail && typeof window.TerminalLiveTail.push === "function" && activeTab === "logs") {
+      window.TerminalLiveTail.push(incoming);
+      return;
+    }
     appendSystemLogLine(incoming);
   };
   systemLogsSocket.onclose = () => {
@@ -2732,7 +4759,7 @@ function connectSystemLogsSocket() {
       status.textContent = "Reconnecting...";
       status.className = "status-disconnected genesis-mono-strong";
     }
-    if (activeTab === "hardware") {
+    if (activeTab === "hardware" || activeTab === "logs") {
       systemLogsReconnectTimer = setTimeout(connectSystemLogsSocket, 2000);
     }
   };
@@ -2759,22 +4786,71 @@ function stopSystemLogsSocket() {
   }
 }
 
+/** Brain API: JSON alleen bij 2xx; anders fallback (zelfde gedrag als `module_brain.js`). */
+async function brainApiSafeJson(res, fallback) {
+  if (!res || !res.ok) return fallback;
+  try {
+    return await res.json();
+  } catch (_) {
+    return fallback;
+  }
+}
+
 async function refreshBrainLab() {
   if (activeTab !== "aibrain") return;
   try {
-    const marketParam = encodeURIComponent(selectedMarket || selectedChartPair || "BTC-EUR");
-    const [reasoningRes, fiRes, monitorRes, stateRes, lagRes] = await Promise.all([
+    const marketFocus = selectedMarket || selectedChartPair || "BTC-EUR";
+    const marketParam = encodeURIComponent(marketFocus);
+    const [reasoningRes, fiRes, monitorRes, stateRes, lagRes, statsRes, statusRes] = await Promise.all([
       fetch("/api/v1/brain/reasoning"),
       fetch(`/api/v1/brain/feature-importance?market=${marketParam}`),
       fetch("/api/v1/brain/training-monitor"),
       fetch("/api/v1/brain/state-overview"),
       fetch("/api/v1/brain/news-lag"),
+      fetch(`/api/v1/stats?symbol=${marketParam}`),
+      fetch("/api/v1/status"),
     ]);
-    const reasoningData = await reasoningRes.json();
-    const fiData = await fiRes.json();
-    const monitorData = await monitorRes.json();
-    const stateData = await stateRes.json();
-    const lagData = await lagRes.json();
+    if ([reasoningRes, fiRes, monitorRes, stateRes, lagRes].some((r) => !r || !r.ok)) {
+      console.warn("[BrainLab] Een of meerdere brain-API endpoints gaven geen 2xx. Fallbacks worden gebruikt.");
+    }
+    const reasoningData = await brainApiSafeJson(reasoningRes, { reasoning: BRAIN_REASONING_WAIT });
+    const fiData = await brainApiSafeJson(fiRes, {
+      market: marketFocus,
+      feature_weights: {},
+      rl_observation: {},
+    });
+    const monitorData = await brainApiSafeJson(monitorRes, { stats: {} });
+    const stateData = await brainApiSafeJson(stateRes, { state: {}, weight_focus: {} });
+    const lagData = await brainApiSafeJson(lagRes, { items: [] });
+    const statsData = await brainApiSafeJson(statsRes, {});
+    const statusData = await brainApiSafeJson(statusRes, {});
+
+    const hasSeriesData = (arr) => Array.isArray(arr) && arr.some((v) => Number.isFinite(Number(v)));
+    const hasMonitorActivity =
+      hasSeriesData(monitorData.reward) ||
+      hasSeriesData(monitorData.reward_normalized) ||
+      hasSeriesData(monitorData.loss) ||
+      hasSeriesData(monitorData.episode_length);
+
+    // Brain tab bruikbaar houden bij opstart: gebruik live policy-probs als feature fallback.
+    const ap = statsData && typeof statsData.ai_action_probs === "object" ? statsData.ai_action_probs : {};
+    const fallbackPolicyWeights = {
+      policy_buy: Number(ap.buy_pct || 0) / 100.0,
+      policy_hold: Number(ap.hold_pct || 0) / 100.0,
+      policy_sell: Number(ap.sell_pct || 0) / 100.0,
+    };
+    if ((!fiData.feature_weights || !Object.keys(fiData.feature_weights).length) && Object.values(fallbackPolicyWeights).some((v) => v > 0)) {
+      fiData.feature_weights = fallbackPolicyWeights;
+    }
+
+    const engine = String(statusData.ai_engine || "").toUpperCase() || "THINKING";
+    const worker = String(statsData.worker_status || statusData.worker_status || "loading").toLowerCase();
+    const cal = document.getElementById("strategyCalibrationStatus");
+    if (cal) {
+      cal.textContent = hasMonitorActivity
+        ? `Live telemetry actief (${marketFocus}) — engine ${engine}`
+        : `Wachten op RL telemetry (${marketFocus}) — engine ${engine}, worker ${worker}`;
+    }
 
     paintBrainTabCharts(monitorData, fiData);
 
@@ -2782,14 +4858,18 @@ async function refreshBrainLab() {
     const latestKl = (net.approx_kl || []).slice(-1)[0];
     const latestValueLoss = (net.value_loss || []).slice(-1)[0];
     const reasoningText =
-      (reasoningData.reasoning ||
-        "Nog geen RL-besluit beschikbaar. Start een paper cycle om reasoning te activeren.") +
+      (reasoningData.reasoning || BRAIN_REASONING_WAIT) +
       (latestKl !== undefined || latestValueLoss !== undefined
         ? `\nNetwork health: approx_kl=${Number(latestKl || 0).toFixed(6)}, value_loss=${Number(latestValueLoss || 0).toFixed(6)}.`
+        : "") +
+      (!hasMonitorActivity
+        ? `\nStatus: ai_engine=${engine}, worker=${worker}, last_inference=${String(
+            statsData.last_inference_time || statusData.last_inference_time || "—"
+          )}.`
         : "");
     const rb = document.getElementById("brainReasoningBox");
     window.botMetrics.reasoningText = reasoningText;
-    if (rb) rb.innerHTML = formatBrainReasoningHtml(reasoningText);
+    if (rb) rb.innerHTML = formatBrainReasoningPanelHtml(reasoningText, reasoningData);
 
     if (reasoningData && reasoningData.generated_at) {
         window.__lastEngineTickIso = reasoningData.generated_at;
@@ -3065,7 +5145,8 @@ function noirLedgerLineBarOptions(extra = {}) {
 
 function formatHoldHours(hours) {
   const n = Number(hours);
-  if (!Number.isFinite(n) || n <= 0) return "—";
+  if (!Number.isFinite(n) || n < 0) return "—";
+  if (n === 0) return "0.0 u";
   if (n < 48) return `${n.toFixed(1)} u`;
   const d = Math.floor(n / 24);
   const r = n - d * 24;
@@ -3219,16 +5300,39 @@ function renderTradeHistory(trades) {
   const root = document.getElementById("tradeHistoryList");
   if (!root) return;
   root.innerHTML = "";
-  const rows = trades.slice(0, 5);
+  const rows = trades.slice(0, 20);
   if (!rows.length) {
     root.innerHTML = `<div class="trade-list-empty">Nog geen trades.</div>`;
     return;
   }
   let rendered = 0;
   for (const t of rows) {
-    const action = String(t.action || t.type || "").toUpperCase();
-    if (!["BUY", "SELL"].includes(action)) continue;
+    const rt = String(t.row_type || "").toUpperCase();
+    let action = String(t.action || t.type || "").toUpperCase();
+    if (rt === "ROUND_TRIP") action = "CLOSE";
+    if (!["BUY", "SELL", "CLOSE"].includes(action)) continue;
     const pnl = Number(t.pnl_eur || 0);
+    const qty = Number(t.qty || 0);
+    const ep = Number(t.entry_price || t.price || 0);
+    const xp = Number(t.exit_price || 0);
+    const fees = Number(t.fees_eur != null && t.fees_eur !== "" ? t.fees_eur : t.fee_eur) || 0;
+    const stake = action === "BUY" && qty > 0 && ep > 0 ? qty * ep : null;
+    let winEur = null;
+    if ((action === "SELL" || action === "CLOSE") && rt === "ROUND_TRIP" && qty > 0 && ep > 0 && xp > 0) {
+      winEur = xp * qty - ep * qty - fees;
+    } else if ((action === "SELL" || action === "CLOSE") && Number.isFinite(pnl)) {
+      winEur = pnl;
+    }
+    let euroLine = "";
+    if (stake != null && Number.isFinite(stake)) {
+      euroLine += `Werkelijke inleg: <b>${formatEurNlTerminal(stake)}</b> · `;
+    }
+    if (winEur != null && Number.isFinite(winEur)) {
+      euroLine += `Gerealiseerde winst: <b>${formatEurNlTerminal(winEur)}</b> · `;
+    }
+    const pxStr = Number.isFinite(ep)
+      ? ep.toLocaleString("nl-NL", { minimumFractionDigits: 4, maximumFractionDigits: 4 })
+      : "—";
     const side = action === "BUY" ? "buy" : "sell";
     const row = document.createElement("div");
     row.className = `trade-list-row trade-list-row--${side}`;
@@ -3236,8 +5340,8 @@ function renderTradeHistory(trades) {
     row.innerHTML =
       `<span class="trade-list-dot" aria-hidden="true"></span>` +
       `<div class="trade-list-body">` +
-      `<div class="trade-list-line1">${tstr} · ${t.market || "-"} · <span class="${action === "BUY" ? "positive" : "negative"}">${action}</span></div>` +
-      `<div class="trade-list-line2">€ ${Number(t.entry_price || t.price || 0).toFixed(4)} · sent ${Number(t.sentiment_score || 0).toFixed(3)} · PnL <span class="${pnl >= 0 ? "positive" : "negative"}">${pnl.toFixed(2)}</span></div>` +
+      `<div class="trade-list-line1">${tstr} · ${t.pair || t.market || "-"} · <span class="${action === "BUY" ? "positive" : "negative"}">${action}</span></div>` +
+      `<div class="trade-list-line2">${euroLine}Koers ${pxStr} · sent ${Number(t.sentiment_score || 0).toFixed(3)} · PnL <span class="${pnl >= 0 ? "positive" : "negative"}">${formatEurNlTerminal(pnl)}</span></div>` +
       `</div>`;
     root.appendChild(row);
     rendered += 1;
@@ -3252,14 +5356,25 @@ async function refreshTradesTable() {
     const res = await fetch(`/api/v1/trades?limit=${SIDEBAR_TRADES_FETCH_LIMIT}&view=events&market=all`);
     const data = await res.json();
     if (!res.ok) return;
-    const rows = (data.trades || []).slice(0, 5).map((t) => ({
-      ts: t.exit_ts_utc || t.entry_ts_utc,
-      market: t.market,
-      action: (t.type || "SELL").toUpperCase(),
-      entry_price: t.entry_price,
-      sentiment_score: t.sentiment_score,
-      pnl_eur: t.pnl_eur,
-    }));
+    const rows = (data.trades || []).slice(0, 20).map((t) => {
+      const rt = String(t.row_type || "").toUpperCase();
+      const pair = String(t.pair || t.market || "").toUpperCase();
+      let action = String(t.action || t.type || "").toUpperCase();
+      if (rt === "ROUND_TRIP") action = "CLOSE";
+      return {
+        ts: t.exit_ts_utc || t.entry_ts_utc,
+        market: pair,
+        pair,
+        row_type: rt,
+        action,
+        entry_price: t.entry_price,
+        exit_price: t.exit_price,
+        qty: t.qty,
+        fees_eur: t.fees_eur != null && t.fees_eur !== "" ? t.fees_eur : t.fee_eur,
+        sentiment_score: t.sentiment_score,
+        pnl_eur: t.pnl_eur,
+      };
+    });
     renderTradeHistory(rows);
   } catch (_err) {
     // keep prior table on transient fetch errors
@@ -3329,26 +5444,44 @@ async function runPaperTrade() {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
-  document.getElementById("ledgerFooterToggle")?.addEventListener("click", () => {
-    const footer = document.getElementById("liveLedgerFooter");
-    const icon = document.getElementById("ledgerFooterIcon");
-    if (!footer) return;
-    footer.classList.toggle("is-collapsed");
-    const isCol = footer.classList.contains("is-collapsed");
-    if (icon) icon.textContent = isCol ? "▲ Uitklappen" : "▼ Inklappen";
+  updateTerminalHealthFromStats(null);
+  document.addEventListener("ai-trading-stats", (ev) => {
+    const d = ev && ev.detail;
+    if (!d || typeof d !== "object") return;
+    updateTerminalHealthFromStats(d);
+    renderBvThoughtFeed(d);
   });
 
   document.getElementById("paperBtn")?.addEventListener("click", runPaperTrade);
   document.getElementById("marketSelect")?.addEventListener("change", selectMarketFromDropdown);
   document.getElementById("refreshMarketsBtn")?.addEventListener("click", refreshMarkets);
-  document.getElementById("pauseBtn")?.addEventListener("click", () => postBotAction("/bot/pause"));
-  document.getElementById("resumeBtn")?.addEventListener("click", () => postBotAction("/bot/resume"));
-  document.getElementById("panicBtn")?.addEventListener("click", () => postBotAction("/bot/panic"));
+  document.getElementById("stopBotBtn")?.addEventListener("click", () => postBotAction("/bot/panic"));
   document.getElementById("newsModalClose")?.addEventListener("click", closeNewsModal);
   document.getElementById("btn-terminal")?.addEventListener("click", () => switchTab("terminal"));
   document.getElementById("btn-aibrain")?.addEventListener("click", () => switchTab("aibrain"));
   document.getElementById("btn-ledger")?.addEventListener("click", () => switchTab("ledger"));
-  document.getElementById("btn-hardware")?.addEventListener("click", () => switchTab("hardware"));
+  document.getElementById("btn-logs")?.addEventListener("click", () => switchTab("logs"));
+  document.getElementById("rlInferenceGreedyToggle")?.addEventListener("change", async (e) => {
+    const el = e.target;
+    const greedy = !!(el && el.checked);
+    try {
+      const res = await fetch("/api/v1/rl-inference-mode", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ greedy }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (err) {
+      console.warn("[rl-inference-mode]", err);
+      if (el) el.checked = !greedy;
+    }
+  });
+  document.getElementById("btnSystemLogsFromLedger")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    const top = document.getElementById("btn-logs");
+    if (top) top.click();
+    else switchTab("logs");
+  });
   document.getElementById("systemLogPauseBtn")?.addEventListener("click", toggleSystemLogPause);
   document.getElementById("systemLogClearBtn")?.addEventListener("click", clearSystemLogConsole);
   document.getElementById("systemLogMuteBtn")?.addEventListener("click", toggleSystemLogMute);
@@ -3358,12 +5491,17 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 window.setChartInterval = async function setChartInterval(next) {
-  const allowed = new Set(["1m", "5m", "15m", "60m"]);
-  const val = String(next || "").toLowerCase();
-  if (!allowed.has(val)) return;
-  chartInterval = val;
+  const sel = normalizeChartIntervalSelection(next);
+  chartIntervalSelection = sel;
+  chartInterval = chartIntervalFromSelection(sel);
+  try {
+    window.localStorage.setItem(CHART_INTERVAL_STORAGE_KEY, sel);
+  } catch (_e) {
+    /* ignore */
+  }
+  updateChartIntervalUi(sel);
   const foot = document.getElementById("chartTimeFootnote");
-  if (foot) foot.textContent = `Timeframes: 1m | 5m | 15m | 60m | active=${chartInterval}`;
+  if (foot) foot.textContent = `Timeframes: AI | 1m | 5m | 15m | 60m | active=${sel.toUpperCase()}`;
   await updateChart(selectedChartPair || selectedMarket);
 };
 
@@ -3382,6 +5520,9 @@ window.runSequencedStartup = async function runSequencedStartup() {
   paintCockpitLedgerStatus();
 
   await Promise.allSettled([refreshHealthMode(), refreshSelectedMarket(), refreshMarkets()]);
+  updateChartIntervalUi(chartIntervalSelection);
+  const foot = document.getElementById("chartTimeFootnote");
+  if (foot) foot.textContent = `Timeframes: AI | 1m | 5m | 15m | 60m | active=${chartIntervalSelection.toUpperCase()}`;
   selectedChartPair = selectedMarket;
   syncHeaderMarketChip();
 
@@ -3412,9 +5553,13 @@ window.runSequencedStartup = async function runSequencedStartup() {
   // Start uitsluitend de data-fetches en chart-renders van de actieve tab.
   // Dit voorkomt dat er op de achtergrond 4-voudige grafiek-initialisaties in de DOM plaatsvinden.
   switchTab("terminal");
+  void updatePredictionChart(selectedMarket || "BTC-EUR");
 }
 
 document.addEventListener("DOMContentLoaded", () => {
+  updateChartIntervalUi(chartIntervalSelection);
+  const foot = document.getElementById("chartTimeFootnote");
+  if (foot) foot.textContent = `Timeframes: AI | 1m | 5m | 15m | 60m | active=${chartIntervalSelection.toUpperCase()}`;
   (async () => {
     try {
       await runSequencedStartup();
@@ -3459,6 +5604,8 @@ scheduleStaggered(() => {
 scheduleStaggered(() => {
   if (activeTab !== "terminal") return;
   refreshChart();
+  const sel = document.getElementById("marketSelect")?.value || selectedMarket || selectedChartPair || "BTC-EUR";
+  void updatePredictionChart(sel);
 }, 30000, 8000);
 
 scheduleStaggered(() => {
@@ -3480,7 +5627,7 @@ scheduleStaggered(() => {
 scheduleStaggered(() => {
   if (activeTab !== "aibrain") return;
   refreshBrainLab();
-}, 30000, 10000);
+}, 15000, 6000);
 
 /** Eerste /markets/active kan falen tijdens worker-boot; periodiek opnieuw proberen. */
 scheduleStaggered(() => {
@@ -3499,7 +5646,7 @@ window.switchTab = function switchTab(tabName) {
   activeTab = tabName;
 
   // 1. Verberg alle tabs en reset knoppen
-  const allTabs = ["terminal", "aibrain", "ledger", "hardware"];
+  const allTabs = ["terminal", "aibrain", "ledger", "hardware", "logs"];
   allTabs.forEach(name => {
     const el = document.getElementById(`tab-${name}`);
     if (el) {
@@ -3538,7 +5685,7 @@ window.switchTab = function switchTab(tabName) {
   clearAllCharts(); // voorkomt ghosting tussen tabs
 
   // Stop WebSockets op basis van tab (strikte data-scheiding)
-  if (tabName !== "hardware") stopSystemLogsSocket();
+  if (tabName !== "hardware" && tabName !== "logs") stopSystemLogsSocket();
   if (tabName !== "aibrain") stopBrainStatsSocket();
 
   // 4. Start exclusieve endpoints per view direct (polling wordt door scheduleStaggered afgehandeld)
@@ -3557,7 +5704,19 @@ window.switchTab = function switchTab(tabName) {
       latestBrainStatsPayload = null; // Consumeer
     }
     connectBrainStatsSocket();
-    refreshBrainLab();
+    // refreshBrainLab is async; validator leest DOM ~1s na tab-klik — reasoning eerst, dan volledige lab-refresh
+    void (async () => {
+      try {
+        const early = await fetch("/api/v1/brain/reasoning");
+        if (activeTab !== "aibrain") return;
+        const j = await brainApiSafeJson(early, null);
+        if (j && j.generated_at) {
+          window.__lastEngineTickIso = j.generated_at;
+          updateLastScanLabel();
+        }
+      } catch (_) {}
+      if (activeTab === "aibrain") await refreshBrainLab();
+    })();
   }
   else if (tabName === "ledger") {
     refreshHistoryTrades();
@@ -3566,7 +5725,12 @@ window.switchTab = function switchTab(tabName) {
   else if (tabName === "hardware") {
     connectSystemStatsSocket(); // Nodig voor ring meters in de header
     connectSystemLogsSocket();
-    refreshSystemLogsSnapshot();
+    void refreshSystemLogsSnapshot();
+    // Layout kan net na display:flex nog geen hoogte hebben; snapshot opnieuw vullen.
+    window.setTimeout(() => void refreshSystemLogsSnapshot(), 120);
+    window.setTimeout(() => void refreshSystemLogsSnapshot(), 500);
+  } else if (tabName === "logs") {
+    connectSystemLogsSocket();
   }
 
   initHintPortals();

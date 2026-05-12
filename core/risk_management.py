@@ -11,12 +11,15 @@ from __future__ import annotations
 
 import os
 import time
+
+from app.services.portfolio_qty import normalize_paper_base_qty
 from datetime import datetime, timedelta
 from typing import Any
 
 from app.datetime_util import UTC
 
-from core.risk_manager import position_value_eur
+from core.risk_manager import load_risk_engine_config, position_value_eur
+from core.trading_constraints_redis import elite_slot_pct_from_constraints
 
 SKIP_MAX_PORTFOLIO_ALLOCATION_LOG = "SKIP: Maximum portfolio allocation reached."
 
@@ -38,6 +41,9 @@ def elite_equal_weight_enabled() -> bool:
 
 def elite_equal_weight_slot_pct() -> float:
     """Maximaal equity-percentage per Elite-munt (default 12,5% = 1/8)."""
+    slot_ov = elite_slot_pct_from_constraints()
+    if slot_ov is not None:
+        return max(0.5, min(100.0, float(slot_ov)))
     v = float(os.getenv("ELITE_EQUAL_WEIGHT_SLOT_PCT", str(_ELITE_EQ_DEFAULT_SLOT_PCT)) or _ELITE_EQ_DEFAULT_SLOT_PCT)
     return max(0.5, min(100.0, v))
 
@@ -75,33 +81,161 @@ def allocation_snapshot(wallet: dict[str, Any], equity: float | None = None) -> 
     slot_pct = elite_equal_weight_slot_pct()
     max_slots = elite_equal_weight_slot_count()
     pbm = wallet.get("position_by_market") if isinstance(wallet.get("position_by_market"), dict) else {}
+    obm = wallet.get("open_lots_by_market") if isinstance(wallet.get("open_lots_by_market"), dict) else {}
     lp = wallet.get("last_prices_by_market") if isinstance(wallet.get("last_prices_by_market"), dict) else {}
     lines: list[dict[str, Any]] = []
     slots_used = 0
-    for mk, qv in sorted(pbm.items(), key=lambda x: str(x[0])):
-        q = float(qv or 0.0)
+    abnormal_weights = False
+
+    def _lots_list_resolved(mk_in: str) -> list[Any]:
+        mku = str(mk_in or "").strip().upper().replace("/", "-")
+        raw = obm.get(mku)
+        if isinstance(raw, list):
+            return raw
+        for k, v in obm.items():
+            if str(k).strip().upper().replace("/", "-") == mku and isinstance(v, list):
+                return v
+        return []
+
+    def _lots_qty(mku: str) -> float:
+        lots = _lots_list_resolved(mku)
+        if not lots:
+            return 0.0
+        total = 0.0
+        for lot in lots:
+            if not isinstance(lot, dict):
+                continue
+            try:
+                rq = float(lot.get("qty", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                continue
+            try:
+                ep = float(lot.get("entry_price") or 0.0) or None
+            except (TypeError, ValueError):
+                ep = None
+            qn = normalize_paper_base_qty(mku, rq, entry_price=ep, equity_eur=eq)
+            total += max(0.0, qn)
+        return float(total)
+
+    def _fallback_price_from_lots(mku: str) -> float:
+        lots = _lots_list_resolved(mku)
+        if not lots:
+            return 0.0
+        q_acc = 0.0
+        c_acc = 0.0
+        for lot in lots:
+            if not isinstance(lot, dict):
+                continue
+            try:
+                rq = float(lot.get("qty", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                continue
+            try:
+                ep = float(lot.get("entry_price") or 0.0)
+            except (TypeError, ValueError):
+                ep = 0.0
+            if rq > 1e-12 and ep > 1e-12:
+                q_acc += rq
+                c_acc += rq * ep
+        if q_acc > 1e-12:
+            return c_acc / q_acc
+        return 0.0
+
+    def _pbm_qty_guess(pbm_in: dict[str, Any], mku: str) -> float:
+        if mku in pbm_in:
+            try:
+                return float(pbm_in.get(mku) or 0.0)
+            except (TypeError, ValueError):
+                return 0.0
+        for k, v in pbm_in.items():
+            if str(k).strip().upper().replace("/", "-") == mku:
+                try:
+                    return float(v or 0.0)
+                except (TypeError, ValueError):
+                    return 0.0
+        return 0.0
+
+    def _market_keys_union() -> list[str]:
+        keys: set[str] = set()
+        for k in pbm.keys():
+            kk = str(k).strip().upper().replace("/", "-")
+            if kk:
+                keys.add(kk)
+        for k, lots in obm.items():
+            if not isinstance(lots, list):
+                continue
+            if any(isinstance(x, dict) and float(x.get("qty", 0.0) or 0.0) > 1e-12 for x in lots):
+                keys.add(str(k).strip().upper().replace("/", "-"))
+        return sorted(keys)
+
+    def _safe_qty_for_market(mku: str, q_guess: float) -> float:
+        # Prefer lots-derived qty if available.
+        ql = _lots_qty(mku)
+        if ql > 1e-12:
+            return ql
+        # Fallback to legacy aggregate only if it's plausible.
+        if q_guess <= 1e-12:
+            return 0.0
+        qn = normalize_paper_base_qty(mku, q_guess, entry_price=None, equity_eur=eq)
+        if qn <= 1e-12:
+            return 0.0
+        # Heuristic: pbm corruption can store prices/notional instead of base qty (e.g. ~64534).
+        if qn > 10.0 and eq < 200000.0 and qn == q_guess:
+            return 0.0
+        return qn
+
+    for mku in _market_keys_union():
+        q_guess = _pbm_qty_guess(pbm, mku)
+        q = _safe_qty_for_market(mku, q_guess)
         if q <= 1e-12:
             continue
-        mku = str(mk).strip().upper()
         px = float(lp.get(mku, 0.0) or 0.0)
-        if px <= 0 and mku == str(wallet.get("position_symbol") or "").strip().upper():
+        if px <= 0 and mku == str(wallet.get("position_symbol") or "").strip().upper().replace("/", "-"):
             px = float(wallet.get("last_price") or 0.0)
+        if px <= 0:
+            px = _fallback_price_from_lots(mku)
+        if px <= 0:
+            continue
         pv = q * px
-        w_pct = (pv / eq) * 100.0 if eq > 0 else 0.0
+        w_pct_raw = (pv / eq) * 100.0 if eq > 0 else 0.0
+        if w_pct_raw > 100.0001:
+            abnormal_weights = True
         base = mku.split("-", 1)[0] if "-" in mku else mku
+        # >1000%: niet meetellen voor slots/UI-clamp, wél een regel in ``lines`` zodat logs/repair
+        # niet ``lines=[]`` tonen terwijl invalid_weight=True (was bron van verwarrende worker-logs).
+        if w_pct_raw > 1000.0:
+            lines.append(
+                {
+                    "market": mku,
+                    "coin": base,
+                    "weight_pct": 100.0,
+                    "weight_pct_raw": round(float(w_pct_raw), 4),
+                    "notional_eur": round(pv, 2),
+                    "in_position": True,
+                    "integrity_extreme_weight": True,
+                }
+            )
+            continue
+        # Rapportage: ruwe weight >100% = data-integriteit fout (blokkeer executive sends elders).
+        w_pct_clamped = max(0.0, min(100.0, w_pct_raw))
         lines.append(
             {
                 "market": mku,
                 "coin": base,
-                "weight_pct": round(w_pct, 2),
+                "weight_pct": round(w_pct_clamped, 2),
+                "weight_pct_raw": round(float(w_pct_raw), 4),
                 "notional_eur": round(pv, 2),
                 "in_position": True,
             }
         )
-        if w_pct >= 0.5:
+        if w_pct_clamped >= 0.5:
             slots_used += 1
     markets_in_position = [str(x.get("market") or "") for x in lines if str(x.get("market") or "")]
+    invalid_weight = abnormal_weights or any(
+        float((ln or {}).get("weight_pct_raw") or 0.0) > 100.0001 for ln in lines if isinstance(ln, dict)
+    )
     return {
+        "invalid_weight": bool(invalid_weight),
         "equal_weight_enabled": elite_equal_weight_enabled(),
         "slot_pct": round(slot_pct, 2),
         "max_slots": int(max_slots),
@@ -109,8 +243,29 @@ def allocation_snapshot(wallet: dict[str, Any], equity: float | None = None) -> 
         "slots_label": f"{int(min(slots_used, max_slots))}/{int(max_slots)}",
         "lines": lines,
         "markets_in_position": markets_in_position,
-        "summary": f"Allocatie: {int(min(slots_used, max_slots))}/{int(max_slots)} slots bezet (max {slot_pct:.1f}% per munt)",
+        "summary": _allocation_summary_line(
+            slots_used=int(min(slots_used, max_slots)),
+            max_slots=int(max_slots),
+            slot_pct=float(slot_pct),
+        ),
     }
+
+
+def _allocation_summary_line(*, slots_used: int, max_slots: int, slot_pct: float) -> str:
+    if int(slots_used) <= 0:
+        base = (
+            f"Allocatie: geen open posities ({max_slots} Elite-slots beschikbaar, "
+            f"max {slot_pct:.1f}% equity per munt)"
+        )
+    else:
+        base = f"Allocatie: {slots_used}/{max_slots} slots bezet (max {slot_pct:.1f}% per munt)"
+    try:
+        cfg = load_risk_engine_config()
+    except Exception:
+        return base
+    if cfg.sizing_mode == "equity_pct":
+        return f"{base} · orders {cfg.max_trade_equity_pct:.1f}% equity"
+    return f"{base} · orders €{cfg.base_trade_eur:.0f} fixed"
 
 
 def apply_equal_weight_buy_fraction_cap(

@@ -4,27 +4,29 @@
   Functie: Emergency high-contrast overrides voor terminal leesbaarheid.
 */
 
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap");
+
 :root {
-  --text: #ffffff;
-  --muted: #ffffff;
+  --text:          var(--gnq-text);
+  --muted:         var(--gnq-text-muted);
+  --bg-dark:       var(--gnq-bg-base);
+  --card-bg:       var(--gnq-bg-card);
+  --neon-green:    var(--gnq-green);
+  --neon-red:      var(--gnq-red);
+  --electric-blue: var(--gnq-cyan);
+  --text-dim:      #94a3b8;
+  --glow-shadow:   0 0 15px rgba(0, 255, 65, 0.12);
 }
 
-body,
-label,
-input,
-select,
-button,
-p,
-span,
-td,
-th,
-pre {
-  color: #ffffff !important;
-  font-weight: 700;
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
 }
 
 body {
-  background: #000000 !important;
+  background: var(--gnq-bg-base) !important;
+  color: var(--gnq-text);
 }
 
 .top-tabs {
@@ -222,10 +224,19 @@ button:hover {
   box-sizing: border-box;
 }
 
+/* AI Brain Lab (index #tab-aibrain): inhoud mag binnen het tab-paneel scrollen */
+#tab-aibrain.brain-tab {
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
 /* Tooltips via #brainHintPortal (fixed); inline bubbels verborgen in alle tabs */
 #brainTab .hint-wrap > .hint-bubble,
+#tab-aibrain .hint-wrap > .hint-bubble,
 #terminalTab .hint-wrap > .hint-bubble,
-#hardwareTab .hint-wrap > .hint-bubble {
+#tab-terminal .hint-wrap > .hint-bubble,
+#hardwareTab .hint-wrap > .hint-bubble,
+#tab-hardware .hint-wrap > .hint-bubble {
   display: none !important;
 }
 
@@ -473,6 +484,132 @@ button:hover {
   color: #ffffff !important;
 }
 
+.brain-thinking-process {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.brain-thinking-section {
+  border-radius: 6px;
+  padding: 7px 10px;
+  background: #111;
+  border: 1px solid #222;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.brain-thinking-label {
+  font-size: 0.68rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+}
+
+.brain-thinking-content {
+  font-size: 0.875rem;
+  line-height: 1.45;
+  color: #d1d9e6;
+  white-space: pre-wrap;
+}
+
+.brain-thinking-section--observations .brain-thinking-label { color: #00e8ff; }
+.brain-thinking-section--conflict .brain-thinking-label { color: #ffb84d; }
+.brain-thinking-section--verdict .brain-thinking-label { color: #39ff14; }
+.brain-thinking-section--context .brain-thinking-label { color: #cc88ff; }
+
+.brain-thinking-section--verdict .brain-thinking-content {
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: #ffffff;
+}
+
+.brain-context-factors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  white-space: normal;
+}
+
+.brain-context-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  border: 1px solid transparent;
+  cursor: default;
+}
+
+.brain-context-pill--ok {
+  background: rgba(57, 255, 20, 0.08);
+  border-color: #39ff14;
+  color: #39ff14;
+}
+
+.brain-context-pill--warn {
+  background: rgba(255, 184, 77, 0.10);
+  border-color: #ffb84d;
+  color: #ffb84d;
+}
+
+.brain-context-pill--block {
+  background: rgba(255, 49, 49, 0.12);
+  border-color: #ff3131;
+  color: #ff3131;
+}
+
+.brain-context-pill__label {
+  opacity: 0.75;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.brain-context-pill__value {
+  font-weight: 900;
+}
+
+.brain-reasoning-details summary {
+  cursor: pointer;
+  font-size: 0.78rem;
+  color: #7c8590;
+  padding: 6px 0 2px;
+  user-select: none;
+}
+
+.brain-feature-impact-box {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: #0e1218;
+  border: 1px solid #1b2f44;
+  border-radius: 6px;
+  font-size: 0.85rem;
+}
+
+.brain-feature-impact-name {
+  display: block;
+  color: #00e8ff;
+  font-size: 0.9rem;
+  margin-bottom: 2px;
+}
+
+.brain-feature-impact-weight {
+  display: block;
+  color: #ffb84d;
+  font-size: 0.78rem;
+  margin-bottom: 4px;
+}
+
+.brain-feature-impact-explain {
+  color: #c9d1d9;
+  margin: 0;
+  line-height: 1.4;
+}
+
 .brain-state-overview {
   margin-top: 10px;
   padding: 8px;
@@ -694,6 +831,156 @@ div.chartjs-tooltip {
   font-weight: 700;
 }
 
+/* Cockpit Logs-tab (mission console) */
+.cockpit-log-tab-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  flex: 1;
+}
+
+.cockpit-log-tab-header {
+  flex: 0 0 auto;
+}
+
+.cockpit-log-tab-title {
+  margin: 0 0 4px 0;
+  font-size: 1.1rem;
+}
+
+.cockpit-log-tab-sub {
+  margin: 0;
+  color: #94a3b8 !important;
+  font-size: 0.85rem;
+  font-weight: 500 !important;
+}
+
+.cockpit-log-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.cockpit-log-toolbar--filters {
+  gap: 8px;
+}
+
+.cockpit-log-filter-btn {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace !important;
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.06em;
+  padding: 6px 12px !important;
+  border-radius: 4px;
+  border: 1px solid #2f353d !important;
+  background: #12151a !important;
+  color: #cbd5e1 !important;
+  cursor: pointer;
+}
+
+.cockpit-log-filter-btn.is-active {
+  border-color: #39ff14 !important;
+  color: #39ff14 !important;
+  box-shadow: 0 0 0 1px rgba(57, 255, 20, 0.15);
+}
+
+.cockpit-log-console,
+.cockpit-log-console--terminal {
+  flex: 1;
+  min-height: 280px;
+  max-height: min(70vh, 880px);
+  overflow-y: auto;
+  background: #0a0b0d !important;
+  border: 1px solid #1e2329;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 11.5px;
+  line-height: 1.42;
+  color: #e6edf3 !important;
+}
+
+.cockpit-log-console .tail-row {
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 2px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.cockpit-log-console .tail-row.tail-row--error {
+  color: #ff5c5c !important;
+}
+
+.cockpit-log-console .tail-row.tail-row--warn {
+  color: #ffb84d !important;
+}
+
+.cockpit-log-console .tail-row.tail-row--ai {
+  color: #00e8ff !important;
+}
+
+.cockpit-log-console .tail-row.tail-row--news {
+  color: #b47aff !important;
+}
+
+.cockpit-log-console .tail-row.tail-row--noise {
+  color: #3e4450 !important;
+}
+
+.cockpit-log-console .tail-row.tail-row--info {
+  color: #b6ffcf !important;
+}
+
+.cockpit-log-console .tail-row.tail-row--system {
+  color: #7c8590 !important;
+}
+
+.cockpit-log-console .tail-ts {
+  color: #8b949e !important;
+  font-weight: 600 !important;
+}
+
+.cockpit-log-console .tail-msg {
+  word-break: break-word;
+}
+
+.cockpit-log-console .tail-dup-badge {
+  display: inline-block;
+  margin: 0 6px 0 2px;
+  padding: 1px 7px;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.35;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  color: #f0f6fc !important;
+  vertical-align: middle;
+  letter-spacing: 0.02em;
+}
+
+.cockpit-log-console .tail-row.tail-row--flash {
+  animation: tail-row-flash 0.45s ease-out;
+}
+
+@keyframes tail-row-flash {
+  0% {
+    background-color: rgba(255, 255, 255, 0.2);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+.cockpit-log-ws-status--live {
+  color: #39ff14 !important;
+}
+
+.cockpit-log-ws-status--off {
+  color: #94a3b8 !important;
+}
+
 /* Tab-Isolatie, Z-Index en Canvas Overflow Guards */
 .tab-content, .cockpit-tab-panel {
   overflow: hidden;
@@ -778,4 +1065,3675 @@ canvas {
     color: #00ffcc !important; /* Een frisse kleur voor de data */
     line-height: 1.2 !important;
     word-break: break-all !important;
+}
+
+/* -------------------------------------------------------------------------
+   High-performance terminal dashboard (terminal.html + /activity)
+   ------------------------------------------------------------------------- */
+
+.hp-terminal-workspace {
+  position: relative;
+}
+
+#tab-terminal .cockpit-terminal-workspace.hp-terminal-workspace,
+#tab-terminal .dashboard-container.hp-terminal-mod-grid {
+  position: static;
+}
+
+.hp-hw-mini-monitor {
+  position: absolute;
+  top: 10px;
+  right: 14px;
+  z-index: 6;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #c8ffd8 !important;
+  background: rgba(10, 18, 12, 0.92);
+  border: 1px solid rgba(57, 255, 20, 0.25);
+  border-radius: 8px;
+  padding: 6px 10px;
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.4),
+    0 0 18px rgba(57, 255, 20, 0.18);
+}
+
+.hp-hw-mini-monitor__inner {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+.hp-hw-mini-label {
+  font-size: 9px;
+  color: #7a9a7e !important;
+}
+
+.hp-hw-mini-val {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+  color: #e8ffe8 !important;
+}
+
+.hp-hw-mini-monitor--alert {
+  animation: hp-hw-blink-red 0.85s ease-in-out infinite;
+  border-color: #ff3131 !important;
+  color: #ffb4b4 !important;
+}
+
+.hp-hw-mini-monitor--alert .hp-hw-mini-val,
+.hp-hw-mini-monitor--alert .hp-hw-mini-hud {
+  color: #ffdede !important;
+}
+
+@keyframes hp-hw-blink-red {
+  0%,
+  100% {
+    box-shadow: 0 0 0 1px #ff3131, 0 0 12px rgba(255, 49, 49, 0.55);
+    background: rgba(40, 8, 8, 0.95);
+  }
+  50% {
+    box-shadow: 0 0 0 2px #ff3131, 0 0 28px rgba(255, 49, 49, 0.95);
+    background: rgba(60, 10, 10, 0.98);
+  }
+}
+
+.hp-dash-three-cols {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 14px;
+  padding-right: 0;
+}
+
+@media (max-width: 1100px) {
+  .hp-dash-three-cols {
+    grid-template-columns: 1fr;
+    padding-right: 0;
+  }
+  .hp-hw-mini-monitor {
+    position: relative;
+    top: auto;
+    right: auto;
+    align-self: flex-end;
+    margin-bottom: 8px;
+  }
+}
+
+.hp-dash-card {
+  min-height: 108px;
+  box-shadow:
+    0 0 0 1px rgba(57, 255, 20, 0.1),
+    0 4px 22px rgba(0, 0, 0, 0.55),
+    0 0 32px rgba(57, 255, 20, 0.14) !important;
+}
+
+.hp-dash-card--ai {
+  box-shadow:
+    0 0 0 1px rgba(0, 212, 255, 0.12),
+    0 4px 22px rgba(0, 0, 0, 0.55),
+    0 0 28px rgba(0, 212, 255, 0.16) !important;
+}
+
+.hp-dash-card--alloc {
+  box-shadow:
+    0 0 0 1px rgba(248, 208, 79, 0.12),
+    0 4px 22px rgba(0, 0, 0, 0.55),
+    0 0 28px rgba(248, 208, 79, 0.12) !important;
+}
+
+.hp-dash-kpi {
+  font-size: 22px !important;
+  font-weight: 800 !important;
+  color: #39ff14 !important;
+  line-height: 1.15 !important;
+  margin-top: 4px !important;
+}
+
+.hp-dash-card--ai .hp-dash-kpi {
+  color: #5ee7ff !important;
+}
+
+.hp-dash-sub,
+.hp-dash-alloc-summary {
+  font-size: 12px !important;
+  color: #b0b0b0 !important;
+  margin-top: 6px !important;
+  line-height: 1.35 !important;
+}
+
+.hp-dash-micro {
+  font-size: 10px !important;
+  color: #888 !important;
+  margin-top: 6px !important;
+  line-height: 1.3 !important;
+}
+
+.hp-dash-chip-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.hp-dash-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: #141414;
+  border: 1px solid #2f2f2f;
+  font-size: 10px;
+}
+
+.hp-dash-chip.in-pos {
+  border-color: rgba(57, 255, 20, 0.45);
+  box-shadow: 0 0 10px rgba(57, 255, 20, 0.15);
+}
+
+.hp-dash-chip__sym {
+  font-weight: 800;
+  color: #fff !important;
+}
+
+.hp-dash-chip__w {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  color: #9ad89a !important;
+}
+
+.hp-sentiment-gauge-wrap {
+  position: relative;
+  width: 100%;
+  max-width: 220px;
+  margin: 8px auto 4px;
+}
+
+.hp-sentiment-gauge-svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.hp-gauge-label {
+  position: absolute;
+  left: 50%;
+  bottom: 2px;
+  transform: translateX(-50%);
+  font-size: 17px !important;
+  font-weight: 800 !important;
+  color: #00ffcc !important;
+  font-family: "JetBrains Mono", ui-monospace, monospace !important;
+}
+
+.hp-gauge-confidence {
+  display: block;
+  text-align: center;
+  font-size: 11px !important;
+  color: #9a9a9a !important;
+  margin-top: 4px !important;
+}
+
+.hp-sr-only {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  border: 0 !important;
+}
+
+.hp-alloc-detail {
+  font-size: 12px;
+  margin-top: 6px;
+}
+
+.ledger-footer-toolbar {
+  padding: 4px 12px 0;
+  border-bottom: 1px solid #2a2a2a;
+}
+
+.ledger-footer-tabs {
+  display: flex;
+  gap: 8px;
+}
+
+.ledger-footer-tab {
+  background: #1a1a1a;
+  border: 1px solid #333;
+  color: #aaa !important;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 6px 14px;
+  border-radius: 6px 6px 0 0;
+  cursor: pointer;
+}
+
+.ledger-footer-tab.is-active {
+  color: #39ff14 !important;
+  border-bottom-color: transparent;
+  box-shadow: 0 -2px 14px rgba(57, 255, 20, 0.12);
+}
+
+.ledger-grp-head {
+  cursor: pointer;
+  background: rgba(25, 40, 28, 0.35) !important;
+}
+
+.ledger-grp-head:hover {
+  background: rgba(35, 55, 38, 0.55) !important;
+}
+
+.ledger-grp-caret {
+  display: inline-block;
+  width: 1.2em;
+  color: #39ff14 !important;
+}
+
+.ledger-grp-count {
+  font-size: 11px;
+  color: #888 !important;
+  margin-left: 6px;
+}
+
+.dashboard-card {
+  background: var(--card-bg);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 12px;
+  padding: 20px;
+  box-shadow: var(--glow-shadow);
+  transition: transform 0.2s ease;
+}
+
+.status-pulse {
+  width: 10px;
+  height: 10px;
+  background: var(--neon-green);
+  border-radius: 50%;
+  display: inline-block;
+  box-shadow: 0 0 10px var(--neon-green);
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+/* =============================================================================
+   TERMINAL — Clean Sweep (fixed grid, geen float / overlap in hoofdsecties)
+   #dashboard: 240px | 1fr | 340px · midden 60/25/15
+   ============================================================================= */
+
+#tab-terminal #dashboard,
+#tab-terminal #dashboard * {
+  box-sizing: border-box;
+}
+
+#tab-terminal.bv-terminal,
+#tab-terminal.bv-terminal.cockpit-tab-root {
+  --clean-bg: #0f172a;
+  --clean-surface: #1e293b;
+  --clean-elevated: #334155;
+  --clean-border: #334155;
+  --clean-text: #e2e8f0;
+  --clean-muted: #94a3b8;
+  --signal-buy: #22c55e;
+  --signal-hold: #94a3b8;
+  --signal-sell: #f87171;
+  --signal-warn: #fbbf24;
+}
+
+#tab-terminal.bv-terminal {
+  background: var(--clean-bg) !important;
+  color: var(--clean-text);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  max-height: 100%;
+  flex: 1 1 0;
+  font-family: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+#tab-terminal.bv-terminal.cockpit-tab-root {
+  overflow: hidden;
+  min-height: 0;
+}
+
+#tab-terminal #dashboard.dashboard-container {
+  min-width: 0;
+  align-items: stretch;
+  align-content: stretch;
+  overflow: hidden;
+}
+
+#tab-terminal.bv-terminal .cockpit-chart-skeleton {
+  border-radius: 0;
+}
+
+#tab-terminal.bv-terminal .marquee-label {
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--clean-muted) !important;
+}
+
+#tab-terminal.bv-terminal .hp-hw-mini-monitor {
+  border-radius: 0;
+  border: 1px solid var(--clean-border);
+  background: var(--clean-surface) !important;
+}
+
+#hpSentimentGaugeCard #hpGaugeValueArc {
+  stroke: #22c55e;
+}
+
+.dashboard-col-left .hp-position-sizing-widget {
+  flex: 1 1 200px;
+  min-height: 160px;
+}
+
+#tab-terminal .dashboard-col-left .hp-position-sizing-widget {
+  flex: 0 1 auto;
+  min-height: 0;
+}
+
+/* Hoofdgrid: cockpit terminal — 240 | 1fr | 340 (Triple-Column master) */
+.dashboard-container {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr) 340px;
+  grid-template-rows: minmax(0, 1fr);
+  grid-template-areas: "left main right";
+  height: 100%;
+  min-height: 0;
+  max-height: 100%;
+  gap: 0;
+  padding: 0;
+  box-sizing: border-box;
+  flex: 1 1 0;
+  width: 100%;
+  background-color: #0f172a;
+  border: none;
+  overflow: hidden;
+}
+
+#tab-terminal #dashboard.dashboard-container.tcc-command-grid {
+  flex: 1 1 0;
+  height: 100%;
+  min-height: 0;
+  max-height: 100%;
+  overflow: hidden;
+  gap: 0;
+  background: var(--clean-bg);
+}
+
+.dashboard-header {
+  grid-area: header;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 6px 10px;
+  background: #0a0b0d;
+  box-sizing: border-box;
+  min-height: 0;
+  border: none;
+  border-radius: 0;
+  margin: 0;
+}
+
+.dashboard-col-left {
+  grid-area: left;
+  width: 240px;
+  min-width: 0;
+  max-width: 240px;
+}
+
+.dashboard-col-main {
+  grid-area: main;
+  min-width: 0;
+}
+
+.dashboard-col-right {
+  grid-area: right;
+  width: 340px;
+  min-width: 0;
+  max-width: 340px;
+}
+
+.dashboard-footer {
+  grid-area: footer;
+}
+
+/* Ledger in midden-stack: geen globale grid-footer-plaatsing */
+#tab-terminal .dashboard-mid-row--ledger.dashboard-footer {
+  grid-area: auto;
+}
+
+.bv-dashboard-col {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  background: #1e1e1e;
+  box-sizing: border-box;
+  border: none;
+  margin: 0;
+  border-radius: 0;
+}
+
+#tab-terminal .bv-dashboard-col {
+  background: var(--clean-bg);
+}
+
+.bv-dashboard-col--chart {
+  gap: 1px;
+  padding: 0;
+}
+
+/* Kolom 1 (Control): 240px — tekst breekt, nooit horizontaal uit de rail */
+#tab-terminal .dashboard-col-left.bv-dashboard-col--rail.tcc-rail-col {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: 100%;
+  max-height: 100%;
+  min-width: 0;
+  max-width: 240px;
+  width: 240px;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  box-sizing: border-box;
+  border-right: 1px solid var(--clean-border);
+  background: var(--clean-bg);
+  padding: 8px 8px 10px;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+#tab-terminal .dashboard-col-left.bv-dashboard-col--rail.tcc-rail-col {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: 100%;
+  max-height: 100%;
+  min-width: 0;
+  max-width: 240px;
+  width: 240px;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  box-sizing: border-box;
+  border-right: 1px solid var(--clean-border);
+  background: var(--clean-bg);
+  padding: 10px 10px 14px;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+/* --- Terminal linker rail: solide paneelblokken (#161b22), flex-hiërarchie, ellipsis --- */
+#tab-terminal .tcc-rail-zone--balance,
+#tab-terminal .tcc-rail-zone--health,
+#tab-terminal .tcc-rail-zone--strategy {
+  flex: 0 0 auto;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+#tab-terminal .tcc-rail-zone {
+  min-width: 0;
+  margin: 0;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  overflow: visible;
+}
+
+/* Sectietitel als eigen strook boven inhoud */
+#tab-terminal .tcc-rail-zone > .bv-card-label {
+  flex-shrink: 0;
+  margin: 0;
+  padding: 12px;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  box-sizing: border-box;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+#tab-terminal .tcc-rail-zone--balance > .bv-balance-stats--tcc {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  margin: 0;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  box-sizing: border-box;
+  min-width: 0;
+  overflow: hidden;
+}
+
+#tab-terminal .tcc-rail-zone--health > .tcc-health-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 0;
+  margin: 0;
+  min-height: 0;
+  background: transparent;
+  border: none;
+}
+
+#tab-terminal .tcc-rail-zone--health .hp-hw-mini-monitor {
+  position: relative;
+  top: auto;
+  right: auto;
+  left: auto;
+  align-self: stretch;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 12px;
+  margin: 0;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  box-shadow: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+#tab-terminal .tcc-rail-zone--health .hp-hw-mini-monitor__inner {
+  min-width: 0;
+}
+
+#tab-terminal .tcc-rail-zone--health .hp-hw-mini-hud {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+#tab-terminal .tcc-rail-zone--health .terminal-health-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 12px;
+  margin: 0;
+  box-sizing: border-box;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+#tab-terminal .tcc-rail-zone--health .terminal-health-status-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  font-size: 11px;
+  overflow: hidden;
+}
+
+#tab-terminal .tcc-rail-zone--health .terminal-health-status-item span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+#tab-terminal .tcc-rail-zone--strategy {
+  overflow: visible;
+}
+
+/* Strategy: toggle-knop als sectiontitel */
+.bv-section-toggle {
+  all: unset;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  cursor: pointer;
+  font: inherit;
+  box-sizing: border-box;
+  border-radius: 6px 6px 0 0;
+  border-bottom: none;
+  user-select: none;
+}
+.bv-section-toggle:hover { color: #e2e8f0; }
+.bv-toggle-chevron { font-size: 0.7em; margin-left: 4px; transition: transform 0.15s; }
+.bv-section-body { overflow: hidden; }
+.bv-section-body.is-collapsed { display: none; }
+
+/* Strategy: titel + widget als één visueel paneel */
+#tab-terminal .tcc-rail-zone--strategy > .bv-card-label {
+  border-radius: 6px 6px 0 0;
+  border-bottom: none;
+}
+
+#tab-terminal .tcc-rail-zone--strategy > .hp-position-sizing-widget {
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: none;
+  width: 100%;
+  max-width: 100%;
+  margin: 0;
+  padding: 0 12px 12px;
+  box-sizing: border-box;
+  background: #161b22 !important;
+  border: 1px solid #30363d;
+  border-top: none;
+  border-radius: 0 0 6px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-x: hidden;
+  overflow-y: visible;
+}
+
+#tab-terminal .tcc-rail-zone--strategy .hp-position-sizing-tabs {
+  flex-shrink: 0;
+}
+
+#tab-terminal .tcc-rail-zone--strategy .hp-position-sizing-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 0;
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+#tab-terminal .tcc-rail-zone--strategy .hp-position-sizing-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+#tab-terminal .tcc-rail-zone--strategy .hp-position-sizing-feedback,
+#tab-terminal .tcc-rail-zone--strategy .hp-position-sizing-order-preview {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#tab-terminal .tcc-rail-zone--strategy .tcc-rail-scroll {
+  flex: 0 0 auto;
+  overflow-x: hidden;
+  overflow-y: visible;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+
+#tab-terminal .tcc-rail-zone--strategy .tcc-rail-scroll > .bv-card--tcc-nested,
+#tab-terminal .tcc-rail-zone--strategy .tcc-rail-scroll > .bv-sentiment-card {
+  background: #161b22 !important;
+  border: 1px solid #30363d !important;
+  border-radius: 6px;
+  padding: 12px !important;
+  margin: 0 !important;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+#tab-terminal .tcc-rail-zone--strategy .tcc-rail-scroll > .bv-card--tcc-nested > .bv-card-label,
+#tab-terminal .tcc-rail-zone--strategy .tcc-rail-scroll > .bv-sentiment-card > .bv-card-label {
+  flex-shrink: 0;
+  margin: 0;
+}
+
+#tab-terminal .tcc-rail-zone--strategy .bv-sentiment-gauge-wrap {
+  min-width: 0;
+  width: 100%;
+  overflow: hidden;
+}
+
+#tab-terminal .tcc-rail-zone--strategy .bv-gauge-label,
+#tab-terminal .tcc-rail-zone--strategy .bv-gauge-conf {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#tab-terminal .tcc-rail-zone--strategy .bv-market-stats .bv-market-row,
+#tab-terminal .tcc-rail-zone--strategy .bv-market-reason {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#tab-terminal .tcc-rail-zone--strategy .bv-market-row {
+  white-space: nowrap;
+}
+
+#tab-terminal .tcc-rail-zone--strategy .bv-market-reason {
+  white-space: nowrap;
+}
+
+#tab-terminal .tcc-rail-zone--strategy .bv-alloc-summary,
+#tab-terminal .tcc-rail-zone--strategy .bv-alloc-detail-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#tab-terminal .tcc-rail-zone--strategy .executive-allocation-body,
+#tab-terminal .tcc-rail-zone--strategy .hp-alloc-detail {
+  min-width: 0;
+  overflow: hidden;
+}
+
+#tab-terminal .bv-card--tcc-nested {
+  flex-shrink: 0;
+  margin-bottom: 0 !important;
+}
+
+#tab-terminal .tcc-rail-col input:not([type="checkbox"]):not([type="radio"]),
+#tab-terminal .tcc-rail-col select,
+#tab-terminal .tcc-rail-col textarea {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+#tab-terminal .tcc-rail-col .bv-reset-paper-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+#tab-terminal .tcc-rail-col .bv-reset-paper-btn {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+#tab-terminal .tcc-health-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+
+/* HW-box: geen absolute positioning in terminal-TCC */
+#tab-terminal .hp-hw-mini-monitor {
+  position: relative;
+  top: auto;
+  right: auto;
+  left: auto;
+  align-self: flex-start;
+}
+
+#tab-terminal .terminal-health-status-row {
+  flex-wrap: wrap;
+}
+
+#tab-terminal .dashboard-col-right.bv-dashboard-col--ai {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+  max-width: 340px;
+  height: 100%;
+  max-height: 100%;
+  align-self: stretch;
+  position: static;
+  overflow: hidden;
+  box-sizing: border-box;
+  font-size: 0.8rem;
+  border-left: 1px solid var(--clean-border);
+  background: var(--clean-bg);
+}
+
+#tab-terminal .dashboard-col-main.bv-dashboard-col--main {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-height: 0;
+}
+
+/* Middenkolom: locked grid-banden 50/30/20 (geen eigen scroll op de kolom-shell) */
+#tab-terminal .dashboard-col-main.bv-dashboard-col--main.bv-dashboard-col--chart {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  max-height: 100%;
+  align-self: stretch;
+  overflow: hidden;
+  overflow-y: hidden;
+  overflow-x: hidden;
+  position: static;
+}
+
+#tab-terminal .dashboard-col-main--stack {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Midden (Visuals): 60% / 25% / 15% vaste banden via grid-fr */
+#tab-terminal .dashboard-mid-split.tcc-mid-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 2fr) minmax(0, 1fr);
+  flex: 1 1 0;
+  gap: 0;
+  min-height: 0;
+  height: 100%;
+  max-height: 100%;
+  overflow: hidden;
+  background: var(--clean-bg);
+}
+#tab-terminal .dashboard-mid-split.tcc-mid-split.ledger-has-no-trades {
+  grid-template-rows: minmax(0, 1fr) 40px;
+}
+#cockpitLedgerTable.has-no-trades thead {
+  display: none;
+}
+#cockpitLedgerTable.has-no-trades .cockpit-ledger-empty {
+  text-align: center;
+  padding: 8px 0;
+  color: #475569;
+  font-size: 0.75rem;
+  font-style: italic;
+  letter-spacing: 0.02em;
+}
+
+#tab-terminal .dashboard-mid-row--primary.tcc-mid-row--chart {
+  grid-row: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin: 0;
+  border-bottom: none;
+  box-sizing: border-box;
+}
+
+#tab-terminal .dashboard-mid-row--prediction.tcc-mid-row--prediction {
+  grid-row: 2;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  border-top: 2px solid #333;
+  border-bottom: 1px solid var(--clean-border);
+  box-sizing: border-box;
+  background: var(--clean-bg);
+}
+
+/* TCC: geen uitstulping buiten eigen grid-cel; scroll alleen binnen kinderen */
+#tab-terminal .dashboard-col-main--stack,
+#tab-terminal .dashboard-mid-row--primary,
+#tab-terminal .dashboard-mid-row--prediction,
+#tab-terminal .dashboard-mid-row--ledger {
+  min-width: 0;
+}
+
+#tab-terminal .bv-mid-prediction-stack {
+  flex: 1 1 0 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+  display: flex !important;
+  flex-direction: column !important;
+  background: var(--clean-surface) !important;
+  margin: 0;
+  padding: 0 !important;
+  border: none;
+  border-radius: 0;
+}
+
+#tab-terminal .bv-mid-prediction-stack .hp-trading-chartjs-wrap.bv-chartjs-wrap,
+#tab-terminal .bv-mid-prediction-stack .bv-chartjs-wrap {
+  flex: 1 1 0;
+  min-height: 0;
+  margin-top: 0;
+  max-height: none !important;
+  overflow: hidden;
+}
+
+#tab-terminal .bv-chart-meta,
+#tab-terminal .bv-chart-timehint {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+#tab-terminal .bv-chart-timehint.is-stale {
+  color: #fb923c;
+}
+#tab-terminal .bv-chart-timehint.is-very-stale {
+  color: #ef4444;
+  animation: bv-stale-pulse 2s ease-in-out infinite;
+}
+@keyframes bv-stale-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.45; }
+}
+
+/* TCC: paneelkoppen in normale flow (geen sticky-stack / overlap) */
+#tab-terminal .bv-chart-head {
+  flex-shrink: 0;
+  background: var(--clean-surface);
+  border-bottom: 1px solid var(--clean-border);
+}
+
+#tab-terminal .bv-mid-prediction-stack .bv-chart-timeline {
+  flex-shrink: 0;
+  background: var(--clean-surface);
+  color: var(--clean-muted);
+  border-bottom: 1px solid var(--clean-border);
+}
+
+#tab-terminal .bv-ledger-header {
+  flex-shrink: 0;
+  background: var(--clean-surface);
+  color: var(--clean-text);
+}
+
+/* AI logs: monospace voor uitgelijnde cijfers / tijd */
+#tab-terminal .bv-ai-trades-feed,
+#tab-terminal .bv-ai-trades-feed--scroll-body,
+#tab-terminal .bv-ai-trade-ts,
+#tab-terminal .bv-ai-trade-txt {
+  font-family: "JetBrains Mono", "Courier New", ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+#tab-terminal .dashboard-mid-row--ledger.tcc-ledger-row {
+  grid-row: 2;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  border: none;
+  border-top: 1px solid var(--clean-border);
+  box-sizing: border-box;
+  background: #000;
+}
+
+/* Ledger: vaste paneelhoogte; alleen tabel-wrapper scrollt */
+#tab-terminal .tcc-ledger-scroll-wrap {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-x: auto;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  box-sizing: border-box;
+}
+
+#tab-terminal #cockpitLedgerTable.ledger-table--terminal-fixed,
+#tab-terminal #cockpitLedgerTable.ledger-table--ledger-grid.ledger-table--terminal-fixed {
+  font-size: 0.8rem !important;
+}
+
+#tab-terminal #cockpitLedgerTable.ledger-table--terminal-fixed thead th,
+#tab-terminal #cockpitLedgerTable.ledger-table--terminal-fixed tbody td {
+  padding: 2px 3px !important;
+  line-height: 1.15 !important;
+  font-size: 0.8rem !important;
+}
+
+#tab-terminal #cockpitLedgerTable.ledger-table--ledger-flat.ledger-table--terminal-fixed thead th {
+  padding: 3px 3px !important;
+  line-height: 1.1 !important;
+}
+
+#tab-terminal .tcc-ledger-row .bv-ledger-header {
+  padding: 4px 6px;
+}
+
+#tab-terminal .tcc-ledger-row .bv-ledger-toolbar,
+#tab-terminal .tcc-ledger-row .bv-ledger-tabs {
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+#tab-terminal .tcc-ledger-row .bv-ledger-tab.ledger-footer-tab {
+  padding: 6px 10px 4px 0;
+}
+
+#tab-terminal .bv-ai-feed--rail .bv-ai-trades-panel--split,
+#tab-terminal .bv-ai-feed--rail .bv-ai-trades-feed--scroll-body {
+  position: static;
+}
+
+/* Kolom 3 (Brain): vult hoogte; logs vullen rest (geen zwart gat) */
+#tab-terminal .tcc-intel-col {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  max-height: 100%;
+  overflow: hidden;
+}
+
+#tab-terminal #bvAiFeedCard.bv-ai-feed--rail.tcc-intel-stack {
+  flex: 1 1 0;
+  align-self: stretch;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  max-height: 100%;
+  /* Flex i.p.v. grid: 1fr in nested flex context vult de kolom betrouwbaar tot onder. */
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  overflow: hidden;
+  padding: 0 !important;
+  margin: 0;
+  border: none !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+#tab-terminal #bvAiFeedCard.tcc-intel-stack > .tcc-intel-zone--confidence,
+#tab-terminal #bvAiFeedCard.tcc-intel-stack > .tcc-intel-zone--softmax {
+  flex: 0 0 auto;
+}
+
+#tab-terminal #bvAiFeedCard.tcc-intel-stack > .tcc-intel-zone--logs {
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+#tab-terminal .tcc-intel-zone {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 6px;
+  margin: 0;
+  box-sizing: border-box;
+  background: var(--clean-surface);
+  border: none;
+  border-bottom: 1px solid var(--clean-border);
+  border-radius: 0;
+}
+
+#tab-terminal .tcc-intel-zone--confidence {
+  flex-shrink: 0;
+}
+
+#tab-terminal .tcc-intel-zone--softmax {
+  flex-shrink: 0;
+  padding-top: 6px;
+  border-top: none;
+}
+
+#tab-terminal #hpDashAiStatus.tcc-confidence-badge,
+#tab-terminal .tcc-confidence-badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 56px;
+  margin: 0 !important;
+  padding: 10px 8px;
+  font-size: 1.25rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
+  color: var(--clean-text);
+  background: var(--clean-elevated);
+  border: 1px solid var(--clean-border);
+  border-radius: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#tab-terminal .tcc-intel-zone--logs {
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 6px 6px 4px;
+}
+
+#tab-terminal .tcc-intel-logs-panel {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+#tab-terminal .bv-ai-feed--rail .bv-ai-trades-panel--split.tcc-intel-logs-panel {
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+#tab-terminal .bv-ai-feed--rail .bv-ai-trades-feed--scroll-body {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+#tab-terminal .bv-ai-trade-txt {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+#tab-terminal .tcc-intel-zone--logs .bv-ai-trade-txt {
+  white-space: normal;
+  overflow: visible;
+  font-size: 10px;
+  line-height: 1.15;
+  min-width: 0;
+}
+
+/* Hard grid: compacte AI-logregels (min. witruimte) */
+#tab-terminal .tcc-intel-zone--logs .bv-ai-trades-head {
+  margin: 0;
+  padding: 4px 4px 3px;
+  gap: 4px;
+  font-size: 10px;
+  line-height: 1.2;
+}
+
+#tab-terminal .tcc-intel-zone--logs .bv-ai-trades-panel--split {
+  margin: 0;
+  border: none;
+}
+
+#tab-terminal .tcc-intel-zone--logs .bv-ai-trade-row {
+  padding: 2px 4px;
+  gap: 4px;
+  line-height: 1.2;
+  align-items: start;
+}
+
+#tab-terminal .tcc-intel-zone--logs .bv-ai-trade-ts {
+  font-size: 10px;
+  line-height: 1.2;
+}
+
+#tab-terminal .tcc-intel-zone--logs .bv-ai-trades-feed,
+#tab-terminal .tcc-intel-zone--logs .bv-ai-trades-feed--scroll-body {
+  font-size: 10px;
+  line-height: 1.15;
+}
+
+#tab-terminal .tcc-intel-zone--logs .bv-ai-trades-feed--scroll-body {
+  white-space: normal;
+}
+
+#tab-terminal .tcc-intel-zone--softmax .bv-ai-signal-line {
+  padding: 4px 0 0;
+  margin: 0;
+}
+
+#tab-terminal #bvAiFeedCard .hp-dash-ai-probs {
+  margin: 0;
+  gap: 4px;
+}
+
+#tab-terminal #bvAiFeedCard .bv-ai-prob-row {
+  gap: 4px;
+}
+
+/* Geen buitenmarges op terminal-paneeltjes (strak in grid-cellen) */
+#tab-terminal .panel-noir,
+#tab-terminal .bv-card,
+#tab-terminal section.panel-noir {
+  margin: 0 !important;
+}
+
+#tab-terminal .bv-dashboard-col {
+  gap: 0;
+}
+
+#tab-terminal .dashboard-mid-row--ledger.ledger-footer--terminal-grid,
+#tab-terminal .dashboard-footer.ledger-footer--terminal-grid {
+  position: static;
+  background: #000;
+  border-top: 1px solid var(--clean-border);
+  box-shadow: none;
+}
+
+/* Ledger zebra (leesbaarheid) */
+#tab-terminal .tcc-ledger-scroll-wrap tbody tr:nth-child(odd) {
+  background: rgba(15, 23, 42, 0.92);
+}
+
+#tab-terminal .tcc-ledger-scroll-wrap tbody tr:nth-child(even) {
+  background: rgba(30, 41, 59, 0.55);
+}
+
+#tab-terminal .tcc-ledger-scroll-wrap tbody td {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#tab-terminal .tcc-ledger-scroll-wrap thead th {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Softmax: contrasterende signalen */
+#tab-terminal #bvAiFeedCard .hp-dash-prob-label,
+#tab-terminal #bvAiFeedCard .hp-dash-prob-val {
+  color: var(--clean-text);
+}
+
+#tab-terminal #bvAiFeedCard .bv-ai-prob-bar--buy {
+  background: linear-gradient(90deg, #166534, var(--signal-buy)) !important;
+}
+
+#tab-terminal #bvAiFeedCard .bv-ai-prob-bar--hold {
+  background: linear-gradient(90deg, #475569, var(--signal-hold)) !important;
+}
+
+#tab-terminal #bvAiFeedCard .bv-ai-prob-bar--sell {
+  background: linear-gradient(90deg, #9f1239, var(--signal-sell)) !important;
+}
+
+#tab-terminal #bvAiFeedCard .bv-ai-heartbeat-slot,
+#tab-terminal #bvAiFeedCard .bv-ai-infer-toggle {
+  color: var(--clean-muted);
+}
+
+/* Tekst nooit buiten cel: rail + ticker */
+#tab-terminal .tcc-rail-zone .bv-card-label,
+#tab-terminal .tcc-rail-zone .bv-balance-line,
+#tab-terminal .tcc-rail-zone .bv-kpi-micro,
+#tab-terminal .tcc-rail-col .hp-position-sizing-label,
+#tab-terminal .tcc-rail-col .hp-position-sizing-feedback,
+#tab-terminal .cockpit-ticker-marquee-track,
+#tab-terminal .bv-intel-tape {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#tab-terminal .tcc-rail-zone--balance .bv-balance-stats--tcc .bv-balance-line {
+  min-width: 0;
+}
+
+#tab-terminal .cockpit-ticker-marquee-track {
+  white-space: nowrap;
+}
+
+#tab-terminal .tcc-rail-zone .bv-balance-line.bv-kpi-value {
+  white-space: nowrap;
+}
+
+.bv-dashboard-header .bv-top-hw {
+  position: relative;
+  top: auto;
+  right: auto;
+  margin: 0;
+}
+
+.bv-balance-stats .bv-balance-line {
+  margin: 0;
+  display: block;
+  position: static;
+  line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.bv-balance-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.bv-balance-stats .bv-kpi-sub,
+.bv-balance-stats .bv-kpi-micro,
+.bv-balance-stats .bv-mute,
+.bv-balance-stats .bv-card-label {
+  color: #a0aec0 !important;
+}
+
+.bv-balance-stats .bv-kpi-value {
+  margin: 0;
+}
+
+.bv-alloc-badge-row {
+  margin: 6px 0 8px;
+}
+
+.bv-alloc-main-badge {
+  display: inline-block;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #e5e7eb !important;
+  background: #0a0b0d;
+  border: none;
+  border-radius: 0;
+}
+
+.bv-alloc-summary {
+  margin: 0 0 6px;
+}
+
+.bv-alloc-detail-label {
+  margin-top: 8px;
+}
+
+.bv-sentiment-card {
+  min-height: 0;
+}
+
+.bv-sentiment-gauge-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+}
+
+.bv-sentiment-svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+.bv-gauge-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: #e5e7eb !important;
+}
+
+.bv-gauge-conf {
+  font-size: 10px;
+  color: #9ca3af !important;
+}
+
+.bv-sentiment-bar {
+  width: 100%;
+  max-width: 200px;
+  border-radius: 0;
+}
+
+.bv-sr-inline {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+
+.bv-fg-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 11px;
+}
+
+.bv-fg-sub {
+  color: #9ca3af !important;
+  font-size: 10px;
+}
+
+.bv-kpi-label,
+.bv-card-label {
+  display: block;
+  font-size: 7.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #6b7280 !important;
+  margin: 0 0 6px;
+  font-weight: 600 !important;
+  font-family: "Inter", ui-sans-serif, system-ui, sans-serif;
+}
+
+.bv-kpi-value {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #fff !important;
+}
+
+.bv-kpi-sub,
+.bv-kpi-micro {
+  font-size: 11px;
+  color: #9ca3af !important;
+  margin-top: 2px;
+}
+
+.bv-market-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  margin-top: 4px;
+}
+
+.bv-mute {
+  color: #6b7280 !important;
+  font-weight: 600 !important;
+}
+
+.bv-mono {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-weight: 700 !important;
+}
+
+.bv-market-reason {
+  margin-top: 6px;
+  font-size: 10px;
+  color: #9ca3af !important;
+  line-height: 1.35;
+  max-height: 3.2em;
+  overflow: hidden;
+}
+
+.bv-chip-list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.bv-card {
+  border: none;
+  border-radius: 0;
+  background: #0a0b0d;
+  padding: 8px 10px !important;
+  margin: 0;
+  box-shadow: none;
+}
+
+.bv-card--stack {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.bv-card--alloc-detail {
+  flex: 1 1 100px;
+  min-height: 0;
+  overflow: auto;
+}
+
+.bv-dashboard-col--main {
+  min-height: 0;
+}
+
+.bv-chart-panel--fill {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* Terminal bovenband: alleen LWC-hoofdgrafiek (deel van 60%-rij) */
+#tab-terminal .cockpit-chart-panel.bv-chart-panel--terminal-primary.bv-chart-panel--fill {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+#tab-terminal .cockpit-chart-panel.bv-chart-panel--terminal-primary .bv-terminal-chart-stack {
+  flex: 1 1 0;
+  min-height: 0;
+  min-width: 0;
+  max-height: none;
+  display: flex;
+  flex-direction: column;
+}
+
+#tab-terminal .bv-mid-prediction-stack .bv-chart-timehint,
+#tab-terminal .bv-mid-prediction-stack .bv-chart-meta {
+  flex-shrink: 0;
+}
+
+.bv-chart-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex !important;
+  flex-direction: column !important;
+  padding: 0 !important;
+  border: none;
+  border-radius: 0;
+  background: #0a0b0d !important;
+  margin: 0;
+}
+
+.bv-chart-panel--flush .bv-chart-head {
+  flex-shrink: 0;
+}
+
+.bv-chart-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin: 0;
+  padding: 6px 8px;
+  border-bottom: 1px solid #1e1e1e;
+  background: #0a0b0d;
+}
+
+.bv-chart-controls,
+.chart-controls-inline.bv-chart-controls {
+  position: relative !important;
+  top: auto !important;
+  right: auto !important;
+}
+
+#tab-terminal .bv-chart-controls button {
+  border-radius: 999px;
+  border: 1px solid #2a2f37;
+  background: #12161c;
+  color: #a6afbb;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  margin: 0 2px 0 0;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+}
+
+#tab-terminal .bv-chart-controls button:hover {
+  color: #f4f7fb;
+  border-color: #3a444f;
+}
+
+#tab-terminal .bv-chart-controls button:focus-visible {
+  outline: 1px solid #22c55e;
+  outline-offset: 1px;
+}
+
+#tab-terminal .bv-chart-controls,
+#tab-terminal .chart-controls-inline.bv-chart-controls {
+  position: static !important;
+  z-index: auto !important;
+}
+
+#tab-terminal .bv-chart-controls .chart-timeframe-btn.is-active {
+  background: #22c55e !important;
+  border-color: #22c55e !important;
+  color: #041108 !important;
+  font-weight: 800;
+  box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.35), 0 6px 16px rgba(34, 197, 94, 0.35);
+}
+
+#tab-terminal .bv-chart-controls .chart-timeframe-btn[aria-pressed="true"] {
+  background: #22c55e !important;
+  border-color: #22c55e !important;
+  color: #041108 !important;
+}
+
+.bv-payload-filter-debug {
+  display: none;
+  max-width: min(420px, 100%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: #94a3b8;
+  padding: 3px 8px;
+  margin: 0 4px 0 0;
+  border-radius: 4px;
+  background: rgba(30, 41, 59, 0.55);
+  border: 1px solid #334155;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.bv-payload-filter-debug--dropped {
+  color: #fb923c;
+  border-color: rgba(251, 146, 60, 0.5);
+  background: rgba(251, 146, 60, 0.08);
+}
+body.bv-debug-mode .bv-payload-filter-debug {
+  display: inline-block;
+}
+
+.bv-chart-host {
+  flex: 1 1 auto;
+  min-height: 200px;
+  width: 100%;
+  min-width: 0;
+  position: relative;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background: #0a0b0d;
+}
+
+.bv-price-chart-root {
+  width: 100% !important;
+  height: 100% !important;
+  min-height: 180px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+/* Lightweight Charts: breedte begrenzen; geen max-height (kapt horizontale tijdsas onderaan de canvas af). */
+#tab-terminal #priceChart canvas {
+  display: block;
+  max-width: 100% !important;
+}
+
+/*
+ * Terminal: chart-host vult stack; min-hoogte zodat prijs-schaal + tijdsas binnen de canvas blijven.
+ */
+#tab-terminal .bv-chart-panel--terminal-primary .bv-terminal-chart-stack .cockpit-chart-host.cockpit-chart-anchor.bv-chart-host {
+  flex: 1 1 0;
+  min-height: 0 !important;
+  height: auto !important;
+  max-height: none !important;
+  grid-template: minmax(120px, 1fr) / minmax(0, 1fr) !important;
+}
+
+#tab-terminal .bv-chart-panel--terminal-primary .bv-terminal-chart-stack #priceChart.bv-price-chart-root {
+  min-height: 120px !important;
+  height: 100% !important;
+}
+
+.bv-chartjs-wrap {
+  flex: 1 1 140px;
+  height: auto;
+  min-height: 120px;
+  max-height: min(38vh, 42%);
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-top: 1px solid #1e1e1e;
+  border-radius: 0;
+  background: #0a0b0d;
+  overflow: hidden;
+}
+
+#tab-terminal .bv-mid-prediction-stack .bv-chartjs-wrap {
+  max-height: none;
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+
+.bv-chart-meta {
+  position: relative !important;
+  margin: 0 !important;
+  padding: 4px 8px 6px !important;
+  font-size: 10px !important;
+  color: #6b7280 !important;
+  border-top: 1px solid #1e1e1e;
+  background: #0a0b0d;
+}
+
+.bv-chart-timeline {
+  display: block !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  margin: 0;
+  padding: 6px 10px 8px;
+  min-height: 26px;
+  border-top: 1px solid #1e1e1e;
+  background: #0a0b0d;
+  color: #e5e7eb !important;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  position: relative;
+  z-index: 5;
+}
+
+#chartTimeline {
+  display: block !important;
+}
+
+.bv-intel-tape {
+  flex: 0 0 auto;
+  max-height: 100px;
+  padding: 6px 8px !important;
+  border: none;
+  border-radius: 0;
+  background: #0a0b0d;
+  border-top: 1px solid #1e1e1e;
+}
+
+.bv-ai-feed {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Kop blijft in documentflow (geen sticky → geen overlap met grafiek) */
+.bv-ai-feed__sticky-head {
+  flex: 0 0 auto;
+  position: relative;
+  top: auto;
+  z-index: 1;
+  background: #0a0b0d;
+  padding-bottom: 4px;
+  border-bottom: 1px solid #1e1e1e;
+}
+
+.bv-ai-heartbeat-slot {
+  margin-top: 8px;
+  min-height: 0;
+}
+
+.bv-ai-heartbeat-slot .bv-ai-trade-row--rl-heartbeat .bv-ai-trade-txt,
+.bv-ai-heartbeat-slot #hpRlHeartbeatRow.bv-ai-trade-row--rl-heartbeat .bv-ai-trade-txt {
+  color: #facc15 !important;
+  font-weight: 800 !important;
+  font-size: 13px !important;
+  letter-spacing: 0.02em;
+  text-shadow: 0 0 12px rgba(250, 204, 21, 0.35);
+}
+
+.bv-ai-heartbeat-slot .bv-ai-trade-row--rl-heartbeat .bv-ai-trade-ts {
+  color: #eab308 !important;
+  font-weight: 700 !important;
+}
+
+.bv-ai-status-line {
+  font-size: 12px;
+  font-weight: 800;
+  color: #e5e7eb !important;
+  margin-bottom: 4px;
+}
+
+.bv-ai-signal-line {
+  font-size: 11px;
+  color: #9ca3af !important;
+  margin: 0;
+  padding: 6px 0 8px;
+  border-top: 1px solid #1e1e1e;
+}
+
+.bv-thoughts-label {
+  margin: 8px 0 0;
+  font-size: 13px;
+  font-weight: 700;
+  color: #e5e7eb !important;
+}
+
+.bv-ai-feed__sticky-head .bv-thoughts-label--sticky {
+  display: block;
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px solid #27272a;
+}
+
+.bv-ai-feed__sticky-head .bv-ai-trades-head {
+  margin-top: 6px;
+}
+
+/* Bitvavo-achtige markttrades: tijd | bericht | indicator */
+.bv-ai-trades-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  margin-top: 6px;
+  border: none;
+  border-top: 1px solid #1e1e1e;
+  background: #0a0b0d;
+  border-radius: 0;
+}
+
+.bv-ai-trades-panel--split {
+  flex: 1 1 auto;
+  min-height: 120px;
+  margin-top: 0;
+  border-top: none;
+}
+
+.bv-ai-trades-head {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr) minmax(22px, auto);
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #9ca3af !important;
+  border-bottom: 1px solid #1e1e1e;
+  background: #0a0b0d;
+  flex: 0 0 auto;
+}
+
+.bv-ai-trades-feed {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 13px;
+  background: #0a0b0d;
+}
+
+.bv-ai-trades-feed--scroll-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+}
+
+.bv-ai-trade-row--confidence-highlight .bv-ai-trade-txt {
+  color: #facc15 !important;
+  font-weight: 800 !important;
+  font-size: 13px !important;
+  letter-spacing: 0.02em;
+}
+
+.bv-ai-trade-row--confidence-highlight .bv-ai-trade-ts {
+  color: #ca8a04 !important;
+  font-weight: 700 !important;
+}
+
+.bv-ai-trade-row {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr) minmax(18px, auto);
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border-bottom: 1px solid #1e1e1e;
+  line-height: 1.45;
+}
+
+.bv-ai-trade-row:last-child {
+  border-bottom: none;
+}
+
+.bv-ai-trade-ts {
+  font-variant-numeric: tabular-nums;
+  color: #a1a1aa !important;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.bv-ai-trade-txt {
+  min-width: 0;
+  word-break: break-word;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.bv-ai-trade-side {
+  text-align: right;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.bv-ai-trade-row--pos .bv-ai-trade-txt {
+  color: #22c55e !important;
+}
+
+.bv-ai-trade-row--pos .bv-ai-trade-side {
+  color: #22c55e !important;
+}
+
+.bv-ai-trade-row--neg .bv-ai-trade-txt {
+  color: #ef4444 !important;
+}
+
+.bv-ai-trade-row--neg .bv-ai-trade-side {
+  color: #ef4444 !important;
+}
+
+.bv-ai-trade-row--neu .bv-ai-trade-txt {
+  color: #d4d4d8 !important;
+}
+
+.bv-ai-trade-row--neu .bv-ai-trade-side {
+  color: #a1a1aa !important;
+}
+
+.bv-ai-trade-row--empty .bv-ai-trade-txt {
+  color: #9ca3af !important;
+  font-style: italic;
+}
+
+.hp-dash-ai-probs {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin-top: 10px;
+  width: 100%;
+  font-size: 12px;
+  font-family: "Inter", ui-sans-serif, system-ui, sans-serif;
+}
+
+.bv-ai-probs .bv-ai-prob-row {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) 58px;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid #1e1e1e;
+}
+
+.bv-ai-probs .bv-ai-prob-row:last-child {
+  border-bottom: 0;
+}
+
+.bv-ai-prob-bar-wrap {
+  height: 9px;
+  background: #141619;
+  border-radius: 0;
+  overflow: hidden;
+  border: none;
+  border-bottom: 1px solid #1e1e1e;
+}
+
+.bv-ai-prob-bar {
+  height: 100%;
+  min-width: 0;
+  border-radius: 0;
+  transition: width 0.28s ease-out;
+}
+
+.bv-ai-prob-bar--buy {
+  background: linear-gradient(90deg, #14532d, #22c55e);
+}
+
+.bv-ai-prob-bar--hold {
+  background: linear-gradient(90deg, #27272a, #a1a1aa);
+}
+
+.bv-ai-prob-bar--sell {
+  background: linear-gradient(90deg, #7f1d1d, #f87171);
+}
+
+.hp-dash-prob-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0;
+  border-bottom: 1px solid #222;
+}
+
+.hp-dash-prob-row:last-child {
+  border-bottom: 0;
+}
+
+.hp-dash-prob-label {
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.hp-dash-prob-val {
+  color: #22d3ee;
+  font-weight: 800;
+  font-size: 13px;
+  font-family: "Inter", ui-sans-serif, system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.03em;
+}
+
+/* AI Brain strip boven voorspellingsgrafiek */
+.bv-chart-ai-brain-strip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  padding: 6px 12px 5px;
+  margin: 0;
+  background: #0a0b0d;
+  border-bottom: 1px solid #1e1e1e;
+  min-height: 34px;
+  box-sizing: border-box;
+}
+
+.hp-ai-brain-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #52525b;
+  transition: color 0.3s ease;
+}
+
+.hp-ai-brain-icon svg {
+  display: block;
+  opacity: 0.5;
+  transition: opacity 0.35s ease, filter 0.35s ease;
+}
+
+#hpAiBrainPulseWrap.hp-ai-brain-pulse--strong .hp-ai-brain-icon {
+  color: #39ff14;
+}
+
+#hpAiBrainPulseWrap.hp-ai-brain-pulse--strong .hp-ai-brain-icon svg {
+  opacity: 1;
+  filter: drop-shadow(0 0 8px rgba(57, 255, 20, 0.95)) drop-shadow(0 0 16px rgba(57, 255, 20, 0.45));
+}
+
+.hp-ai-brain-conf-readout {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 700;
+  color: #71717a;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+#hpAiBrainPulseWrap.hp-ai-brain-pulse--strong .hp-ai-brain-conf-readout {
+  color: #86efac;
+}
+
+/* Terminal: widgets naadloos; chart vult cel */
+#tab-terminal .panel-noir,
+#tab-terminal section.panel-noir.dashboard-card {
+  border-radius: 0 !important;
+}
+
+#tab-terminal .tcc-rail-col.bv-dashboard-col,
+#tab-terminal .tcc-market-col.bv-dashboard-col {
+  gap: 0;
+  padding: 0;
+}
+
+#tab-terminal .bv-sentiment-gauge-wrap .bv-gauge-label {
+  position: static;
+  transform: none;
+  left: auto;
+  bottom: auto;
+  display: block;
+  margin: 6px auto 0;
+  text-align: center;
+}
+
+#tab-terminal .cockpit-chart-panel.panel-noir.bv-chart-panel--flush,
+#tab-terminal .bv-mid-prediction-stack.panel-noir {
+  padding: 0 !important;
+  position: static;
+}
+
+#tab-terminal .dashboard-mid-row--primary.tcc-mid-row--chart .cockpit-chart-panel.bv-chart-panel--terminal-primary {
+  flex: 1 1 0;
+  min-height: 0;
+  border: none;
+}
+
+#tab-terminal .dashboard-mid-row--primary.tcc-mid-row--chart .bv-intel-tape {
+  flex-shrink: 0;
+  border-top: 1px solid var(--clean-border);
+  background: var(--clean-surface);
+}
+
+.hp-position-sizing-widget .hp-position-sizing-tabs {
+  display: flex;
+  gap: 0;
+  margin: 8px 0 10px;
+  border-bottom: 1px solid #1e1e1e;
+}
+
+.hp-position-sizing-tab {
+  flex: 1;
+  padding: 6px 8px;
+  font-size: 11px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: #71717a;
+  border-radius: 0;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.hp-position-sizing-tab.is-active {
+  color: #fafafa;
+  border-bottom-color: #39ff14;
+  background: transparent;
+}
+
+.hp-position-sizing-label {
+  display: block;
+  font-size: 11px;
+  color: #888;
+  margin-bottom: 4px;
+}
+
+.hp-position-sizing-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  margin-bottom: 8px;
+  background: #0a0b0d;
+  border: 1px solid #1e1e1e;
+  color: #eee;
+  border-radius: 0;
+}
+
+.hp-position-sizing-submit {
+  width: 100%;
+  margin-top: 4px;
+  padding: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  border: none;
+  border-radius: 0;
+  background: #22c55e;
+  color: #0a0b0d;
+  cursor: pointer;
+}
+
+.hp-position-sizing-feedback {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: #888;
+  min-height: 1.2em;
+}
+
+.hp-position-sizing-order-preview {
+  margin: 2px 0 6px;
+  font-size: 10px;
+  color: #71717a;
+  line-height: 1.35;
+  min-height: 1.2em;
+}
+
+.hp-position-sizing-koopmeta {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid #1e1e1e;
+}
+
+.hp-position-sizing-koopmeta .bv-mute {
+  color: #a1a1aa !important;
+}
+
+.hp-position-sizing-koopmeta .bv-balance-line {
+  color: #e5e7eb;
+}
+
+.hp-position-sizing-koopmeta #positionSizingCashAvailable,
+.hp-position-sizing-koopmeta #positionSizingMaxBuys {
+  color: #f4f4f5 !important;
+  font-weight: 600;
+}
+
+/* Verticale drempelmarkering (policy %): lijn op de breedte van de kansbalk. */
+#bvAiFeedCard .bv-ai-prob-bar-wrap {
+  position: relative;
+}
+
+#bvAiFeedCard .bv-ai-prob-bar-wrap::after {
+  content: "";
+  position: absolute;
+  left: var(--hp-ai-threshold-pct, 55%);
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 0 2px rgba(255, 255, 255, 0.45);
+  pointer-events: none;
+  z-index: 4;
+}
+
+/* TCC: geen absolute pseudo op balk-wrapper — drempel via gradient (zelfde --hp-ai-threshold-pct) */
+#tab-terminal #bvAiFeedCard .bv-ai-prob-bar-wrap::after {
+  content: none;
+}
+
+#tab-terminal #bvAiFeedCard .bv-ai-prob-bar-wrap {
+  position: relative;
+  background: linear-gradient(
+    to right,
+    transparent 0,
+    transparent calc(var(--hp-ai-threshold-pct, 55%) - 0.5px),
+    rgba(255, 255, 255, 0.88) var(--hp-ai-threshold-pct, 55%),
+    transparent calc(var(--hp-ai-threshold-pct, 55%) + 0.5px),
+    transparent 100%
+  );
+}
+
+/* Elite-8 asset chips: actieve munt (oranje) vs. POS-badge (blauw op .elite8-ai-pill__pos) */
+.elite8-ai-pill--in-position {
+  border-color: var(--oled-border, #2a2a2e) !important;
+  box-shadow: none !important;
+}
+
+.elite8-ai-pill.active-asset {
+  border-color: #f97316 !important;
+  box-shadow:
+    0 0 0 1px rgba(249, 115, 22, 0.65),
+    0 0 18px rgba(249, 115, 22, 0.38) !important;
+}
+
+.elite8-ai-pill.active-asset.elite8-ai-pill--panic {
+  border-color: #fb923c !important;
+}
+
+.scanner-ticker-badge.active-asset {
+  border-color: #f97316 !important;
+  box-shadow:
+    0 0 0 1px rgba(249, 115, 22, 0.55),
+    0 0 14px rgba(249, 115, 22, 0.32) !important;
+}
+
+.scanner-ticker-badge--in-position {
+  border-color: var(--oled-border, #333333) !important;
+  box-shadow: none !important;
+}
+
+.hp-chart-ai-legend {
+  display: inline-block;
+  margin: 0 6px 0 4px;
+  padding: 2px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #38bdf8;
+  border: none;
+  border-bottom: 1px dashed #38bdf8;
+  border-radius: 0;
+  vertical-align: middle;
+  opacity: 0.95;
+}
+
+.hp-chart-hit-rate {
+  display: inline-block;
+  margin: 0 8px 0 0;
+  padding: 2px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #a7f3d0;
+  background: transparent;
+  border-radius: 0;
+  vertical-align: middle;
+}
+
+.hp-ai-accuracy-score {
+  display: inline-block;
+  margin: 0 6px 0 0;
+  padding: 2px 6px;
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #22c55e;
+  vertical-align: middle;
+}
+
+.hp-trading-chartjs-wrap {
+  margin-top: 8px;
+  height: 200px;
+  width: 100%;
+  min-height: 160px;
+  position: relative;
+  flex-shrink: 0;
+}
+
+#tab-terminal .hp-trading-chartjs-wrap {
+  margin-top: 0;
+  min-height: 0;
+  flex: 1 1 0;
+  align-self: stretch;
+  position: static;
+}
+
+.hp-trading-chartjs-wrap canvas {
+  display: block;
+  width: 100% !important;
+  max-width: 100%;
+  height: 100% !important;
+}
+
+@media (max-width: 1100px) {
+  .dashboard-container {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1fr) auto auto;
+    grid-template-areas:
+      "main"
+      "left"
+      "right";
+  }
+
+  .dashboard-col-left {
+    width: 100%;
+    max-width: none;
+  }
+
+  .dashboard-col-right {
+    width: 100%;
+    max-width: none;
+  }
+
+  /* Terminal-tab: fixed grid blijft (geen verticale stack van hele cockpit) */
+  #tab-terminal #dashboard.dashboard-container {
+    grid-template-columns: 240px minmax(0, 1fr) 340px !important;
+    grid-template-rows: minmax(0, 1fr) !important;
+    grid-template-areas: "left main right" !important;
+  }
+
+  #tab-terminal .dashboard-col-left {
+    width: 240px !important;
+    max-width: 240px !important;
+  }
+
+  #tab-terminal .dashboard-col-right {
+    width: 340px !important;
+    max-width: 340px !important;
+  }
+}
+
+/* Ledger: grid footer-rij, scrollbare tabel */
+.ledger-footer--terminal-grid.bv-ledger.dashboard-footer {
+  position: relative !important;
+  bottom: auto !important;
+  left: auto !important;
+  width: 100% !important;
+  max-height: none !important;
+  flex: 0 0 auto;
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  background: #0a0b0d;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  max-height: 100%;
+  overflow: hidden;
+}
+
+/* Ledger: grid-rij 15% + interne tabel-scroll */
+#tab-terminal .dashboard-mid-row--ledger.ledger-footer--terminal-grid.bv-ledger.dashboard-footer {
+  min-height: 0;
+  height: auto;
+  max-height: none;
+  background: #000;
+}
+
+.bv-ledger-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #1e1e1e;
+  flex-shrink: 0;
+  background: #0a0b0d;
+}
+
+.bv-ledger-toolbar {
+  flex-shrink: 0;
+  padding: 0;
+  border-bottom: 1px solid #1e1e1e;
+}
+
+.bv-ledger-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  padding: 0 10px;
+  background: #0a0b0d;
+}
+
+.bv-ledger-tab.ledger-footer-tab {
+  appearance: none;
+  margin: 0;
+  padding: 10px 14px 8px 0;
+  font-family: "Inter", ui-sans-serif, system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #71717a !important;
+  background: transparent !important;
+  border: none !important;
+  border-bottom: 2px solid transparent !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  cursor: pointer;
+  text-align: left;
+}
+
+.bv-ledger-tab.ledger-footer-tab:hover {
+  color: #d4d4d8 !important;
+}
+
+.bv-ledger-tab.ledger-footer-tab.is-active {
+  color: #fafafa !important;
+  border-bottom-color: #22c55e !important;
+}
+
+.bv-ledger-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 0;
+}
+
+/* Terminal-ledger: scroll op wrapper; thead sticky binnen dezelfde <table> (table-layout: fixed in cockpit.css). */
+#tab-terminal .ledger-footer-content.bv-ledger-scroll,
+#tab-terminal .tcc-ledger-scroll-wrap.bv-ledger-scroll {
+  overflow: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: 100%;
+  -webkit-overflow-scrolling: touch;
+}
+#tab-terminal .ledger-footer-content.bv-ledger-scroll .trade-table--ledger-grid.ledger-table--ledger-flat.ledger-table--terminal-fixed,
+#tab-terminal .tcc-ledger-scroll-wrap.bv-ledger-scroll .trade-table--ledger-grid.ledger-table--ledger-flat.ledger-table--terminal-fixed {
+  display: table;
+  width: 100%;
+  height: auto;
+  min-height: 0;
+}
+#tab-terminal .ledger-footer-content.bv-ledger-scroll .trade-table--ledger-grid.ledger-table--ledger-flat.ledger-table--terminal-fixed thead,
+#tab-terminal .tcc-ledger-scroll-wrap.bv-ledger-scroll .trade-table--ledger-grid.ledger-table--ledger-flat.ledger-table--terminal-fixed thead {
+  display: table-header-group;
+}
+#tab-terminal .ledger-footer-content.bv-ledger-scroll .trade-table--ledger-grid.ledger-table--ledger-flat.ledger-table--terminal-fixed tbody,
+#tab-terminal .tcc-ledger-scroll-wrap.bv-ledger-scroll .trade-table--ledger-grid.ledger-table--ledger-flat.ledger-table--terminal-fixed tbody {
+  display: table-row-group;
+}
+
+.gpu-fail {
+  box-shadow:
+    0 0 0 2px rgba(255, 62, 62, 0.75),
+    0 0 36px rgba(255, 62, 62, 0.55),
+    inset 0 0 28px rgba(80, 10, 10, 0.45) !important;
+  border-color: rgba(255, 62, 62, 0.55) !important;
+  background: rgba(48, 8, 8, 0.92) !important;
+  animation: gpu-fail-glow 1.1s ease-in-out infinite alternate;
+}
+
+@keyframes gpu-fail-glow {
+  0% {
+    box-shadow: 0 0 0 2px rgba(255, 62, 62, 0.5), 0 0 24px rgba(255, 62, 62, 0.35);
+  }
+  100% {
+    box-shadow: 0 0 0 3px rgba(255, 62, 62, 0.95), 0 0 48px rgba(255, 62, 62, 0.65);
+  }
+}
+
+.ledger-closed-summary {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 14px !important;
+  font-weight: 700 !important;
+  padding: 10px 8px !important;
+}
+
+.ledger-history-asset {
+  color: #e2e8f0 !important;
+}
+
+.ledger-history-meta {
+  font-size: 11px;
+  font-weight: 600;
+  color: #64748b !important;
+  margin-left: 8px;
+}
+
+#cockpitLedgerTable.ledger-table--ledger-flat.ledger-table--terminal-fixed thead tr {
+  background: #1a1a1a;
+}
+
+#cockpitLedgerTable.ledger-table--ledger-flat.ledger-table--terminal-fixed thead th {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: #1a1a1a !important;
+  color: #f4f4f5 !important;
+  font-weight: 700;
+  border-bottom: 1px solid #2f3640;
+  box-shadow: 0 1px 0 #2f3640;
+}
+
+/* Ledger: kolommen geforceerd onder koppen (overrides van andere sheets) */
+#cockpitLedgerTable.ledger-table--ledger-flat.ledger-table--terminal-fixed,
+#cockpitLedgerTable.ledger-table--ledger-grid.ledger-table--terminal-fixed {
+  display: table !important;
+  table-layout: fixed !important;
+  width: 100% !important;
+  border-collapse: collapse !important;
+  border-spacing: 0 !important;
+}
+#cockpitLedgerTable.ledger-table--terminal-fixed thead {
+  display: table-header-group !important;
+}
+#cockpitLedgerTable.ledger-table--terminal-fixed tbody {
+  display: table-row-group !important;
+}
+#cockpitLedgerTable.ledger-table--terminal-fixed thead tr,
+#cockpitLedgerTable.ledger-table--terminal-fixed tbody tr {
+  display: table-row !important;
+}
+#cockpitLedgerTable.ledger-table--terminal-fixed thead th,
+#cockpitLedgerTable.ledger-table--terminal-fixed tbody td {
+  display: table-cell !important;
+  vertical-align: middle !important;
+  box-sizing: border-box !important;
+}
+
+/* --- Cockpit: body = flexkolom (geen page-scroll); header+ticker+stage --- */
+body.cockpit-body {
+  --cockpit-header-h: 72px;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  max-height: 100dvh;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+body.cockpit-body .cockpit-header.cockpit-header--pro {
+  flex-direction: column;
+  align-items: stretch;
+  /* Geen wrap: master_layout .cockpit-header { flex-wrap: wrap } zou row1 + row2 naast
+     elkaar zetten (tweede kolom) → groot leeg vlak onder de bovenbalk. */
+  flex-wrap: nowrap !important;
+  gap: 0;
+  row-gap: 0;
+  column-gap: 0;
+  padding: 4px 12px 2px;
+  background: #0a0b0d !important;
+  border-bottom: 1px solid #14151a !important;
+  min-height: 0;
+  height: auto;
+  flex-shrink: 0;
+  position: static;
+  z-index: auto;
+}
+
+body.cockpit-body .cockpit-global-ticker-strip {
+  background: #0a0b0d !important;
+  border-bottom-color: #14151a !important;
+  padding: 2px 10px !important;
+  gap: 2px !important;
+  min-height: 0 !important;
+  max-height: 36px !important;
+  position: static !important;
+  z-index: auto !important;
+}
+
+.cockpit-header-row1 {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+}
+
+/* Munt-rail: compact, geen extra verticale ruimte */
+body.cockpit-body .cockpit-header-row2.cockpit-asset-strip--rail {
+  position: static;
+  z-index: auto;
+  flex-shrink: 0;
+  min-height: 0;
+  height: auto;
+  max-height: none;
+  display: flex;
+  align-items: center;
+  padding-top: 0;
+  padding-bottom: 2px;
+}
+
+body.cockpit-body .cockpit-header-row2 #marketSelect,
+body.cockpit-body .cockpit-header-row2 .cockpit-select.cockpit-select--minimal {
+  position: static;
+  z-index: auto;
+}
+
+body.cockpit-body main#app.cockpit-main-stage {
+  position: static;
+  z-index: auto;
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.cockpit-header-left {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  min-width: 0;
+}
+
+body.cockpit-body .cockpit-header--pro .cockpit-nav-tabs {
+  justify-content: flex-start;
+}
+
+/* Tab-rail: Bitvavo Pro — segment, hover-vlak, groene actieve indicator */
+body.cockpit-body .cockpit-nav-tabs.cockpit-nav-tabs--bitvavo {
+  display: inline-flex;
+  align-items: stretch;
+  gap: 0;
+  padding: 2px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid #1a1c22;
+}
+
+body.cockpit-body .cockpit-nav-tabs--bitvavo .cockpit-tab {
+  position: relative;
+  border: none !important;
+  border-bottom: none !important;
+  border-radius: 6px;
+  padding: 5px 14px 6px !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  color: #b8bcc8 !important;
+  background: transparent !important;
+  letter-spacing: 0.02em;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+body.cockpit-body .cockpit-nav-tabs--bitvavo .cockpit-tab:hover {
+  background: rgba(255, 255, 255, 0.06) !important;
+  color: #eef0f4 !important;
+  border-bottom-color: transparent !important;
+}
+
+body.cockpit-body .cockpit-nav-tabs--bitvavo .cockpit-tab.active {
+  color: #f8fafc !important;
+  background: rgba(255, 255, 255, 0.05) !important;
+  border-bottom-color: transparent !important;
+  box-shadow: inset 0 -2px 0 0 #22c55e;
+}
+
+body.cockpit-body .cockpit-nav-tabs--bitvavo .cockpit-tab.active:hover {
+  color: #ffffff !important;
+}
+
+/* Rechtsboven: AI LIVE + wallet + profiel + STOP BOT (één lijn) */
+.cockpit-header-status {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  flex-shrink: 0;
+  flex-wrap: nowrap;
+}
+
+.cockpit-wallet-cluster {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+}
+
+.cockpit-wallet-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  font-family: "Inter", ui-sans-serif, system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 300;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.cockpit-wallet-label {
+  color: #5c6370;
+  font-weight: 400;
+  margin-right: 3px;
+}
+
+.cockpit-wallet-amt {
+  font-weight: 600;
+  color: #eceef2;
+  font-variant-numeric: tabular-nums;
+}
+
+.cockpit-wallet-sep {
+  color: #3b404d;
+  font-weight: 300;
+  margin: 0 8px;
+  user-select: none;
+}
+
+.cockpit-info-ic--header {
+  flex-shrink: 0;
+  align-self: center;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  vertical-align: middle;
+}
+
+.cockpit-status-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #6ee7b7;
+}
+
+.cockpit-status-live__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #22c55e;
+  box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.55);
+  animation: cockpit-live-pulse 1.8s ease-out infinite;
+}
+
+@keyframes cockpit-live-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.55);
+  }
+  70% {
+    box-shadow: 0 0 0 7px rgba(34, 197, 94, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(34, 197, 94, 0);
+  }
+}
+
+.cockpit-mode-pill {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  padding: 2px 6px;
+  border-radius: 3px;
+  border: 1px solid #2a2d35;
+  color: #94a3b8;
+  text-transform: uppercase;
+}
+
+.cockpit-mode-pill.mode-live {
+  border-color: rgba(34, 197, 94, 0.45);
+  color: #86efac;
+}
+
+.cockpit-mode-pill.mode-paper {
+  border-color: rgba(148, 163, 184, 0.4);
+  color: #cbd5e1;
+}
+
+.cockpit-profile-dd {
+  position: relative;
+}
+
+.cockpit-profile-dd > summary.cockpit-profile {
+  list-style: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 4px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+}
+
+.cockpit-profile-dd > summary.cockpit-profile::-webkit-details-marker {
+  display: none;
+}
+
+.cockpit-profile-dd > summary.cockpit-profile:hover {
+  border-color: #2a2d35;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.cockpit-profile__avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  color: #0a0b0d;
+  background: linear-gradient(135deg, #e2e8f0, #94a3b8);
+}
+
+.cockpit-profile__name {
+  font-size: 12px;
+  font-weight: 600;
+  color: #e5e7eb;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cockpit-profile-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  min-width: 160px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid #2a2d35;
+  background: #12141a;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  z-index: 50;
+}
+
+.cockpit-profile-menu__meta {
+  font-size: 10px;
+  color: #8b92a0;
+}
+
+.cockpit-stop-bot {
+  appearance: none;
+  margin: 0;
+  padding: 6px 14px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  color: #0a0b0d;
+  background: #ffffff;
+  transition: opacity 0.15s ease, transform 0.1s ease;
+}
+
+.cockpit-stop-bot:hover {
+  opacity: 0.92;
+}
+
+.cockpit-stop-bot:active {
+  transform: scale(0.98);
+}
+
+/* Dunne asset-rail + saldo */
+.cockpit-header-row2.cockpit-asset-strip--rail {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  padding: 0 0 1px;
+  margin-top: 0;
+  border-top: 1px solid #0e0f12;
+  min-height: 20px;
+}
+
+.cockpit-asset-strip__nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.cockpit-asset-pair {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: #8b919d !important;
+}
+
+.cockpit-select.cockpit-select--minimal {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 5px;
+  max-width: 108px;
+  color: #a8aeb9 !important;
+  background: transparent !important;
+  border: 1px solid #23262e;
+  border-radius: 3px;
+}
+
+.cockpit-icon-btn {
+  appearance: none;
+  margin: 0;
+  padding: 1px 6px;
+  font-size: 11px;
+  line-height: 1.2;
+  color: #6b7280;
+  background: transparent;
+  border: 1px solid #23262e;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.cockpit-icon-btn:hover {
+  color: #d1d5db;
+  border-color: #3d424d;
+}
+
+.cockpit-asset-tick {
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: #6b7280 !important;
+  white-space: nowrap;
+}
+
+.cockpit-info-ic {
+  appearance: none;
+  margin: 0;
+  padding: 0;
+  width: 15px;
+  height: 15px;
+  border: 1px solid #2f323a;
+  border-radius: 50%;
+  background: transparent;
+  color: #6b7280;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: help;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.cockpit-info-ic--rail {
+  margin-right: 2px;
+}
+
+.cockpit-info-ic:hover {
+  color: #cbd5e1;
+  border-color: #4b5563;
+}
+
+.cockpit-info-ic__glyph {
+  font-style: normal;
+  font-family: inherit;
+}
+
+.cockpit-pos-lamp {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-left: 2px;
+  flex-shrink: 0;
+  border: 1px solid #23262e;
+}
+
+.cockpit-pos-lamp--off {
+  background: #1a1c22;
+  box-shadow: none;
+}
+
+.cockpit-pos-lamp--on {
+  background: #22c55e;
+  border-color: #166534;
+  box-shadow: 0 0 5px rgba(34, 197, 94, 0.45);
+}
+
+.hp-hw-mini-monitor .hp-hw-mini-hud {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: #d8f5e4 !important;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.hp-hw-mini-warn {
+  display: inline-block;
+  font-size: 9px;
+  line-height: 1;
+  color: #6b7280 !important;
+  opacity: 0.9;
+}
+
+.hp-hw-mini-monitor.hp-hw-mini-monitor--alert .hp-hw-mini-warn {
+  color: #ff4d4d !important;
+  text-shadow: 0 0 8px rgba(255, 77, 77, 0.8);
+}
+
+.terminal-health-status-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+
+.terminal-health-status-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #cbd5e1 !important;
+}
+
+.terminal-health-status-item span:last-child {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10px;
+}
+
+.terminal-health-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  background: #6b7280;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+
+.terminal-health-dot.is-ok {
+  background: #22c55e;
+  box-shadow: 0 0 8px rgba(34, 197, 94, 0.7);
+}
+
+.terminal-health-dot.is-error {
+  background: #ef4444;
+  box-shadow: 0 0 8px rgba(239, 68, 68, 0.7);
+}
+
+.terminal-health-dot.is-loading {
+  background: #9ca3af;
+  box-shadow: 0 0 6px rgba(156, 163, 175, 0.55);
+}
+
+#market-sentiment-score {
+  color: #67e8f9 !important;
+  font-weight: 700;
+}
+
+@media (max-width: 720px) {
+  .cockpit-header-row1 {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .cockpit-header-status {
+    width: 100%;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+}
+
+/* -------------------------------------------------------------------------
+   Clean Dashboard: master_layout chart-defaults overschrijven zodat LWC-host
+   binnen flex-banden (2:1 + ledger) meeschaalt zonder body-scroll.
+   ------------------------------------------------------------------------- */
+#tab-terminal .cockpit-chart-anchor {
+  min-height: 0 !important;
+  max-height: none !important;
+}
+
+#tab-terminal .cockpit-chart-host.cockpit-chart-anchor {
+  min-height: 0 !important;
+  height: auto !important;
+  max-height: none !important;
+  grid-template: minmax(0, 1fr) / minmax(0, 1fr) !important;
+}
+
+#tab-terminal #dashboard.dashboard-container.tcc-command-grid.cockpit-terminal-workspace {
+  display: grid !important;
+  flex: 1 1 0 !important;
+  min-height: 0 !important;
+  height: 100% !important;
+  max-height: 100% !important;
+}
+
+/* =============================================================================
+   LOCKED VIEWPORT — 60px #top-bar + tactisch grid (240 / 1fr / 340)
+   Midden: 58fr / 25fr rest + vaste 180px ledger; linker kolom scrollt als geheel.
+   ============================================================================= */
+
+html {
+  height: 100vh;
+  max-height: 100dvh;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background: #000;
+}
+
+body.cockpit-body {
+  display: block;
+  margin: 0;
+  padding: 0;
+  height: 100vh;
+  max-height: 100dvh;
+  overflow: hidden;
+  background: #000;
+}
+
+body.cockpit-body:has(main.cockpit-locked-viewport) {
+  display: block !important;
+  --cockpit-header-h: 60px;
+}
+
+html:has(main.cockpit-locked-viewport),
+body.cockpit-body:has(main.cockpit-locked-viewport) {
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+body.cockpit-body main#app.cockpit-main-stage.cockpit-locked-viewport,
+body.cockpit-body main#app.cockpit-locked-viewport.cockpit-main-stage {
+  margin: 0;
+  padding: 0;
+  display: grid !important;
+  flex: none !important;
+  grid-template-rows: 60px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
+  height: 100vh;
+  max-height: 100dvh;
+  width: 100%;
+  overflow: hidden;
+  min-height: 0;
+}
+
+#top-bar {
+  grid-row: 1;
+  grid-column: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: nowrap;
+  gap: 12px;
+  padding: 0 20px;
+  height: 60px;
+  min-height: 60px;
+  max-height: 60px;
+  width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  box-sizing: border-box;
+  background: #000000;
+  border-bottom: 1px solid #1a1c22;
+  position: static;
+}
+
+#top-bar .cockpit-top-bar__brand-nav {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 0 0 auto;
+}
+
+#top-bar .cockpit-brand {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  line-height: 1;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+#top-bar .cockpit-nav-tabs.cockpit-nav-tabs--bitvavo {
+  padding: 1px;
+  align-items: center;
+  justify-content: flex-start;
+}
+
+#top-bar .cockpit-nav-tabs--bitvavo .cockpit-tab {
+  padding: 3px 10px 4px !important;
+  font-size: 11px !important;
+}
+
+#top-bar .cockpit-top-bar__center {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1 1 auto;
+  min-width: 0;
+  justify-content: center;
+}
+
+#top-bar .cockpit-top-bar__wallet {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+#top-bar .cockpit-wallet-line {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 6px;
+  min-width: 0;
+  line-height: 1.15;
+}
+
+#top-bar .cockpit-status-live {
+  flex-shrink: 0;
+  align-items: center;
+  line-height: 1;
+}
+
+#top-bar .cockpit-info-ic--header {
+  flex-shrink: 0;
+  align-self: center;
+}
+
+#top-bar .cockpit-top-bar__market {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  min-width: 0;
+  line-height: 1;
+}
+
+#top-bar .cockpit-top-bar__grow {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+}
+
+#top-bar .cockpit-top-bar__actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 0 0 auto;
+}
+
+#top-bar .cockpit-global-ticker-strip {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  max-height: 52px;
+  width: 100%;
+  margin-top: 0;
+  padding: 2px 8px;
+  gap: 6px;
+  position: static;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+#top-bar .scanner-ticker-badge,
+#top-bar .elite8-ai-pill {
+  margin-top: 0;
+}
+
+#top-bar .cockpit-asset-strip--rail {
+  position: static;
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+
+/* Valuta/scanner in 60px-balk: compacte chips */
+#top-bar .cockpit-asset-pair {
+  font-size: 10px;
+}
+
+#top-bar .cockpit-select.cockpit-select--minimal {
+  font-size: 9px;
+  padding: 1px 4px;
+  max-width: 96px;
+  line-height: 1.2;
+}
+
+#top-bar .cockpit-icon-btn {
+  padding: 0 5px;
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+#top-bar .cockpit-asset-tick {
+  font-size: 9px;
+}
+
+#top-bar .scanner-ticker-bar {
+  align-items: center;
+  margin: 0 !important;
+  gap: 4px !important;
+  flex-wrap: nowrap !important;
+}
+
+#top-bar .scanner-ticker-badge {
+  min-height: 20px !important;
+  min-width: 0 !important;
+  padding: 2px 7px !important;
+  border-radius: 4px !important;
+  font-size: 9px !important;
+  font-weight: 700 !important;
+}
+
+#top-bar .elite8-ai-pill {
+  min-height: 20px !important;
+  min-width: 0 !important;
+  padding: 2px 8px 2px 7px !important;
+  gap: 4px !important;
+  border-radius: 999px !important;
+  font-size: 9px !important;
+}
+
+#top-bar .elite8-ai-pill__dot {
+  width: 7px !important;
+  height: 7px !important;
+}
+
+#top-bar .elite8-ai-status-bar {
+  margin: 0 !important;
+  padding: 2px 4px !important;
+  gap: 4px !important;
+  flex-wrap: nowrap !important;
+  border-width: 1px !important;
+  border-radius: 4px !important;
+}
+
+#top-bar .elite8-ai-status-bar__empty {
+  font-size: 9px !important;
+}
+
+#top-bar .cockpit-profile-dd {
+  position: static;
+}
+
+#top-bar .cockpit-profile-menu {
+  position: static;
+  right: auto;
+  top: auto;
+  margin: 0;
+  box-shadow: none;
+  border: 1px solid #2a2d35;
+  background: #12141a;
+}
+
+#top-bar .cockpit-stop-bot {
+  padding: 4px 12px;
+  font-size: 10px;
+}
+
+#top-bar .cockpit-profile__avatar {
+  width: 22px;
+  height: 22px;
+  font-size: 11px;
+}
+
+#top-bar .cockpit-profile__name {
+  font-size: 11px;
+}
+
+body.cockpit-body main#app.cockpit-locked-viewport > #tab-logs,
+body.cockpit-body main#app.cockpit-locked-viewport > #tab-aibrain,
+body.cockpit-body main#app.cockpit-locked-viewport > #tab-ledger,
+body.cockpit-body main#app.cockpit-locked-viewport > #tab-hardware {
+  grid-row: 2;
+  grid-column: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+body.cockpit-body main#app.cockpit-locked-viewport > #tab-terminal.bv-terminal.cockpit-shell {
+  grid-row: 2;
+  grid-column: 1;
+  display: flex !important;
+  flex-direction: column !important;
+  flex: 1 1 0 !important;
+  min-height: 0 !important;
+  min-width: 0 !important;
+  height: 100% !important;
+  max-height: none !important;
+  overflow: hidden;
+}
+
+body.cockpit-body main#app.cockpit-locked-viewport #tab-terminal #dashboard.tcc-command-grid,
+body.cockpit-body main#app.cockpit-locked-viewport #tab-terminal #dashboard.dashboard-container.tcc-command-grid {
+  flex: 1 1 0;
+  display: grid !important;
+  grid-template-columns: 240px minmax(0, 1fr) 340px;
+  grid-template-rows: minmax(0, 1fr);
+  grid-template-areas: "left main right";
+  align-items: stretch !important;
+  justify-items: stretch !important;
+  min-height: 0 !important;
+  height: 100% !important;
+  max-height: 100% !important;
+  width: 100%;
+  gap: 0;
+  padding: 0;
+  margin: 0;
+  overflow: hidden;
+  background: var(--clean-bg, #0f172a) !important;
+}
+
+body.cockpit-body main#app.cockpit-locked-viewport #tab-terminal .dashboard-col-left.tcc-rail-col {
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  min-height: 0 !important;
+}
+
+body.cockpit-body main#app.cockpit-locked-viewport #tab-terminal #positionSizingUpdateBtn {
+  margin-bottom: 20px;
+}
+
+body.cockpit-body main#app.cockpit-locked-viewport #tab-terminal .dashboard-col-right.bv-dashboard-col--ai {
+  display: flex !important;
+  flex-direction: column !important;
+  height: 100% !important;
+  max-height: none !important;
+  min-height: 0 !important;
+  align-self: stretch !important;
+}
+
+body.cockpit-body main#app.cockpit-locked-viewport #tab-terminal .dashboard-mid-split.tcc-mid-split {
+  display: flex !important;
+  flex-direction: column !important;
+  height: auto !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  overflow: visible !important;
+}
+
+body.cockpit-body main#app.cockpit-locked-viewport #tab-terminal .dashboard-mid-row--primary.tcc-mid-row--chart {
+  flex: 0 0 auto !important;
+  min-height: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden;
+}
+
+body.cockpit-body main#app.cockpit-locked-viewport #tab-terminal .dashboard-mid-row--prediction.tcc-mid-row--prediction {
+  grid-row: 2 !important;
+  flex: unset !important;
+  min-height: 0 !important;
+  border-top: 1px solid #333 !important;
+  overflow: hidden;
+}
+
+body.cockpit-body main#app.cockpit-locked-viewport #tab-terminal .dashboard-mid-row--ledger.tcc-ledger-row {
+  flex: 1 1 auto !important;
+  height: auto !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  overflow: hidden !important;
+  display: flex !important;
+  flex-direction: column !important;
+  background: #000 !important;
+}
+
+body.cockpit-body main#app.cockpit-locked-viewport #tab-terminal .tcc-ledger-scroll-wrap {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: auto;
+}
+
+body.cockpit-body main#app.cockpit-locked-viewport #tab-terminal #dashboard.tcc-command-grid > aside.tcc-intel-col.dashboard-col-right {
+  height: 100% !important;
+  max-height: 100% !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+body.cockpit-body main#app.cockpit-locked-viewport #tab-terminal .dashboard-container.tcc-command-grid,
+body.cockpit-body main#app.cockpit-locked-viewport #tab-terminal .dashboard-col-main--stack,
+body.cockpit-body main#app.cockpit-locked-viewport #tab-terminal .dashboard-mid-split {
+  position: static !important;
+}
+
+body.cockpit-body main#app.cockpit-locked-viewport #tab-terminal .tcc-intel-col {
+  position: static !important;
+  flex: 1 1 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  height: 100% !important;
+  max-height: 100% !important;
+  min-height: 0 !important;
+}
+
+body.cockpit-body main#app.cockpit-locked-viewport #tab-terminal .hp-hw-mini-monitor {
+  position: relative !important;
+  top: auto !important;
+  right: auto !important;
+  left: auto !important;
+}
+
+body.cockpit-body main#app.cockpit-locked-viewport #tab-terminal #bvAiFeedCard.bv-ai-feed--rail.tcc-intel-stack {
+  display: flex !important;
+  flex-direction: column !important;
+  flex: 1 1 0 !important;
+  flex-grow: 1 !important;
+  min-height: 0 !important;
+  height: 100% !important;
+  max-height: none !important;
+  width: 100% !important;
+  align-self: stretch !important;
+}
+
+body.cockpit-body main#app.cockpit-locked-viewport #tab-terminal #bvAiFeedCard.tcc-intel-stack > .tcc-intel-zone--confidence,
+body.cockpit-body main#app.cockpit-locked-viewport #tab-terminal #bvAiFeedCard.tcc-intel-stack > .tcc-intel-zone--softmax {
+  flex: 0 0 auto !important;
+}
+
+body.cockpit-body main#app.cockpit-locked-viewport #tab-terminal #bvAiFeedCard.tcc-intel-stack > .tcc-intel-zone--logs {
+  flex: 1 1 0 !important;
+  flex-grow: 1 !important;
+  min-height: 0 !important;
+  height: 100% !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+}
+
+body.cockpit-body main#app.cockpit-locked-viewport #tab-terminal #hpDashAiStatus.tcc-confidence-badge {
+  min-height: 44px !important;
+  padding: 8px 6px !important;
+  font-size: 1.05rem !important;
+}
+
+body.cockpit-body main#app.cockpit-locked-viewport #tab-terminal .tcc-intel-zone--logs .bv-ai-trades-panel--split.tcc-intel-logs-panel {
+  flex: 1 1 0 !important;
+  min-height: 0 !important;
+}
+
+body.cockpit-body main#app.cockpit-locked-viewport #tab-terminal .tcc-intel-zone--logs .bv-ai-trades-feed--scroll-body,
+body.cockpit-body main#app.cockpit-locked-viewport #tab-terminal #bvAiThoughtFeed.bv-ai-trades-feed--scroll-body {
+  flex: 1 1 0 !important;
+  flex-grow: 1 !important;
+  min-height: 0 !important;
+  overflow-y: scroll !important;
+  font-family: "JetBrains Mono", ui-monospace, monospace !important;
+  font-size: 0.8rem !important;
+  line-height: 1.35 !important;
+}
+
+body.cockpit-body main#app.cockpit-locked-viewport #tab-terminal .tcc-intel-zone--logs .bv-ai-trade-ts,
+body.cockpit-body main#app.cockpit-locked-viewport #tab-terminal .tcc-intel-zone--logs .bv-ai-trade-txt {
+  font-size: 0.8rem !important;
+}
+
+/* Geen margin-top binnen locked terminal-grid (layout); gebruik gap/padding op panels */
+body.cockpit-body main#app.cockpit-locked-viewport #tab-terminal #dashboard .tcc-rail-zone,
+body.cockpit-body main#app.cockpit-locked-viewport #tab-terminal #dashboard .tcc-market-col,
+body.cockpit-body main#app.cockpit-locked-viewport #tab-terminal #dashboard .tcc-intel-col,
+body.cockpit-body main#app.cockpit-locked-viewport #tab-terminal #dashboard .dashboard-mid-split {
+  margin-top: 0 !important;
+}
+
+body.cockpit-body main#app.cockpit-locked-viewport #tab-terminal #dashboard .bv-ai-feed--rail .bv-ai-trades-panel--split,
+body.cockpit-body main#app.cockpit-locked-viewport #tab-terminal #dashboard .bv-ai-feed--rail .bv-ai-trades-feed--scroll-body {
+  position: static !important;
+}
+
+body.cockpit-body main#app.cockpit-locked-viewport > #tab-aibrain,
+body.cockpit-body main#app.cockpit-locked-viewport > #tab-ledger,
+body.cockpit-body main#app.cockpit-locked-viewport > #tab-hardware,
+body.cockpit-body main#app.cockpit-locked-viewport > #tab-logs {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }

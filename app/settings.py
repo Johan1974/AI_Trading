@@ -5,6 +5,9 @@ Runtime-modus (PAPER/LIVE) en validatie — los van FastAPI zodat tests/worker-i
 from __future__ import annotations
 
 import os
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).parent.parent
 
 
 def _trading_mode_raw() -> str:

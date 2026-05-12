@@ -1,0 +1,6 @@
+# Playwright-base mist tzdata; zonder zoneinfo werkt TZ=Europe/Amsterdam niet (UTC + valse %Z).
+FROM mcr.microsoft.com/playwright/python:v1.58.0-jammy
+USER root
+RUN apt-get update -qq \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends tzdata \
+    && rm -rf /var/lib/apt/lists/*

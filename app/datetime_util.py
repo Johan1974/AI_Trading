@@ -1,5 +1,5 @@
 """
-BESTANDSNAAM: /home/johan/AI_Trading/app/datetime_util.py
+BESTANDSNAAM: app/datetime_util.py
 FUNCTIE: `datetime.UTC` bestaat pas vanaf Python 3.11; Docker/CUDA-image gebruikt 3.10.
 """
 

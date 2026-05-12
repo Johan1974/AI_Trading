@@ -3,12 +3,34 @@
 */
 
 :root {
-  --genesis-header-h: 44px;
-  --genesis-tabs-h: 40px;
-  --genesis-font: "Inter", system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-  --genesis-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  /* Genesis Noir Quant — design token layer */
+  --gnq-bg-base:       #050505;
+  --gnq-bg-card:       #0a0a0a;
+  --gnq-bg-grid:       #050505;
+  --gnq-bg-hover:      #111111;
+  --gnq-border-subtle: #1a1a1a;
+  --gnq-border-strong: #252525;
+  --gnq-green:         #00ff41;
+  --gnq-cyan:          #00d1ff;
+  --gnq-red:           #ff3131;
+  --gnq-amber:         #f8d04f;
+  --gnq-text:          #e2e8f0;
+  --gnq-text-muted:    #666666;
+  --gnq-text-dim:      #3a3a3a;
+  --gnq-font-ui:       "Inter", system-ui, sans-serif;
+  --gnq-font-mono:     "JetBrains Mono", ui-monospace, monospace;
+  --gnq-gap-xs:        4px;
+  --gnq-gap-sm:        8px;
+  --gnq-gap-md:        16px;
+  --gnq-gap-lg:        24px;
+
+  /* Legacy aliases (internal use; prefer --gnq-* in new rules) */
+  --genesis-header-h:  44px;
+  --genesis-tabs-h:    40px;
+  --genesis-font:      var(--gnq-font-ui);
+  --genesis-mono:      var(--gnq-font-mono);
   --genesis-neon-line: 4px;
-  --genesis-neon-blue: #00d1ff;
+  --genesis-neon-blue: var(--gnq-cyan);
 }
 
 html {
@@ -38,8 +60,8 @@ body {
   flex-wrap: nowrap;
   min-height: var(--genesis-header-h);
   padding: 6px 12px;
-  background: #000000;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  background: var(--gnq-bg-base);
+  border-bottom: 1px solid var(--gnq-border-subtle);
   box-sizing: border-box;
 }
 
@@ -190,8 +212,8 @@ body {
 }
 
 .system-logs-grid {
-  flex: 1;
-  min-height: 0;
+  flex: 1 1 auto;
+  min-height: min(320px, 42vh);
   padding: 0 15px 15px;
   box-sizing: border-box;
 }
@@ -204,10 +226,48 @@ body {
   flex-direction: column;
 }
 
+.system-logs-span > .panel.genesis-card,
+.system-logs-span > .panel.eq-card {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.system-logs-span #systemLogConsole {
+  flex: 1 1 auto;
+  min-height: min(280px, 40vh);
+}
+
+.hardware-log-stack {
+  display: grid;
+  grid-template-rows: 1fr 1fr;
+  gap: 10px;
+  height: 100%;
+  min-height: 0;
+}
+
+.hardware-log-block {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.hardware-log-block .system-log-console {
+  min-height: 0;
+  max-height: none;
+  height: 100%;
+}
+
 .system-logs-meta .eq-card {
   height: 100%;
 }
 
+#tab-terminal,
+#tab-aibrain,
+#tab-ledger,
+#tab-hardware.hardware-tab,
 #terminalTab,
 #brainTab.brain-tab,
 #ledgerTab.brain-tab,
@@ -256,6 +316,7 @@ body {
   margin: 0 15px;
 }
 
+#tab-hardware.hardware-tab,
 #hardwareTab.hardware-tab {
   display: flex;
   flex-direction: column;
@@ -265,6 +326,7 @@ body {
   padding: 0;
 }
 
+#tab-hardware .genesis-tab-inner,
 #hardwareTab .genesis-tab-inner {
   flex: 1;
   min-height: 0;
@@ -272,9 +334,10 @@ body {
   flex-direction: column;
 }
 
+#tab-hardware #systemLogConsole,
 #hardwareTab #systemLogConsole {
-  flex: 1;
-  min-height: 0;
+  flex: 1 1 auto;
+  min-height: min(280px, 40vh);
   max-height: none !important;
   overflow-y: auto !important;
   scrollbar-width: none;
@@ -283,6 +346,7 @@ body {
   font-size: 13px;
 }
 
+#tab-hardware #systemLogConsole::-webkit-scrollbar,
 #hardwareTab #systemLogConsole::-webkit-scrollbar {
   width: 0;
   height: 0;
@@ -345,6 +409,7 @@ body {
 }
 
 /* GPU-meter: neon blauw wanneer CUDA actief (conic-gradient zoals Electric Quant) */
+#tab-hardware .ring-meter--gpu.ring-meter--gpu-active .ring-meter__arc--gpu,
 #hardwareTab .ring-meter--gpu.ring-meter--gpu-active .ring-meter__arc--gpu {
   background: conic-gradient(
     var(--genesis-neon-blue) calc(var(--pct) * 1%),
@@ -413,4 +478,34 @@ body {
 
 #brainTab .eq-col--visual > .brain-card--training {
   flex: 2 !important;
+}
+
+/* Hardware-tab: log filter + zoekveld (headerSystemActions) */
+#headerSystemActions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.system-log-filter-select {
+  min-width: 160px;
+  max-width: min(220px, 34vw);
+  padding: 6px 10px;
+  font-size: 12px;
+  background: #0d1117;
+  color: #e6edf3;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 6px;
+}
+
+.system-log-search-input {
+  min-width: 120px;
+  max-width: min(200px, 30vw);
+  padding: 6px 10px;
+  font-size: 12px;
+  background: #0d1117;
+  color: #e6edf3;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 6px;
 }

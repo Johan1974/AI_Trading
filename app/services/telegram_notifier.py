@@ -6,6 +6,8 @@ Functie: Verstuurt operationele meldingen naar Telegram.
 
 from __future__ import annotations
 
+import hashlib
+import os
 import socket
 from datetime import datetime
 from html import escape
@@ -33,6 +35,17 @@ class TelegramNotifier:
         msg = str(text or "").strip()
         if not msg:
             return False
+        # Centrale anti-duplicate guard (cross-module, persistente state).
+        try:
+            from app.services.reporting import mark_notification_sent, notification_cooldown_due
+
+            window_sec = max(30, int(float(os.getenv("TELEGRAM_DEDUPE_WINDOW_SEC", "180") or 180)))
+            digest = hashlib.sha1(msg.encode("utf-8", errors="ignore")).hexdigest()[:20]
+            key = f"telegram_dedupe_{digest}"
+            if not notification_cooldown_due(key=key, cooldown_sec=window_sec):
+                return False
+        except Exception:
+            key = ""
         url = f"https://api.telegram.org/bot{self.token}/sendMessage"
         try:
             resp = requests.post(
@@ -46,7 +59,15 @@ class TelegramNotifier:
                 },
                 timeout=8,
             )
-            return resp.status_code == 200
+            ok = resp.status_code == 200
+            if ok and key:
+                try:
+                    from app.services.reporting import mark_notification_sent
+
+                    mark_notification_sent(key=key)
+                except Exception:
+                    pass
+            return ok
         except Exception:
             return False
 

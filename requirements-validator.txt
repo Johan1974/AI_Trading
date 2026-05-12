@@ -2,3 +2,6 @@
 playwright>=1.58.0
 pytz
 docker
+numpy
+pandas
+pyarrow

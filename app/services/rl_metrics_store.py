@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -131,3 +131,88 @@ def merge_historical_training_into_agent(agent: RLAgentService, max_points: int 
     }
     if last_step > int(agent.last_training_stats.get("global_step_count", 0) or 0):
         agent.last_training_stats["global_step_count"] = last_step
+
+
+def hourly_metrics_jsonl_path() -> Path:
+    """JSONL met uur-samenvattingen (trendlijn loss vs reward). Overschrijf met RL_HOURLY_METRICS_FILE."""
+    raw = str(os.getenv("RL_HOURLY_METRICS_FILE", "") or "").strip()
+    if raw:
+        p = Path(raw)
+        if not p.is_absolute():
+            p = Path.cwd() / p
+        p.parent.mkdir(parents=True, exist_ok=True)
+        return p
+    from app.diagnostics.logs_hub_maintenance import resolve_logs_hub
+
+    base = resolve_logs_hub()
+    base.mkdir(parents=True, exist_ok=True)
+    return base / "rl_hourly_metrics.jsonl"
+
+
+def write_hourly_training_summary_log(*, window_hours: float = 1.0) -> dict[str, Any]:
+    """
+    Schrijf één JSONL-regel met gemiddelde train/loss over ``rl_training_chunks`` in het afgelopen venster.
+    ``avg_final_cumulative_reward`` = gemiddelde van de laatste waarde per chunk (eindstand na die learn-batch).
+    """
+    init_rl_metrics_db()
+    cutoff = (datetime.now(UTC) - timedelta(hours=max(0.05, float(window_hours)))).isoformat()
+    all_loss: list[float] = []
+    reward_tails: list[float] = []
+    chunks = 0
+    max_step = 0
+    pairs: set[str] = set()
+    with _conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT pair, rewards_json, loss_json, global_step
+            FROM rl_training_chunks
+            WHERE ts_utc >= ?
+            ORDER BY id ASC
+            """,
+            (cutoff,),
+        ).fetchall()
+    for row in rows:
+        chunks += 1
+        try:
+            pairs.add(str(row[0] or "").upper())
+        except Exception:
+            pass
+        try:
+            rj = json.loads(row[1])
+            if isinstance(rj, list) and rj:
+                reward_tails.append(float(rj[-1]))
+        except Exception:
+            pass
+        try:
+            lj = json.loads(row[2])
+            if isinstance(lj, list):
+                for x in lj:
+                    try:
+                        v = float(x)
+                        if v == v:
+                            all_loss.append(v)
+                    except (TypeError, ValueError):
+                        pass
+        except Exception:
+            pass
+        try:
+            max_step = max(max_step, int(row[3] or 0))
+        except Exception:
+            pass
+    avg_loss = sum(all_loss) / len(all_loss) if all_loss else None
+    avg_reward_tail = sum(reward_tails) / len(reward_tails) if reward_tails else None
+    record: dict[str, Any] = {
+        "ts_utc": datetime.now(UTC).isoformat(),
+        "window_hours": float(window_hours),
+        "training_chunks_in_window": chunks,
+        "avg_loss": round(avg_loss, 8) if avg_loss is not None else None,
+        "avg_final_cumulative_reward": round(avg_reward_tail, 6) if avg_reward_tail is not None else None,
+        "loss_samples": len(all_loss),
+        "global_step_max": max_step,
+        "pairs": sorted(pairs),
+    }
+    path = hourly_metrics_jsonl_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fp:
+        fp.write(json.dumps(record, ensure_ascii=False) + "\n")
+    return record

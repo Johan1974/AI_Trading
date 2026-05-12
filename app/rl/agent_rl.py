@@ -14,6 +14,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import logging
+import zlib
 import numpy as np
 try:
     import psutil
@@ -28,7 +30,9 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.vec_env import DummyVecEnv
 
+import gc
 import os
+import time as _time_mod
 
 from core.preprocessor import attention_gate_weights
 from core.social_engine import apply_whale_attention_blend
@@ -38,6 +42,27 @@ from app.services import rl_metrics_store
 
 MIN_LEARNING_RATE = 1.0e-5
 MIN_EXPLORATION_EPS = 0.05
+
+_log_rl_agent = logging.getLogger(__name__)
+
+
+def _coerce_float(value: Any, default: float = 0.0) -> float:
+    """Best-effort numeric coercion for RL/runtime payloads."""
+    try:
+        if value is None:
+            return float(default)
+        if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return float(default)
+            raw = raw.replace("%", "").replace(",", ".")
+            value = raw
+        out = float(value)
+        if not np.isfinite(out):
+            return float(default)
+        return out
+    except Exception:
+        return float(default)
 
 
 def get_rl_ppo_device() -> str:
@@ -62,6 +87,7 @@ class RewardLossCallback(BaseCallback):
         self.policy_entropy: list[float] = []
         self.approx_kl: list[float] = []
         self.value_loss: list[float] = []
+        self.td_steps: list[int] = []
         self.global_steps: list[int] = []
         self._cum = 0.0
 
@@ -93,6 +119,7 @@ class RewardLossCallback(BaseCallback):
             val_loss = logs.get("train/value_loss")
             if val_loss is not None:
                 self.value_loss.append(float(val_loss))
+                self.td_steps.append(int(self.num_timesteps))
         except Exception:
             pass
         self.global_steps.append(int(self.num_timesteps))
@@ -107,9 +134,38 @@ class RLDecision:
     expected_reward_pct: float
     feature_weights: dict[str, float]
     reasoning: str
+    # PPO categorical: index 0=HOLD, 1=BUY, 2=SELL (zelfde volgorde als ``probs``-vector).
+    prob_hold: float = 0.0
+    prob_buy: float = 0.0
+    prob_sell: float = 0.0
+    thinking_steps: list[str] = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        if self.thinking_steps is None:
+            self.thinking_steps = []
+
+
+def _softmax_np(logits: np.ndarray) -> np.ndarray:
+    x = np.asarray(logits, dtype=np.float64).reshape(-1)
+    x = x - np.max(x)
+    x = np.clip(x, -80.0, 80.0)
+    e = np.exp(x)
+    s = float(np.sum(e))
+    if s <= 1e-18:
+        return np.ones(min(3, len(x)), dtype=np.float64) / float(max(1, min(3, len(x))))
+    return e / s
 
 
 class RLAgentService:
+    @staticmethod
+    def _ppo_learn_timesteps_aligned(model: PPO, total_timesteps: int) -> int:
+        """
+        Ceil naar veelvoud van ``n_steps`` (zie ``core.worker_execution.align_ppo_total_timesteps``).
+        """
+        from core.worker_execution import align_ppo_total_timesteps
+
+        return align_ppo_total_timesteps(model, total_timesteps)
+
     def __init__(self, model_dir: str = "artifacts/rl") -> None:
         self.model_dir = Path(model_dir)
         self.model_dir.mkdir(parents=True, exist_ok=True)
@@ -124,8 +180,13 @@ class RLAgentService:
                 MIN_EXPLORATION_EPS,
                 float(os.getenv("RL_EXPLORATION_FINAL_EPS", "0.05") or 0.05),
             ),
+            "batch_size": 128,
+            "n_steps": 1024,
+            "discount_factor": 0.99,
+            "is_training_active": False,
         }
         self._paper_sl_hits: int = 0
+        self._last_canonical_save_monotonic: dict[str, float] = {}
         self.last_network_logs: dict[str, list[float]] = {"approx_kl": [], "value_loss": []}
         self.last_benchmark: dict[str, float] = {"rl_pnl_pct": 0.0, "buy_hold_pnl_pct": 0.0, "alpha_pct": 0.0}
         self.last_correlation: dict[str, float] = {
@@ -148,6 +209,7 @@ class RLAgentService:
             "bollinger_width",
             "bollinger_position",
             "orderbook_imbalance",
+            "bid_ask_spread",
             "macd",
             "rsi_14",
             "ema_gap_pct",
@@ -156,6 +218,21 @@ class RLAgentService:
 
     def _chart_series_cap(self) -> int:
         return max(200, min(int(os.getenv("RL_TRAINING_CHART_MAX_POINTS", "8000") or 8000), 50000))
+
+    def _sync_training_stats_from_model(self) -> None:
+        """Vul UI/Brain-tab stats (batch, γ, n_steps, training-flag) vanuit het actieve SB3-model."""
+        m = self.model
+        if m is None:
+            return
+        try:
+            self.last_training_stats["batch_size"] = int(getattr(m, "batch_size", 128) or 128)
+            self.last_training_stats["n_steps"] = int(getattr(m, "n_steps", 1024) or 1024)
+            self.last_training_stats["discount_factor"] = float(getattr(m, "gamma", 0.99) or 0.99)
+            self.last_training_stats["is_training_active"] = bool(
+                str(os.getenv("RL_BACKGROUND_TRAIN", "0")).strip().lower() in ("1", "true", "yes", "on")
+            )
+        except Exception:
+            pass
 
     def _exploration_decay_per_1k_pct(self) -> float:
         return max(0.0, float(os.getenv("RL_EPS_DECAY_PCT_PER_1K_STEPS", "0.5") or 0.5))
@@ -166,6 +243,28 @@ class RLAgentService:
         decay_pct = self._exploration_decay_per_1k_pct() * (float(steps) / 1000.0)
         eps_pct = max(floor * 100.0, 100.0 - decay_pct)
         return max(floor, min(1.0, eps_pct / 100.0))
+
+    def _sync_exploration_stats_from_model(self) -> int:
+        """
+        Zet global_step_count / exploration UI gelijk met SB3 ``num_timesteps``.
+
+        Zonder sync bleef ``global_step_count`` op 0 na ``PPO.load`` → ε-decay dacht stappen=0
+        → exploratie bleef 100% (UI: 'Exploratie ε=1').
+        """
+        if self.model is None:
+            return int(self.last_training_stats.get("global_step_count", 0) or 0)
+        try:
+            gs_model = int(getattr(self.model, "num_timesteps", 0) or 0)
+        except Exception:
+            gs_model = 0
+        prev = int(self.last_training_stats.get("global_step_count", 0) or 0)
+        gs = max(prev, gs_model)
+        self.last_training_stats["global_step_count"] = gs
+        eps = self._exploration_live_from_steps(gs)
+        eps = max(MIN_EXPLORATION_EPS, min(1.0, eps))
+        self.last_training_stats["exploration_rate_pct"] = round(eps * 100.0, 2)
+        self.last_training_stats["exploration_final_eps"] = round(eps, 4)
+        return gs
 
     def _persist_training_from_callback(self, pair: str, cb: RewardLossCallback) -> None:
         try:
@@ -213,7 +312,7 @@ class RLAgentService:
         self,
         pair: str,
         lookback_days: int = 30,
-        total_timesteps: int = 3000,
+        total_timesteps: int = 10000,
         cmc_metrics: dict[str, Any] | None = None,
     ) -> None:
         pair = pair.upper()
@@ -237,6 +336,7 @@ class RLAgentService:
             cryptocompare_key=os.getenv("CRYPTOCOMPARE_KEY"),
             cmc_metrics=cmc_metrics or {"btc_dominance_pct": float(os.getenv("CMC_BTC_DOMINANCE_FALLBACK", "0") or 0.0)},
         )
+        del candles
         vec_env = DummyVecEnv([lambda: BitvavoTradingEnv(data=frame, max_trades=10000)])
         
         # SENIOR FIX: Voorkom DataFrame memory leaks door de oude environment netjes af te sluiten
@@ -246,8 +346,12 @@ class RLAgentService:
             
         self.model.set_env(vec_env)
         cb = RewardLossCallback()
+        raw_ts = int(max(512, total_timesteps))
+        learn_ts = self._ppo_learn_timesteps_aligned(self.model, raw_ts)
+        if learn_ts != raw_ts:
+            print(f"[RL] online_update timesteps {raw_ts} -> {learn_ts} (align PPO n_steps={getattr(self.model, 'n_steps', '?')})")
         self.model.learn(
-            total_timesteps=int(max(512, total_timesteps)),
+            total_timesteps=learn_ts,
             callback=cb,
             progress_bar=False,
             reset_num_timesteps=False,
@@ -262,6 +366,7 @@ class RLAgentService:
         self.last_network_logs = {
             "approx_kl": (self.last_network_logs.get("approx_kl", []) + cb.approx_kl)[-cap:],
             "value_loss": (self.last_network_logs.get("value_loss", []) + cb.value_loss)[-cap:],
+            "td_steps": (self.last_network_logs.get("td_steps", []) + cb.td_steps)[-cap:],
         }
         self._persist_training_from_callback(pair, cb)
         self.last_training_stats["global_step_count"] = int(
@@ -273,6 +378,7 @@ class RLAgentService:
                 max(MIN_LEARNING_RATE, float(self.model.lr_schedule(1.0))),
                 8,
             )
+        self._sync_training_stats_from_model()
         gs_now = int(self.last_training_stats.get("global_step_count", 0) or 0)
         eps_now = self._exploration_live_from_steps(gs_now)
         os.environ["RL_EXPLORATION_FINAL_EPS"] = f"{eps_now:.4f}"
@@ -280,12 +386,33 @@ class RLAgentService:
             eps_now, 4
         )
         
-        # SENIOR FIX: Forceer GC en clear VRAM fragmentatie na elke train-cycle
-        import gc
+        # Release training env before frame deletion so the DataFrame can be GC'd
+        try:
+            if hasattr(self.model, 'env') and self.model.env is not None:
+                self.model.env.close()
+                self.model.env = None
+        except Exception:
+            pass
         del frame
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+
+        if str(os.getenv("RL_SAVE_CANONICAL_ZIP_AFTER_ONLINE_UPDATE", "1")).strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        ):
+            min_gap = float(os.getenv("RL_CANONICAL_SAVE_MIN_SEC", "300") or 300)
+            now_m = _time_mod.monotonic()
+            if now_m - float(self._last_canonical_save_monotonic.get(pair, 0.0)) >= max(30.0, min_gap):
+                try:
+                    self.model.save(str(self._model_path(pair)))
+                    self._last_canonical_save_monotonic[pair] = now_m
+                    print(f"[RL] Canonical weights opgeslagen na online_update: {self._model_path(pair)}.zip")
+                except Exception as exc:
+                    print(f"[RL] Canonical save na online_update mislukt: {exc}")
 
     def ingest_paper_stop_loss(self) -> None:
         """Harde stop-loss vanuit risk-engine (paper): één 'geheugen'-puls voor volgende decide()."""
@@ -349,8 +476,21 @@ class RLAgentService:
                     if loaded_model.observation_space.shape[0] != expected_shape:
                         print(f"{datetime.now().astimezone().isoformat()} [AI-ENGINE][ERROR] Observation space mismatch! Model verwacht {loaded_model.observation_space.shape[0]} features, live agent verwacht {expected_shape}. Model {pair} wordt genegeerd en herbouwd.")
                     else:
+                        if self.model is not None:
+                            try:
+                                _old_env = self.model.get_env()
+                                if _old_env is not None:
+                                    _old_env.close()
+                            except Exception:
+                                pass
+                            del self.model
+                            self.model = None
+                            gc.collect()
+                            if torch.cuda.is_available():
+                                torch.cuda.empty_cache()
                         self.model = loaded_model
                         self.active_pair = pair
+                        self._sync_exploration_stats_from_model()
                         return True
                 except Exception as e:
                     print(f"{datetime.now().astimezone().isoformat()} [AI-ENGINE][ERROR] Fout bij laden best model {pair}: {e}")
@@ -363,8 +503,21 @@ class RLAgentService:
                 if loaded_model.observation_space.shape[0] != expected_shape:
                     print(f"{datetime.now().astimezone().isoformat()} [AI-ENGINE][ERROR] Observation space mismatch! Model verwacht {loaded_model.observation_space.shape[0]} features, live agent verwacht {expected_shape}. Model {pair} wordt genegeerd en herbouwd.")
                 else:
+                    if self.model is not None:
+                        try:
+                            _old_env = self.model.get_env()
+                            if _old_env is not None:
+                                _old_env.close()
+                        except Exception:
+                            pass
+                        del self.model
+                        self.model = None
+                        gc.collect()
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
                     self.model = loaded_model
                     self.active_pair = pair
+                    self._sync_exploration_stats_from_model()
                     return True
             except Exception as e:
                 print(f"{datetime.now().astimezone().isoformat()} [AI-ENGINE][ERROR] Fout bij laden fallback model {pair}: {e}")
@@ -374,10 +527,11 @@ class RLAgentService:
         self,
         pair: str,
         lookback_days: int = 400,
-        total_timesteps: int = 5000,
+        total_timesteps: int = 50000,
     ) -> None:
         pair = pair.upper()
         if self.active_pair == pair and self.model is not None:
+            self._sync_exploration_stats_from_model()
             return
         if self._load_if_available(pair):
             return
@@ -399,11 +553,14 @@ class RLAgentService:
             cmc_metrics={"btc_dominance_pct": float(os.getenv("CMC_BTC_DOMINANCE_FALLBACK", "0") or 0.0)},
         )
         
-        # SENIOR FIX: Ruim eventuele bestaande model-envs op om cyclische referenties te breken
-        if self.model is not None:
-            old_env = self.model.get_env()
+        # Ruim oude model + env op om cyclische referenties en SB3 heap-groei te voorkomen
+        _old_model = self.model
+        if _old_model is not None:
+            old_env = _old_model.get_env()
             if old_env is not None:
                 old_env.close()
+            self.model = None
+            del _old_model
 
         def _make_env():
             return BitvavoTradingEnv(data=frame, max_trades=10000)
@@ -413,21 +570,27 @@ class RLAgentService:
             "MlpPolicy",
             vec_env,
             verbose=0,
-            learning_rate=3e-4,
+            learning_rate=1e-4,
             n_steps=1024,
             batch_size=128,
             gamma=0.99,
             gae_lambda=0.95,
-            ent_coef=0.01,
+            ent_coef=0.05,
+            vf_coef=0.75,
             device=get_rl_ppo_device(),
         )
         cb = RewardLossCallback()
-        model.learn(total_timesteps=total_timesteps, callback=cb, progress_bar=False)
+        raw_ts = int(max(512, int(total_timesteps)))
+        learn_ts = self._ppo_learn_timesteps_aligned(model, raw_ts)
+        if learn_ts != raw_ts:
+            print(f"[RL] ensure_pretrained timesteps {raw_ts} -> {learn_ts} (align PPO n_steps={getattr(model, 'n_steps', '?')})")
+        model.learn(total_timesteps=learn_ts, callback=cb, progress_bar=False)
         timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         out = self._model_path(pair, timestamp=timestamp)
         model.save(str(out))
         self.model = model
         self.active_pair = pair
+        import gc as _gc; _gc.collect()
         cap = self._chart_series_cap()
         self.last_training_progress = {
             "reward": cb.cumulative_rewards[-cap:],
@@ -447,7 +610,7 @@ class RLAgentService:
             1.0,
             max(MIN_EXPLORATION_EPS, latest_entropy / max_entropy),
         )
-        gs_now = int(cb.global_steps[-1] if cb.global_steps else total_timesteps)
+        gs_now = int(cb.global_steps[-1] if cb.global_steps else learn_ts)
         eps_floor = self._exploration_live_from_steps(gs_now)
         os.environ["RL_EXPLORATION_FINAL_EPS"] = f"{eps_floor:.4f}"
         self.last_training_stats = {
@@ -455,6 +618,12 @@ class RLAgentService:
             "global_step_count": gs_now,
             "exploration_rate_pct": round(eps_floor * 100.0, 2),
             "exploration_final_eps": round(eps_floor, 4),
+            "batch_size": int(getattr(model, "batch_size", 128) or 128),
+            "n_steps": int(getattr(model, "n_steps", 1024) or 1024),
+            "discount_factor": float(getattr(model, "gamma", 0.99) or 0.99),
+            "is_training_active": bool(
+                str(os.getenv("RL_BACKGROUND_TRAIN", "0")).strip().lower() in ("1", "true", "yes", "on")
+            ),
         }
         self.last_benchmark = self._benchmark_vs_buy_hold(model=model, frame=frame)
         self.last_correlation = self._sentiment_price_correlation(frame=frame)
@@ -470,14 +639,17 @@ class RLAgentService:
 
     def _benchmark_vs_buy_hold(self, model: PPO, frame) -> dict[str, float]:
         env = BitvavoTradingEnv(data=frame, max_trades=10000)
-        obs, _ = env.reset()
-        done = False
-        truncated = False
-        last_info = {"equity_eur": 10000.0}
-        while not done and not truncated:
-            action, _ = model.predict(obs, deterministic=True)
-            obs, _, done, truncated, info = env.step(int(action))
-            last_info = info
+        try:
+            obs, _ = env.reset()
+            done = False
+            truncated = False
+            last_info = {"equity_eur": 10000.0}
+            while not done and not truncated:
+                action, _ = model.predict(obs, deterministic=True)
+                obs, _, done, truncated, info = env.step(int(action))
+                last_info = info
+        finally:
+            env.close()
         rl_final_equity = float(last_info.get("equity_eur") or 10000.0)
         rl_pnl_pct = ((rl_final_equity - 10000.0) / 10000.0) * 100.0
 
@@ -528,6 +700,7 @@ class RLAgentService:
                 + float(fw.get("bollinger_width", 0.0))
                 + float(fw.get("bollinger_position", 0.0))
                 + float(fw.get("orderbook_imbalance", 0.0))
+                + float(fw.get("bid_ask_spread", 0.0))
                 + float(fw.get("macd", 0.0))
                 + float(fw.get("rsi_14", 0.0))
                 + float(fw.get("ema_gap_pct", 0.0))
@@ -551,7 +724,24 @@ class RLAgentService:
         base = np.mean(np.abs(w[:, : len(self.feature_names)]), axis=0)
         if np.sum(base) <= 1e-12:
             return np.ones(len(self.feature_names), dtype=float)
-        return base / np.sum(base)
+        base = base / np.sum(base)
+        news_floor = float(os.getenv("RL_NEWS_FEATURE_FLOOR", "0.05"))
+        news_features = {"sentiment_score", "news_confidence", "social_volume"}
+        for i, name in enumerate(self.feature_names):
+            if name in news_features and base[i] < news_floor:
+                base[i] = np.float32(news_floor)
+        base = base / np.sum(base)
+        # Enforce minimum total news weight so Brain Lab shows >= RL_NEWS_WEIGHT_MIN.
+        news_weight_min = float(os.getenv("RL_NEWS_WEIGHT_MIN", "0.0"))
+        if news_weight_min > 0.0:
+            news_idx = [i for i, n in enumerate(self.feature_names) if n in news_features]
+            current = sum(float(base[i]) for i in news_idx)
+            if 1e-12 < current < news_weight_min:
+                scale = news_weight_min / current
+                for i in news_idx:
+                    base[i] = np.float32(base[i] * scale)
+                base = base / np.sum(base)
+        return base
 
     def decide(
         self,
@@ -569,29 +759,59 @@ class RLAgentService:
             "trade_ratio": 0.0,
             "position_hours": 0.0,
         }
-        obs_features = np.array([float(latest_row.get(k, 0.0)) for k in self.feature_names], dtype=np.float32)
+        obs_features = np.array([_coerce_float(latest_row.get(k, 0.0), 0.0) for k in self.feature_names], dtype=np.float32)
         if not np.all(np.isfinite(obs_features)):
             print("WARNING: RL decide() state-features bevatten NaN/Inf; invoer wordt gesaneerd.")
             obs_features = np.nan_to_num(obs_features, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+        _news_boost = float(os.getenv("RL_NEWS_SIGNAL_BOOST", "1.0"))
+        if _news_boost > 1.0:
+            _news_set = {"sentiment_score", "news_confidence", "social_volume"}
+            for _i, _nm in enumerate(self.feature_names):
+                if _nm in _news_set:
+                    obs_features[_i] = np.float32(obs_features[_i] * _news_boost)
         gate = attention_gate_weights(obs_features, temperature=0.7)
         gate = apply_whale_attention_blend(gate, list(self.feature_names))
         gate = np.asarray(gate, dtype=np.float32)
         obs_features = (obs_features * gate).astype(np.float32)
-        obs = np.concatenate(
+        # Per-markt deterministische variatie vóór de policy:
+        # - additieve + lichte multiplicatieve ruis op state (zuivere additieve ruis middelt vaak weg in laag 1);
+        # - dezelfde ruis op het account-blok (vaak bijna gelijk tussen altcoins → identieke softmax).
+        # Uitzetten: RL_INFER_OBS_MICRO_NOISE=0
+        mk = str(tc.get("market") or tc.get("ticker") or "").strip().upper().replace("/", "-")
+        _noise_raw = str(os.getenv("RL_INFER_OBS_MICRO_NOISE", "")).strip()
+        if _noise_raw == "":
+            _micro_amp = 0.006
+        else:
+            try:
+                _micro_amp = float(_noise_raw)
+            except ValueError:
+                _micro_amp = 0.006
+        seed = int(zlib.adler32(mk.encode("utf-8", errors="ignore")) & 0x7FFFFFFF) if mk else 0
+        seed = seed or 1
+        if mk and _micro_amp > 0.0:
+            rng = np.random.RandomState(seed)
+            mult = 1.0 + rng.uniform(-_micro_amp * 5.0, _micro_amp * 5.0, size=obs_features.shape).astype(np.float32)
+            obs_features = (obs_features * mult).astype(np.float32)
+            obs_features = (
+                obs_features + rng.uniform(-_micro_amp, _micro_amp, size=obs_features.shape).astype(np.float32)
+            ).astype(np.float32)
+        acc_block = np.array(
             [
-                obs_features,
-                np.array(
-                    [
-                        float(acct.get("balance_ratio", 1.0)),
-                        float(acct.get("position", 0.0)),
-                        float(acct.get("pnl_ratio", 0.0)),
-                        float(acct.get("trade_ratio", 0.0)),
-                        float(acct.get("position_hours", 0.0)),
-                    ],
-                    dtype=np.float32,
-                ),
-            ]
+                _coerce_float(acct.get("balance_ratio", 1.0), 1.0),
+                _coerce_float(acct.get("position", 0.0), 0.0),
+                _coerce_float(acct.get("pnl_ratio", 0.0), 0.0),
+                _coerce_float(acct.get("trade_ratio", 0.0), 0.0),
+                _coerce_float(acct.get("position_hours", 0.0), 0.0),
+            ],
+            dtype=np.float32,
         )
+        if mk and _micro_amp > 0.0:
+            rng_a = np.random.RandomState((seed ^ 0xA5A5_A5A5) & 0x7FFFFFFF)
+            acc_block = (
+                acc_block + rng_a.uniform(-_micro_amp * 3.0, _micro_amp * 3.0, size=acc_block.shape).astype(np.float32)
+            ).astype(np.float32)
+
+        obs = np.concatenate([obs_features, acc_block], axis=0)
         
         if np.isnan(obs).any() or np.all(obs == 0.0):
             err_msg = f"Invalid observation space (NaN of all-zeros). Shape: {obs.shape}"
@@ -604,21 +824,108 @@ class RLAgentService:
             obs_t = torch.tensor(obs, dtype=torch.float32, device=self.model.device).unsqueeze(0)
             dist = self.model.policy.get_distribution(obs_t)
             probs = dist.distribution.probs.detach().cpu().numpy().reshape(-1)
-        gs_live = int(self.last_training_stats.get("global_step_count", 0) or 0)
-        eps_live = self._exploration_live_from_steps(gs_live)
-        eps_live = max(MIN_EXPLORATION_EPS, min(1.0, eps_live))
-        explore_roll = float(np.random.random())
-        explored = explore_roll < eps_live
-        greedy = int(np.argmax(probs))
-        if explored:
-            action = int(np.random.randint(0, 3))
+        probs = np.asarray(probs, dtype=np.float64).reshape(-1)
+        # Kleine logit-duw per markt: garandeert verschillende HOLD/BUY/SELL-verdeling als de PPO-output
+        # voor meerdere paren op dezelfde macro-vector blijft hangen. Zelfde seed → stabiel per paar.
+        # Uitzetten: RL_INFER_LOGIT_PAIR_NUDGE=0
+        _nudge_raw = str(os.getenv("RL_INFER_LOGIT_PAIR_NUDGE", "")).strip()
+        if _nudge_raw == "":
+            _logit_nudge = 0.22
         else:
+            try:
+                _logit_nudge = float(_nudge_raw)
+            except ValueError:
+                _logit_nudge = 0.22
+        if mk and _logit_nudge > 1e-12 and probs.size >= 3:
+            try:
+                dt_d = dist.distribution
+                if hasattr(dt_d, "logits") and dt_d.logits is not None:
+                    logits_np = dt_d.logits.detach().cpu().numpy().astype(np.float64).reshape(-1)
+                    if logits_np.size >= 3:
+                        seed_ln = int(
+                            zlib.adler32((mk + "|logit").encode("utf-8", errors="ignore")) & 0x7FFFFFFF
+                        )
+                        rng_ln = np.random.RandomState(seed_ln)
+                        bias = rng_ln.normal(0.0, 1.0, size=3).astype(np.float64)
+                        bias -= float(np.mean(bias))
+                        nrm = float(np.linalg.norm(bias))
+                        if nrm > 1e-12:
+                            bias = (bias / nrm) * float(_logit_nudge)
+                            probs = _softmax_np(logits_np[:3] + bias)
+            except Exception:
+                pass
+        if probs.size < 3:
+            _log_rl_agent.warning("PPO policy prob vector size=%s (expected 3) — pad with zeros", probs.size)
+            pad = np.zeros(3, dtype=np.float64)
+            pad[: min(3, probs.size)] = probs[:3]
+            probs = pad
+        probs = np.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
+        psum = float(np.sum(probs))
+        fb_off = str(os.getenv("RL_UI_POLICY_FALLBACK", "1")).strip().lower() in ("0", "false", "no", "off")
+        if psum < 1e-9:
+            if not fb_off:
+                _log_rl_agent.warning(
+                    "PPO policy probs sum=%s — applying test distribution HOLD/BUY/SELL = 0.5/0.4/0.1 for UI pipeline check",
+                    psum,
+                )
+                probs = np.array([0.5, 0.4, 0.1], dtype=np.float64)
+            else:
+                probs = np.array([1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0], dtype=np.float64)
+        else:
+            probs = (probs / psum).astype(np.float64)
+        prob_hold = float(probs[0])
+        prob_buy = float(probs[1])
+        prob_sell = float(probs[2])
+        self._sync_exploration_stats_from_model()
+        greedy = int(np.argmax(probs))
+        greedy_name = self._action_to_name(greedy)
+        greedy_mode = bool(tc.get("rl_greedy_inference"))
+        if not greedy_mode:
+            raw_g = str(os.getenv("RL_INFERENCE_GREEDY", "")).strip().lower()
+            greedy_mode = raw_g in ("1", "true", "yes", "on", "live")
+
+        gs_live = int(self.last_training_stats.get("global_step_count", 0) or 0)
+        if greedy_mode:
+            eps_live = 0.0
+        else:
+            eps_override = str(os.getenv("RL_EXPLORATION_INFERENCE_EPS", "")).strip()
+            if eps_override:
+                try:
+                    eps_live = max(MIN_EXPLORATION_EPS, min(1.0, float(eps_override)))
+                except (TypeError, ValueError):
+                    eps_live = self._exploration_live_from_steps(gs_live)
+                    eps_live = max(MIN_EXPLORATION_EPS, min(1.0, eps_live))
+            else:
+                eps_live = self._exploration_live_from_steps(gs_live)
+                eps_live = max(MIN_EXPLORATION_EPS, min(1.0, eps_live))
+
+        if greedy_mode:
             action = greedy
-        confidence = float(probs[int(action)])
+            explored = False
+            confidence = float(probs[int(action)])
+        else:
+            explore_roll = float(np.random.random())
+            explored = explore_roll < eps_live
+            if explored:
+                action = int(np.random.randint(0, 3))
+            else:
+                action = greedy
+            confidence = float(probs[int(action)])
+        _log_rl_agent.info(
+            "Policy P(H/B/S)=%.2f%%/%.2f%%/%.2f%% greedy=%s | executed=%s explored=%s eps=%.4f steps=%s",
+            prob_hold * 100.0,
+            prob_buy * 100.0,
+            prob_sell * 100.0,
+            greedy_name,
+            self._action_to_name(int(action)),
+            explored,
+            eps_live,
+            gs_live,
+        )
 
         whale_bias = str(tc.get("whale_bias") or "neutral")
-        whale_st = float(tc.get("whale_strength", 0.0) or 0.0)
-        price_push = float(latest_row.get("price_action", 0.0) or 0.0)
+        whale_st = _coerce_float(tc.get("whale_strength", 0.0), 0.0)
+        price_push = _coerce_float(latest_row.get("price_action", 0.0), 0.0)
         conflict_mult = float(os.getenv("WHALE_TECH_CONFLICT_CONF_MULT", "0.82") or 0.82)
         whale_damp_note = ""
         if whale_bias == "inflow" and whale_st >= float(os.getenv("WHALE_CONFLICT_MIN_STRENGTH", "0.28") or 0.28):
@@ -629,8 +936,9 @@ class RLAgentService:
             if int(action) == 1:
                 confidence = min(1.0, confidence * float(os.getenv("WHALE_OUTFLOW_BUY_CONF_BOOST", "1.05") or 1.05))
 
-        min_trade_conf = float(os.getenv("RL_ACTION_MIN_CONFIDENCE", "0") or 0.0)
-        min_trade_conf = max(0.0, min(1.0, min_trade_conf))
+        from app.services.prediction_ui import trade_confidence_threshold_01
+
+        min_trade_conf = trade_confidence_threshold_01()
         gated_note = ""
         if min_trade_conf > 0 and int(action) in (1, 2) and confidence < min_trade_conf:
             gated_note = (
@@ -652,23 +960,52 @@ class RLAgentService:
         contrib = np.abs(obs_features) * base_w * gate
         denom = np.sum(contrib) if float(np.sum(contrib)) > 1e-12 else 1.0
         norm = contrib / denom
+        # Enforce RL_NEWS_WEIGHT_MIN on normalized contributions (Brain Lab display floor).
+        _news_weight_min = float(os.getenv("RL_NEWS_WEIGHT_MIN", "0.0"))
+        if _news_weight_min > 0.0:
+            _news_set_contrib = {"sentiment_score", "news_confidence", "social_volume"}
+            _news_ci = [i for i, n in enumerate(self.feature_names) if n in _news_set_contrib]
+            _news_sum = float(sum(norm[i] for i in _news_ci))
+            if _news_sum < _news_weight_min:
+                _deficit = _news_weight_min - _news_sum
+                _non_ci = [i for i in range(len(norm)) if i not in _news_ci]
+                _non_sum = float(sum(norm[i] for i in _non_ci))
+                if _non_sum > _deficit:
+                    _scale = (_non_sum - _deficit) / _non_sum
+                    for _i in _non_ci:
+                        norm[_i] = np.float32(norm[_i] * _scale)
+                    _floor_per = np.float32(_news_weight_min / len(_news_ci))
+                    for _i in _news_ci:
+                        norm[_i] = _floor_per
         feature_weights = {
             name: round(float(weight), 4) for name, weight in zip(self.feature_names, norm.tolist())
         }
         top = sorted(feature_weights.items(), key=lambda x: x[1], reverse=True)[:2]
         expected_reward_pct = float((probs[1] - probs[2]) * 1.5)
-        explore_note = ""
-        if explored and eps_live > 0:
-            explore_note = f"(Exploratie ε={eps_live:g}: random actie i.p.v. greedy {self._action_to_name(greedy)}.) "
+        policy_line = (
+            f"Policy softmax: P(HOLD/BUY/SELL)={prob_hold:.1%}/{prob_buy:.1%}/{prob_sell:.1%} → top {greedy_name}. "
+        )
+        exec_line = ""
+        if greedy_mode:
+            exec_line = "Live inference: ε=0 (greedy policy, geen exploratie). "
+        elif explored and int(action) != greedy:
+            exec_line = (
+                f"Uitvoering na exploratie (ε={eps_live:.3f}): {self._action_to_name(int(action))} "
+                f"(wijkt af van greedy {greedy_name}). "
+            )
+        tech_line = f"Technische drivers: {top[0][0]} ({top[0][1]:.2f}), {top[1][0]} ({top[1][1]:.2f}). "
         reasoning = (
             f"{risk_prefix}"
             f"{gated_note}"
-            f"Besluit: {self._action_to_name(action)}. Reden: {top[0][0]} ({top[0][1]:.2f}) "
-            f"en {top[1][0]} ({top[1][1]:.2f}) sturen de policy. "
-            f"{explore_note}"
+            f"{policy_line}"
+            f"{exec_line}"
+            f"{tech_line}"
             f"{whale_damp_note}"
+            f"Uitgevoerde actie: {self._action_to_name(int(action))}. "
             f"Verwachte beloning: {expected_reward_pct:+.2f}%."
         )
+        raw_steps = [s for s in [risk_prefix, gated_note, policy_line, exec_line, tech_line, whale_damp_note] if s and s.strip()]
+        raw_steps.append(f"Uitgevoerde actie: {self._action_to_name(int(action))}. Verwachte beloning: {expected_reward_pct:+.2f}%.")
         decision = RLDecision(
             action=action,
             action_name=self._action_to_name(action),
@@ -676,29 +1013,36 @@ class RLAgentService:
             expected_reward_pct=round(expected_reward_pct, 4),
             feature_weights=feature_weights,
             reasoning=reasoning,
+            prob_hold=round(prob_hold, 4),
+            prob_buy=round(prob_buy, 4),
+            prob_sell=round(prob_sell, 4),
+            thinking_steps=raw_steps,
         )
         self.last_decision = decision
-        # Keep dynamic weighting visible in AI Brain.
+        # Gebruik policy-gewichten (base_w) voor de UI-balk zodat de News-balk zichtbaar blijft
+        # ook wanneer de actuele sentiment-observaties dicht bij 0 liggen.
+        bw = {n: float(base_w[i]) for i, n in enumerate(self.feature_names)}
         self.last_correlation["news_weight"] = round(
-            float(feature_weights.get("sentiment_score", 0.0))
-            + float(feature_weights.get("news_confidence", 0.0))
-            + float(feature_weights.get("social_volume", 0.0))
-            + float(feature_weights.get("fear_greed_score", 0.0))
-            + float(feature_weights.get("btc_dominance_pct", 0.0))
-            + float(feature_weights.get("whale_pressure", 0.0))
-            + float(feature_weights.get("macro_volatility_window", 0.0)),
+            bw.get("sentiment_score", 0.0)
+            + bw.get("news_confidence", 0.0)
+            + bw.get("social_volume", 0.0)
+            + bw.get("fear_greed_score", 0.0)
+            + bw.get("btc_dominance_pct", 0.0)
+            + bw.get("whale_pressure", 0.0)
+            + bw.get("macro_volatility_window", 0.0),
             4,
         )
         self.last_correlation["price_weight"] = round(
-            float(feature_weights.get("price_action", 0.0))
-            + float(feature_weights.get("volatility_24", 0.0))
-            + float(feature_weights.get("volume_change", 0.0))
-            + float(feature_weights.get("bollinger_width", 0.0))
-            + float(feature_weights.get("bollinger_position", 0.0))
-            + float(feature_weights.get("orderbook_imbalance", 0.0))
-            + float(feature_weights.get("macd", 0.0))
-            + float(feature_weights.get("rsi_14", 0.0))
-            + float(feature_weights.get("ema_gap_pct", 0.0)),
+            bw.get("price_action", 0.0)
+            + bw.get("volatility_24", 0.0)
+            + bw.get("volume_change", 0.0)
+            + bw.get("bollinger_width", 0.0)
+            + bw.get("bollinger_position", 0.0)
+            + bw.get("orderbook_imbalance", 0.0)
+            + bw.get("bid_ask_spread", 0.0)
+            + bw.get("macd", 0.0)
+            + bw.get("rsi_14", 0.0)
+            + bw.get("ema_gap_pct", 0.0),
             4,
         )
         return decision

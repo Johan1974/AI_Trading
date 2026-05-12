@@ -26,7 +26,7 @@ class SignalEngine:
             from app.ai.sentiment.finbert_sentiment import FinBertSentimentAnalyzer
 
             self.sentiment = FinBertSentimentAnalyzer()
-        self.judge = WeightedJudge(technical_weight=0.65, sentiment_weight=0.35)
+        self.judge = WeightedJudge(technical_weight=0.55, sentiment_weight=0.45)
 
     def evaluate(self, close_prices: Any, news_articles: list[dict[str, Any]]) -> dict[str, Any]:
         texts = [

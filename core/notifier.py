@@ -1,5 +1,5 @@
 """
-BESTANDSNAAM: /home/johan/AI_Trading/core/notifier.py
+BESTANDSNAAM: core/notifier.py
 FUNCTIE: System-audit: primair Telegram; optionele volledige SMTP-mail bij SYSTEM_ALERTS_EMAIL_ENABLED=1.
 """
 
@@ -7,19 +7,18 @@ from __future__ import annotations
 
 import asyncio
 import os
-import re
 import smtplib
 from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from html import escape
-from pathlib import Path
 from typing import Any
 
 import requests
 import pytz
 
 from core.auditor import format_startup_or_daily_audit_telegram
+from core.roadmap_progress import parse_roadmap_progress_file
 
 
 TZ = pytz.timezone("Europe/Amsterdam")
@@ -123,14 +122,7 @@ def format_telegram_sell_alert(
 
 
 def _roadmap_progress(roadmap_path: str) -> tuple[int, int, int]:
-    p = Path(roadmap_path)
-    if not p.exists():
-        return 0, 0, 0
-    text = p.read_text(encoding="utf-8", errors="replace")
-    m = re.search(r"Overall voortgang:\s*(\d+)%\s*\((\d+)/(\d+)", text)
-    if not m:
-        return 0, 0, 0
-    return int(m.group(1)), int(m.group(2)), int(m.group(3))
+    return parse_roadmap_progress_file(roadmap_path)
 
 
 def send_restart_report(
@@ -152,20 +144,47 @@ def send_restart_report(
     progress_pct, progress_done, progress_total = _roadmap_progress(roadmap_path=roadmap_path)
     alloc = allocation_snapshot if isinstance(allocation_snapshot, dict) else {}
     alloc_summary = str(alloc.get("summary") or "")
-    tg_text = format_startup_or_daily_audit_telegram(
-        trigger=trigger,
-        cash_eur=cash_eur,
-        equity_eur=equity_eur,
-        cuda_available=cuda_available,
-        roadmap_pct=progress_pct,
-        roadmap_done=progress_done,
-        roadmap_total=progress_total,
-        yesterday_pnl_eur=yesterday_pnl_eur,
-        alloc_summary=alloc_summary,
-    )
-    tg_ok = send_telegram_message(tg_text, disable_notification=False)
+    tg_ok = False
+    telegram_startup_skipped = False
+    trig_l = str(trigger or "").strip().lower()
+    if trig_l == "startup":
+        try:
+            from app.services.reporting import try_begin_startup_telegram_send
+        except Exception:
+            try_begin_startup_telegram_send = None  # type: ignore[assignment]
+        if try_begin_startup_telegram_send is not None and not try_begin_startup_telegram_send(kind="restart_audit"):
+            print("[NOTIFIER] Startup audit Telegram overgeslagen (throttle / andere worker / auto-restart silent).")
+            telegram_startup_skipped = True
+        else:
+            tg_text = format_startup_or_daily_audit_telegram(
+                trigger=trigger,
+                cash_eur=cash_eur,
+                equity_eur=equity_eur,
+                cuda_available=cuda_available,
+                roadmap_pct=progress_pct,
+                roadmap_done=progress_done,
+                roadmap_total=progress_total,
+                yesterday_pnl_eur=yesterday_pnl_eur,
+                alloc_summary=alloc_summary,
+            )
+            tg_ok = send_telegram_message(tg_text, disable_notification=False)
+    else:
+        tg_text = format_startup_or_daily_audit_telegram(
+            trigger=trigger,
+            cash_eur=cash_eur,
+            equity_eur=equity_eur,
+            cuda_available=cuda_available,
+            roadmap_pct=progress_pct,
+            roadmap_done=progress_done,
+            roadmap_total=progress_total,
+            yesterday_pnl_eur=yesterday_pnl_eur,
+            alloc_summary=alloc_summary,
+        )
+        tg_ok = send_telegram_message(tg_text, disable_notification=False)
     if tg_ok:
         print("[NOTIFIER] Restart audit (Telegram) sent.")
+    elif telegram_startup_skipped:
+        pass
     elif not telegram_configured():
         _log_telegram_not_configured_once(
             "restart_audit",
@@ -192,7 +211,7 @@ def send_restart_report(
     tenant_isolation = "PASS"
     tenant_note = "Tenant-scoped runtime state + tenant-tagged SQLite records are active."
     low_hanging_rows = """
-    <tr><td>Performance</td><td>Blocking IO uit hot API-routes halen</td><td>Sync calls in /predict en /paper/run</td><td>M</td></tr>
+    <tr><td>Performance</td><td>Blocking IO uit hot API-routes halen</td><td>Portal: Redis snapshot + log/storage/trades/system_stats via asyncio.to_thread (main.py); GET /api/v1/predictions offload naar worker-thread (routes_predictions.py); rest: sync handlers (nieuws/brain) inventariseren.</td><td>M</td></tr>
     <tr><td>Performance</td><td>System stats sampling centraliseren</td><td>Frequente nvidia-smi subprocess calls</td><td>S</td></tr>
     <tr><td>Security & Doctrine</td><td>Zero-trace logging aanscherpen</td><td>Plaintext headlines/ai_thought traces</td><td>S</td></tr>
     <tr><td>Security & Doctrine</td><td>Tenant boundary afdwingen</td><td>Globale STATE + gedeelde SQLite zonder tenant-id</td><td>M</td></tr>
@@ -255,7 +274,6 @@ def send_restart_report(
         distribution_rows = "<tr><td>EUR</td><td>0.000000</td><td>0.00%</td></tr>"
     alloc = allocation_snapshot if isinstance(allocation_snapshot, dict) else {}
     alloc_summary = escape(str(alloc.get("summary") or "Allocatie: —"))
-    alloc_slot = float(alloc.get("slot_pct") or 12.5)
     alloc_lines = ""
     for row in alloc.get("lines") or []:
         if not isinstance(row, dict):
@@ -265,11 +283,13 @@ def send_restart_report(
         alloc_lines += f"<tr><td>{coin}</td><td>{wp:.2f}%</td></tr>"
     if not alloc_lines:
         alloc_lines = "<tr><td colspan='2'>Geen actieve posities</td></tr>"
+    open_nominal_eur = max(0.0, float(equity_eur) - float(cash_eur))
+    open_nominal_pct = (open_nominal_eur / max(1e-9, float(equity_eur))) * 100.0 if float(equity_eur) > 0 else 0.0
     executive_rows = f"""
     <tr><th align="left">Trigger</th><td>{escape(trigger.upper())}</td></tr>
     <tr><th align="left">Cash / Equity</th><td>{cash_eur:.2f} EUR / {equity_eur:.2f} EUR</td></tr>
-    <tr><th align="left">P/L</th><td>{(equity_eur - cash_eur):.2f} EUR ({(((equity_eur - cash_eur) / max(1.0, equity_eur)) * 100.0):.2f}%)</td></tr>
-    <tr><th align="left">Allocatie (Elite)</th><td>{alloc_summary} · max {alloc_slot:.1f}% per munt</td></tr>
+    <tr><th align="left">Open posities (nominaal)</th><td>{open_nominal_eur:.2f} EUR ({open_nominal_pct:.2f}% van equity)</td></tr>
+    <tr><th align="left">Allocatie (Elite)</th><td>{alloc_summary}</td></tr>
     <tr><th align="left">CUDA</th><td>{'YES' if cuda_available else 'NO'}</td></tr>
     <tr><th align="left">Roadmap</th><td>{progress_pct}% ({progress_done}/{progress_total})</td></tr>
     <tr><th align="left">Tenant Isolation</th><td>{tenant_isolation}</td></tr>
@@ -289,8 +309,8 @@ def send_restart_report(
   </table>
   <table border="1" cellspacing="0" cellpadding="6" style="margin-top:8px">
     <tr><th>Priority</th><th align="left">Actie</th></tr>
-    <tr><td>P1</td><td>Verplaats blocking IO uit request-path naar worker-queue</td></tr>
-    <tr><td>P2</td><td>Forceer orderbook-based spread/slippage in paper execution</td></tr>
+    <tr><td>P1</td><td>Blocking I/O: Redis/trades/logs/storage + /api/v1/predictions via asyncio.to_thread; volgende stap — overige sync GET-routes (nieuws, brain state-overview) en worker Bitvavo-batch profileren.</td></tr>
+    <tr><td>P2</td><td>Orderbook-spread/slippage op fill-prijs: _paper_execution_mid_to_fill_price in trading_core + /predict; uit met PAPER_FORCE_ORDERBOOK_EXECUTION_PRICE=0.</td></tr>
     <tr><td>P3</td><td>Implementeer tenant-scoped state/storage als hard gate</td></tr>
     <tr><td>P4</td><td>Activeer dagelijkse auto-calibratie op win-rate/DD drift</td></tr>
   </table>
@@ -306,12 +326,12 @@ def send_restart_report(
   </table>
   <h4>Financials</h4>
   <table border="1" cellspacing="0" cellpadding="6">
-    <tr><th>Cash EUR</th><th>Equity EUR</th><th>P/L EUR</th><th>P/L %</th><th>Yesterday P/L</th></tr>
+    <tr><th>Cash EUR</th><th>Equity EUR</th><th>Open nom. EUR</th><th>Open % equity</th><th>Yesterday P/L</th></tr>
     <tr>
       <td>{cash_eur:.2f}</td>
       <td>{equity_eur:.2f}</td>
-      <td>{(equity_eur - cash_eur):.2f}</td>
-      <td>{(((equity_eur - cash_eur) / max(1.0, equity_eur)) * 100.0):.2f}%</td>
+      <td>{open_nominal_eur:.2f}</td>
+      <td>{open_nominal_pct:.2f}%</td>
       <td>{float(yesterday_pnl_eur or 0.0):.2f}</td>
     </tr>
   </table>

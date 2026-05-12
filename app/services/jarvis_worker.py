@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import re
 import smtplib
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -24,6 +23,7 @@ import pytz
 
 from core.auditor import format_jarvis_integrity_telegram
 from core.notifier import system_alerts_email_enabled
+from core.roadmap_progress import parse_roadmap_progress_text
 
 
 TZ = pytz.timezone("Europe/Amsterdam")
@@ -112,7 +112,31 @@ class AITradingPerformanceIntegrityReporter:
     def validate_channels(self) -> None:
         tg_ok = bool(self.telegram and getattr(self.telegram, "enabled", False))
         if tg_ok:
-            tg_ok = bool(self.telegram.send("✅ Reporting bootstrap check: Telegram kanaal actief."))
+            do_bootstrap_ping = str(os.getenv("JARVIS_TELEGRAM_BOOTSTRAP_CHECK", "0")).strip().lower() in {"1", "true", "yes", "on"}
+            if do_bootstrap_ping:
+                ping_min_sec = max(60, int(os.getenv("JARVIS_TELEGRAM_BOOTSTRAP_MIN_INTERVAL_SEC", "21600") or 21600))
+                marker = (
+                    Path("/app/logs") / "jarvis_telegram_bootstrap_last_sent_utc.txt"
+                    if Path("/.dockerenv").exists()
+                    else Path.cwd() / "_logs_hub" / "jarvis_telegram_bootstrap_last_sent_utc.txt"
+                )
+                marker.parent.mkdir(parents=True, exist_ok=True)
+                due = True
+                try:
+                    if marker.is_file():
+                        raw = marker.read_text(encoding="utf-8").strip()
+                        if raw:
+                            prev = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                            due = (datetime.now(TZ).astimezone(pytz.UTC) - prev.astimezone(pytz.UTC)).total_seconds() >= float(ping_min_sec)
+                except Exception:
+                    due = True
+                if due:
+                    tg_ok = bool(self.telegram.send("✅ Reporting bootstrap check: Telegram kanaal actief."))
+                    if tg_ok:
+                        try:
+                            marker.write_text(datetime.now(pytz.UTC).isoformat(), encoding="utf-8")
+                        except Exception:
+                            pass
         email_ok = self._validate_email_channel()
         self._channel_status = {"telegram": tg_ok, "email": email_ok}
         print(f"[JARVIS] Channel validation | telegram={tg_ok} email={email_ok}")
@@ -134,6 +158,21 @@ class AITradingPerformanceIntegrityReporter:
             return False
 
     async def run_cycle(self, trigger: str) -> None:
+        try:
+            from app.services import reporting
+            from app.trading_core import PAPER_MANAGER
+
+            w = PAPER_MANAGER.wallet if isinstance(PAPER_MANAGER.wallet, dict) else {}
+            reporting.refresh_portfolio_equity_integrity(w)
+            if not reporting.portfolio_equity_reports_allowed():
+                print(
+                    f"[JARVIS] run_cycle overgeslagen: portfolio equity gate actief (trigger={trigger!r}). "
+                    "Geen Telegram/e-mail voor dit rapport."
+                )
+                return
+        except Exception as exc:
+            print(f"[JARVIS] portfolio integrity precheck (non-fatal): {exc}")
+
         payload = self._build_payload(trigger=trigger)
         self._send_telegram_integrity_audit(payload)
         if system_alerts_email_enabled():
@@ -220,7 +259,7 @@ class AITradingPerformanceIntegrityReporter:
         except Exception:
             uptime_hours = 0.0
         dd_limit_pct = float(os.getenv("LIVE_RISK_MAX_DRAWDOWN_PCT", "8") or 8.0)
-        start_balance = float(os.getenv("PAPER_START_BALANCE_EUR", "10000") or 10000.0)
+        start_balance = float(os.getenv("PAPER_START_BALANCE_EUR", "1000") or 1000.0)
         max_dd_pct = (max_dd / start_balance) * 100.0 if start_balance > 0 else 100.0
         c_consistency = 30.0 if streak >= 5 else max(0.0, min(30.0, streak * 6.0))
         c_stability = max(0.0, min(25.0, (uptime_hours / 48.0) * 25.0))
@@ -291,6 +330,17 @@ class AITradingPerformanceIntegrityReporter:
     def _send_telegram_integrity_audit(self, payload: dict[str, Any]) -> None:
         if not self.telegram or not getattr(self.telegram, "enabled", False):
             return
+        trig = str(payload.get("trigger") or "").strip().lower()
+        if trig == "startup":
+            try:
+                from app.services.reporting import try_begin_startup_telegram_send
+            except Exception:
+                try_begin_startup_telegram_send = None  # type: ignore[assignment]
+            if try_begin_startup_telegram_send is not None and not try_begin_startup_telegram_send(
+                kind="jarvis_integrity"
+            ):
+                print("[JARVIS] Startup Performance & Integrity Telegram overgeslagen (throttle / andere worker).")
+                return
         text = format_jarvis_integrity_telegram(payload)
         self.telegram.send(text, disable_notification=False)
 
@@ -321,14 +371,12 @@ class AITradingPerformanceIntegrityReporter:
         out = {"percent": 0, "done": 0, "total": 0}
         if not self.roadmap_path.exists():
             return out
-        text = self.roadmap_path.read_text(encoding="utf-8", errors="replace")
-        m = re.search(r"Overall voortgang:\s*(\d+)%\s*\((\d+)/(\d+)\s*taken\)", text)
-        if not m:
-            m = re.search(r"Overall voortgang:\s*(\d+)%\s*\((\d+)/(\d+)\)", text)
-        if m:
-            out["percent"] = int(m.group(1))
-            out["done"] = int(m.group(2))
-            out["total"] = int(m.group(3))
+        pct, done, total = parse_roadmap_progress_text(
+            self.roadmap_path.read_text(encoding="utf-8", errors="replace")
+        )
+        out["percent"] = pct
+        out["done"] = done
+        out["total"] = total
         return out
 
     def _integrity_check(self) -> dict[str, str]:

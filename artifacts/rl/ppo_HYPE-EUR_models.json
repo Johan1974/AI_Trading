@@ -1,0 +1,12 @@
+[
+  {
+    "timestamp": "20260512T081926Z",
+    "reward_score": -171.16875,
+    "model_path": "artifacts/rl/ppo_HYPE-EUR_20260512T081926Z.zip"
+  },
+  {
+    "timestamp": "20260512T081926Z",
+    "reward_score": -2184.293187,
+    "model_path": "artifacts/rl/ppo_HYPE-EUR_20260512T081926Z.zip"
+  }
+]

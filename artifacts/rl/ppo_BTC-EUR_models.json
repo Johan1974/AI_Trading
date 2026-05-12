@@ -1,7 +1,12 @@
 [
   {
-    "timestamp": "20260424T164940Z",
-    "reward_score": -1096.499701,
-    "model_path": "artifacts/rl/ppo_BTC-EUR_20260424T164940Z.zip"
+    "timestamp": "20260512T200558Z",
+    "reward_score": -462.642222,
+    "model_path": "artifacts/rl/ppo_BTC-EUR_20260512T200558Z.zip"
+  },
+  {
+    "timestamp": "20260510T210005Z",
+    "reward_score": -7975.209176,
+    "model_path": "artifacts/rl/ppo_BTC-EUR_20260510T210005Z.zip"
   }
 ]

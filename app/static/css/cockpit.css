@@ -383,7 +383,7 @@ body.cockpit-body {
   flex-direction: column;
   padding: 0;
   box-sizing: border-box;
-  border-right: 1px solid #222222;
+  border-right: 1px solid var(--gnq-border-subtle);
   position: relative;
   z-index: var(--z-chart);
 }
@@ -689,10 +689,10 @@ body.cockpit-body {
 }
 
 .panel-noir {
-  border: 2px solid #333333;
-  border-radius: 8px;
-  margin: 10px;
-  background: #0b0e11;
+  border: none;
+  border-radius: 0;
+  margin: 0;
+  background: var(--gnq-bg-card);
   padding: 10px 12px;
   box-sizing: border-box;
 }
@@ -700,25 +700,26 @@ body.cockpit-body {
 .panel-noir h2,
 .panel-noir .cockpit-card-title {
   margin: 0 0 8px 0;
-  font-size: 14px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
+  color: var(--gnq-text-muted);
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 10px;
+  padding: 6px 10px;
   margin: -10px -12px 10px -12px;
-  border-bottom: 2px solid #333333;
-  background: #12161b;
+  border-bottom: 1px solid var(--gnq-border-subtle);
+  background: transparent;
 }
 
 .brain-noir-card.dashboard-card,
 .mini-chart.ledger-noir-chart,
 .ledger-performance-panel.panel-noir {
-  border: 2px solid #333333 !important;
-  border-radius: 8px !important;
-  background: #0b0e11 !important;
+  border: 1px solid var(--gnq-border-subtle) !important;
+  border-radius: 4px !important;
+  background: var(--gnq-bg-card) !important;
 }
 
 .social-buzz-strip {
@@ -1067,8 +1068,9 @@ body.cockpit-body {
 }
 
 .elite8-ai-pill--in-position {
-  border-color: #6aa6ff;
-  box-shadow: 0 0 0 1px rgba(106, 166, 255, 0.35) inset;
+  /* Positie alleen via blauwe POS-badge; geen blauwe pill-rand (conflict met actieve-munt-oranje). */
+  border-color: #333333;
+  box-shadow: none;
 }
 
 .elite8-ai-pill__pos {
@@ -1166,6 +1168,11 @@ body.headless-mode {
   font-size: 12px;
   line-height: 1.55;
   padding: 6px 8px;
+  white-space: normal;
+}
+
+.cockpit-ai-panel .brain-reasoning-body {
+  white-space: pre-wrap;
 }
 
 .cockpit-ai-panel .cockpit-signal-mix-table td.cockpit-metric-value,
@@ -1356,6 +1363,178 @@ body.sniper-fullscreen .cockpit-chart-panel {
   padding: 16px 12px !important;
   font-size: 14px;
   font-weight: 600;
+}
+
+/* Fixed footer: Live Trade Ledger — echte <table> + vaste kolombreedtes (geen losse thead/tbody-grids). */
+.ledger-footer-content .trade-table--ledger-grid.ledger-table--terminal-fixed {
+  table-layout: fixed;
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.ledger-footer-content.bv-ledger-scroll {
+  -webkit-overflow-scrolling: touch;
+}
+
+.ledger-footer-content .trade-table--ledger-grid.ledger-table--ledger-flat.ledger-table--terminal-fixed thead tr {
+  background: transparent;
+}
+
+.ledger-footer-content .trade-table--ledger-grid.ledger-table--ledger-flat.ledger-table--terminal-fixed thead th {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--gnq-bg-base) !important;
+  color: var(--gnq-text-muted) !important;
+  font-family: var(--gnq-font-ui);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--gnq-border-subtle);
+  box-shadow: 0 1px 0 var(--gnq-border-subtle);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 6px 4px;
+  vertical-align: bottom;
+}
+
+.ledger-footer-content .trade-table--ledger-grid.ledger-table--ledger-flat.ledger-table--terminal-fixed th,
+.ledger-footer-content .trade-table--ledger-grid.ledger-table--ledger-flat.ledger-table--terminal-fixed td {
+  border: none;
+  border-bottom: 1px solid var(--gnq-border-subtle);
+  padding: 4px 4px;
+  font-size: 11px;
+  font-family: var(--gnq-font-mono);
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+}
+
+.ledger-footer-content .trade-table--ledger-grid.ledger-table--ledger-flat.ledger-table--terminal-fixed tbody tr:nth-child(even) {
+  background: transparent;
+}
+
+.ledger-footer-content .trade-table--ledger-grid.ledger-table--ledger-flat.ledger-table--terminal-fixed tbody tr:hover {
+  background: var(--gnq-bg-hover);
+}
+
+/* Tekst links, koersen/bedragen/P% rechts */
+.ledger-footer-content .trade-table--ledger-grid.ledger-table--terminal-fixed thead th:nth-child(1),
+.ledger-footer-content .trade-table--ledger-grid.ledger-table--terminal-fixed tbody td:nth-child(1),
+.ledger-footer-content .trade-table--ledger-grid.ledger-table--terminal-fixed thead th:nth-child(2),
+.ledger-footer-content .trade-table--ledger-grid.ledger-table--terminal-fixed tbody td:nth-child(2),
+.ledger-footer-content .trade-table--ledger-grid.ledger-table--terminal-fixed thead th:nth-child(9),
+.ledger-footer-content .trade-table--ledger-grid.ledger-table--terminal-fixed tbody td:nth-child(9),
+.ledger-footer-content .trade-table--ledger-grid.ledger-table--terminal-fixed thead th:nth-child(10),
+.ledger-footer-content .trade-table--ledger-grid.ledger-table--terminal-fixed tbody td:nth-child(10),
+.ledger-footer-content .trade-table--ledger-grid.ledger-table--terminal-fixed thead th:nth-child(12),
+.ledger-footer-content .trade-table--ledger-grid.ledger-table--terminal-fixed tbody td:nth-child(12) {
+  text-align: left;
+}
+
+.ledger-footer-content .trade-table--ledger-grid.ledger-table--terminal-fixed thead th:nth-child(3),
+.ledger-footer-content .trade-table--ledger-grid.ledger-table--terminal-fixed tbody td:nth-child(3),
+.ledger-footer-content .trade-table--ledger-grid.ledger-table--terminal-fixed thead th:nth-child(4),
+.ledger-footer-content .trade-table--ledger-grid.ledger-table--terminal-fixed tbody td:nth-child(4),
+.ledger-footer-content .trade-table--ledger-grid.ledger-table--terminal-fixed thead th:nth-child(5),
+.ledger-footer-content .trade-table--ledger-grid.ledger-table--terminal-fixed tbody td:nth-child(5),
+.ledger-footer-content .trade-table--ledger-grid.ledger-table--terminal-fixed thead th:nth-child(6),
+.ledger-footer-content .trade-table--ledger-grid.ledger-table--terminal-fixed tbody td:nth-child(6),
+.ledger-footer-content .trade-table--ledger-grid.ledger-table--terminal-fixed thead th:nth-child(7),
+.ledger-footer-content .trade-table--ledger-grid.ledger-table--terminal-fixed tbody td:nth-child(7),
+.ledger-footer-content .trade-table--ledger-grid.ledger-table--terminal-fixed thead th:nth-child(8),
+.ledger-footer-content .trade-table--ledger-grid.ledger-table--terminal-fixed tbody td:nth-child(8),
+.ledger-footer-content .trade-table--ledger-grid.ledger-table--terminal-fixed thead th:nth-child(11),
+.ledger-footer-content .trade-table--ledger-grid.ledger-table--terminal-fixed tbody td:nth-child(11) {
+  text-align: right;
+}
+
+.ledger-footer-content .trade-table--ledger-grid.ledger-table--terminal-fixed td.cockpit-ledger-empty {
+  text-align: center !important;
+  white-space: normal;
+}
+
+.cockpit-ledger-row--duplicate-warn td {
+  outline: 1px solid rgba(255, 49, 49, 0.9) !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 49, 49, 0.35);
+  background: rgba(80, 10, 10, 0.35) !important;
+}
+
+.ledger-status-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+.ledger-status-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+.ledger-status-dot--open {
+  background: #39ff14;
+}
+.ledger-status-dot--closed {
+  background: #6b6b6b;
+}
+.ledger-status-dot--entry {
+  background: #f8d04f;
+}
+.ledger-footer-content .trade-table--ledger-grid.ledger-table--terminal-fixed td.cockpit-ledger-context {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 0;
+  max-height: none;
+  display: table-cell;
+  -webkit-line-clamp: unset;
+  padding-left: 10px;
+}
+.cockpit-ledger-row--closed td {
+  color: #8a8a8a !important;
+}
+.cockpit-ledger-row--closed .positive,
+.cockpit-ledger-row--closed .negative {
+  color: #9a9a9a !important;
+}
+.cockpit-ledger-mono {
+  font-variant-numeric: tabular-nums;
+  font-family: var(--genesis-mono, "JetBrains Mono", monospace);
+}
+.cockpit-ledger-status-pill {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.cockpit-ledger-status-pill--closed {
+  background: #2a2a2a;
+  color: #bbb !important;
+}
+.cockpit-ledger-status-pill--open {
+  background: #0f2a18;
+  color: #39ff14 !important;
+}
+.cockpit-ledger-status-pill--entry {
+  background: #2a2510;
+  color: #f8d04f !important;
+}
+.ledger-footer-content .cockpit-ledger-asset .ledger-asset-pair {
+  display: block;
+  font-size: 10px;
+  opacity: 0.85;
+  margin-top: 2px;
 }
 
 .cockpit-hidden-host {
@@ -1759,8 +1938,92 @@ body.sniper-fullscreen .cockpit-chart-panel {
 }
 
 .ledger-performance-mono {
-  font-family: var(--genesis-mono, "JetBrains Mono", monospace);
+  font-family: var(--gnq-font-mono);
   font-size: 15px;
   font-weight: 700;
-  color: #ffffff !important;
+  color: var(--gnq-text);
 }
+
+/* ============================================================
+   Genesis Noir Quant — GNQ utility layer
+   ============================================================ */
+
+/* Bento rail layout */
+.gnq-bento-rail {
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+  gap: 0;
+}
+
+/* Rail zones: hairline separator, no outer border */
+.tcc-rail-zone {
+  border: none !important;
+  border-bottom: 1px solid var(--gnq-border-subtle) !important;
+  border-radius: 0 !important;
+  background: var(--gnq-bg-card) !important;
+  margin: 0 !important;
+}
+.tcc-rail-zone:last-child {
+  border-bottom: none !important;
+}
+
+/* Intel panel zones */
+.tcc-intel-zone {
+  border: none !important;
+  border-bottom: 1px solid var(--gnq-border-subtle) !important;
+  border-radius: 0 !important;
+  margin: 0 !important;
+  padding: 10px 12px !important;
+}
+.tcc-intel-zone:last-child {
+  border-bottom: none !important;
+}
+
+/* Borderless chart containers */
+.bv-chart-panel,
+.bv-chart-panel--fill,
+.bv-chart-panel--terminal-primary,
+.bv-price-chart-root,
+#priceChart {
+  border: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  background: var(--gnq-bg-base) !important;
+}
+
+/* Monospace for all data values */
+.bv-kpi-value,
+.bv-kpi-sub,
+.bv-kpi-micro,
+.bv-balance-line {
+  font-family: var(--gnq-font-mono);
+}
+
+.ledger-performance-kpi {
+  font-family: var(--gnq-font-mono);
+}
+
+#btc-price,
+.cockpit-market-price {
+  font-family: var(--gnq-font-mono);
+}
+
+/* Labels stay in Inter */
+.bv-card-label,
+.cockpit-section-label,
+.bv-kpi-label {
+  font-family: var(--gnq-font-ui);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--gnq-text-muted);
+}
+
+/* Utility classes replacing inline styles */
+.gnq-hidden     { display: none !important; }
+.gnq-grid-2col  { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gnq-gap-md); margin-bottom: var(--gnq-gap-md); }
+.gnq-th-left    { text-align: left;   padding: 4px 8px; font-family: var(--gnq-font-ui); font-size: 10px; color: var(--gnq-text-muted); }
+.gnq-th-center  { text-align: center; padding: 4px 8px; font-family: var(--gnq-font-ui); font-size: 10px; color: var(--gnq-text-muted); }
+.gnq-th-right   { text-align: right;  padding: 4px 8px; font-family: var(--gnq-font-ui); font-size: 10px; color: var(--gnq-text-muted); }
+.gnq-table-header { color: var(--gnq-text-muted); border-bottom: 1px solid var(--gnq-border-subtle); }

@@ -1,7 +1,7 @@
 <!doctype html>
 <!--
   Bestand: app/templates/index.html
-  Functie: Geïntegreerde trading cockpit (Bitvavo-style): header + 75/25 chart/AI + full-width ledger.
+  Functie: Trading cockpit — Clean Dashboard critical CSS + asset links; terminal-layout in style.css.
 -->
 <html lang="nl">
   <head>
@@ -11,168 +11,256 @@
     <title>AI Trading Cockpit</title>
     <!-- Eerste paint: geen witte flash vóór CSS-bundel; geen afhankelijkheid van async font-truc. -->
     <style>
-      html,
+      /* Locked Viewport — first paint */
+      html {
+        height: 100vh;
+        max-height: 100dvh;
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        box-sizing: border-box;
+      }
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
       body.cockpit-body {
         margin: 0;
-        background: #000000;
-        color: #ffffff;
-        font-family: system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif;
-      }
-      
-      /* Dashboard Restructure */
-      body.cockpit-body {
-        background: #121212;
-      }
-      .panel-noir {
-          background: #1a1a1a !important;
-          border: 1px solid #2a2a2a !important;
-          border-radius: 6px;
-          padding: 12px !important; /* Ruimte aan de binnenkant */
-          margin-bottom: 12px;
-          display: flex;
-          flex-direction: column;   /* Stapel alles netjes onder elkaar */
-          gap: 8px;                 /* Ruimte tussen label en getal */
-          height: auto !important;  /* Laat het kader meegroeien */
-          min-height: 80px;
-          box-shadow: 0 4px 6px rgba(0,0,0,0.3);
-      }
-      .cockpit-card-title, .cockpit-chart-titlebar {
-        display: none !important;
-      }
-      .subtle-label {
-          position: static !important; /* Haal hem uit de 'zweef-stand' */
-          font-size: 10px;
-          color: #666;
-          text-transform: uppercase;
-          letter-spacing: 1px;
-          font-weight: 600;
-      }
-      .executive-allocation-body {
-          font-family: 'JetBrains Mono', monospace;
-          font-size: 16px;
-          color: #00ffcc;
-          word-break: break-all;
-      }
-      .cockpit-terminal-grid {
-        display: grid;
-        grid-template-columns: 3fr 1fr !important;
-        gap: 16px;
-        align-items: start;
-      }
-      .cockpit-terminal-main-col {
-        display: flex;
-        flex-direction: column;
-        gap: 16px;
-        height: calc(100vh - 120px);
-      }
-      .cockpit-chart-panel {
-        flex: 1;
-        display: flex;
-        flex-direction: column;
-        padding: 30px 12px 12px 12px !important;
-      }
-      .chart-controls-absolute {
-        position: absolute;
-        top: 6px;
-        right: 12px;
-        z-index: 10;
-        display: flex;
-        gap: 6px;
-      }
-      .chart-controls-absolute button {
-        background: transparent;
-        border: 1px solid #333;
-        color: #888;
-        font-size: 11px;
-        padding: 2px 8px;
-        border-radius: 4px;
-        cursor: pointer;
-      }
-      .chart-controls-absolute button:hover {
-        background: #222;
-        color: #fff;
-      }
-      .cockpit-ticker-tape {
-        padding: 0 !important;
-        height: 36px;
-        display: flex;
-        align-items: center;
+        padding: 0;
+        height: 100vh;
+        max-height: 100dvh;
         overflow: hidden;
-        border-radius: 6px;
+        background: var(--gnq-bg-base, #050505);
+        color: var(--gnq-text, #e2e8f0);
+        font-family: var(--gnq-font-ui, "Inter", system-ui, sans-serif);
       }
-      .cockpit-ticker-head {
-        display: none !important;
-      }
-      .marquee-label {
-        padding: 0 12px;
-        border-right: 1px solid #2a2a2a;
-        color: #666;
-        font-size: 10px;
-        text-transform: uppercase;
-        letter-spacing: 1px;
-        font-weight: 600;
-        line-height: 36px;
-        white-space: nowrap;
-      }
-      .cockpit-ticker-item-badge--bull, .terminal-news-badge--bull {
-        background: #1e3a23 !important;
-        color: #4ade80 !important;
-        padding: 2px 6px !important;
-        border-radius: 3px !important;
-      }
-      .cockpit-ticker-item-badge--bear, .terminal-news-badge--bear {
-        background: #3a1e1e !important;
-        color: #f87171 !important;
-        padding: 2px 6px !important;
-        border-radius: 3px !important;
-      }
-      .cockpit-ai-panel {
-        display: flex;
-        flex-direction: column;
-        gap: 16px;
-      }
-      .panel-noir-sidebar {
-        padding: 30px 16px 16px 16px;
-      }
-      .ledger-footer {
-        position: fixed;
-        bottom: 0;
-        left: 0;
+      body.cockpit-body main#app.cockpit-locked-viewport.cockpit-main-stage {
+        margin: 0;
+        padding: 0;
+        display: grid !important;
+        flex: none !important;
+        grid-template-rows: 60px minmax(0, 1fr);
+        grid-template-columns: minmax(0, 1fr);
+        height: 100vh;
+        max-height: 100dvh;
         width: 100%;
-        background: #121212;
-        border-top: 1px solid #2a2a2a;
-        z-index: 1000;
-        transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-        box-shadow: 0 -4px 12px rgba(0,0,0,0.5);
-        max-height: 35vh;
-        display: flex;
-        flex-direction: column;
+        overflow: hidden;
+        min-height: 0;
       }
-      .ledger-footer.is-collapsed {
-        transform: translateY(calc(100% - 30px));
-      }
-      .ledger-footer-header {
-        height: 30px;
-        background: #1a1a1a;
-        border-bottom: 1px solid #2a2a2a;
+      #top-bar {
+        grid-row: 1;
+        grid-column: 1;
         display: flex;
         align-items: center;
         justify-content: space-between;
-        padding: 0 16px;
-        cursor: pointer;
-        user-select: none;
+        flex-wrap: nowrap;
+        gap: 12px;
+        padding: 0 20px;
+        height: 60px;
+        min-height: 60px;
+        max-height: 60px;
+        width: 100%;
+        min-width: 0;
+        overflow-x: auto;
+        overflow-y: hidden;
+        background: var(--gnq-bg-base, #050505);
+        border-bottom: 1px solid var(--gnq-border-subtle, #1a1a1a);
+        position: static;
       }
-      .ledger-footer-title {
-        font-size: 11px;
-        color: #888;
-        text-transform: uppercase;
-        letter-spacing: 1px;
-        font-weight: 600;
+      #top-bar .cockpit-top-bar__brand-nav {
+        display: flex;
+        align-items: center;
+        gap: 12px;
       }
-      .ledger-footer-content {
-        flex: 1;
-        overflow: auto;
-        padding: 12px 16px;
+      #top-bar .cockpit-brand {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        line-height: 1;
+        white-space: nowrap;
+      }
+      #top-bar .cockpit-top-bar__center {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex: 1 1 auto;
+        min-width: 0;
+        justify-content: center;
+      }
+      #top-bar .cockpit-global-ticker-strip {
+        margin-top: 0;
+        padding: 2px 8px;
+        background: rgba(255, 255, 255, 0.06);
+        border-radius: 4px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+      }
+      #top-bar .cockpit-nav-tabs.cockpit-nav-tabs--bitvavo {
+        padding: 1px;
+        align-items: center;
+      }
+      #top-bar .cockpit-nav-tabs--bitvavo .cockpit-tab {
+        padding: 3px 10px 4px !important;
+        font-size: 11px !important;
+      }
+      #top-bar .cockpit-top-bar__grow {
+        flex: 1 1 auto;
+        min-width: 0;
+        display: flex;
+        align-items: center;
+        overflow: hidden;
+      }
+      body.cockpit-body main#app.cockpit-locked-viewport > #tab-terminal.bv-terminal.cockpit-shell {
+        grid-row: 2;
+        grid-column: 1;
+        display: flex !important;
+        flex-direction: column !important;
+        flex: 1 1 0 !important;
+        min-height: 0 !important;
+        height: 100% !important;
+        overflow: hidden;
+      }
+      body.cockpit-body main#app.cockpit-locked-viewport > #tab-terminal.bv-terminal.cockpit-shell.hidden,
+      body.cockpit-body main#app.cockpit-locked-viewport > #tab-aibrain.hidden,
+      body.cockpit-body main#app.cockpit-locked-viewport > #tab-ledger.hidden,
+      body.cockpit-body main#app.cockpit-locked-viewport > #tab-hardware.hidden,
+      body.cockpit-body main#app.cockpit-locked-viewport > #tab-logs.hidden,
+      body.cockpit-body main#app.cockpit-locked-viewport > #tab-sentiment.hidden {
+        display: none !important;
+      }
+      body.cockpit-body main#app.cockpit-locked-viewport > #tab-logs,
+      body.cockpit-body main#app.cockpit-locked-viewport > #tab-aibrain,
+      body.cockpit-body main#app.cockpit-locked-viewport > #tab-ledger,
+      body.cockpit-body main#app.cockpit-locked-viewport > #tab-hardware,
+      body.cockpit-body main#app.cockpit-locked-viewport > #tab-sentiment {
+        grid-row: 2;
+        grid-column: 1;
+        min-width: 0;
+        min-height: 0;
+        overflow: hidden;
+      }
+      body.cockpit-body main#app.cockpit-locked-viewport #tab-terminal #dashboard.tcc-command-grid {
+        flex: 1 1 0;
+        display: grid !important;
+        grid-template-columns: 240px minmax(0, 1fr) 340px;
+        align-items: stretch !important;
+        justify-items: stretch !important;
+        grid-template-rows: minmax(0, 1fr);
+        min-height: 0 !important;
+        height: 100% !important;
+        max-height: 100% !important;
+        gap: 0;
+        background: var(--gnq-bg-grid, #050505) !important;
+      }
+      body.cockpit-body main#app.cockpit-locked-viewport #tab-terminal .dashboard-col-left.tcc-rail-col {
+        overflow-y: auto !important;
+        overflow-x: hidden !important;
+        min-height: 0 !important;
+      }
+      body.cockpit-body main#app.cockpit-locked-viewport #tab-terminal .dashboard-col-right.bv-dashboard-col--ai {
+        display: flex !important;
+        flex-direction: column !important;
+        height: 100% !important;
+        min-height: 0 !important;
+      }
+      .dashboard-mid-split {
+        display: flex !important;
+        flex-direction: column !important;
+        height: auto !important;
+        min-height: 0 !important;
+        max-height: none !important;
+      }
+      .dashboard-mid-row--primary {
+        flex: 0 0 auto !important;
+        height: auto !important;
+        min-height: 0 !important;
+        display: flex !important;
+        flex-direction: column !important;
+      }
+      .dashboard-mid-row--primary {
+        height: 450px !important;
+        min-height: 450px !important;
+        max-height: 450px !important;
+        flex: 0 0 450px !important;
+      }
+      .cockpit-chart-panel {
+        flex: 1 1 0 !important;
+        min-height: 0 !important;
+        display: flex !important;
+        flex-direction: column !important;
+      }
+      .bv-terminal-chart-stack {
+        flex: 1 1 0 !important;
+        min-height: 0 !important;
+        width: 100% !important;
+      }
+      .cockpit-chart-host,
+      .bv-chart-host {
+        width: 100% !important;
+        height: 100% !important;
+        min-height: 0 !important;
+      }
+      #priceChart,
+      #priceChart canvas {
+        width: 100% !important;
+        height: 100% !important;
+      }
+      .dashboard-mid-split > .cockpit-intelligence-ticker {
+        flex: 0 0 auto !important;
+        height: auto !important;
+      }
+      .dashboard-mid-row--ledger {
+        flex: 1 1 auto !important;
+        height: auto !important;
+        min-height: 0 !important;
+        max-height: none !important;
+      }
+      body.cockpit-body main#app.cockpit-locked-viewport #tab-terminal .tcc-intel-col {
+        flex: 1 1 0 !important;
+        display: flex !important;
+        flex-direction: column !important;
+        min-height: 0 !important;
+        height: 100% !important;
+      }
+      body.cockpit-body main#app.cockpit-locked-viewport #tab-terminal #bvAiFeedCard.bv-ai-feed--rail.tcc-intel-stack {
+        flex: 1 1 0 !important;
+        min-height: 0 !important;
+        height: 100% !important;
+        width: 100% !important;
+        display: flex !important;
+        flex-direction: column !important;
+      }
+      body.cockpit-body main#app.cockpit-locked-viewport #tab-terminal #bvAiFeedCard.tcc-intel-stack > .tcc-intel-zone--logs {
+        display: flex !important;
+        flex-direction: column !important;
+        height: 100% !important;
+        flex: 1 1 0 !important;
+        min-height: 0 !important;
+        overflow: hidden !important;
+      }
+      body.cockpit-body main#app.cockpit-locked-viewport #tab-terminal #bvAiThoughtFeed.bv-ai-trades-feed--scroll-body {
+        flex-grow: 1 !important;
+        flex: 1 1 0 !important;
+        min-height: 0 !important;
+        overflow-y: scroll !important;
+        font-family: "JetBrains Mono", ui-monospace, monospace !important;
+        font-size: 0.8rem !important;
+        line-height: 1.35 !important;
+      }
+      .cockpit-card-title,
+      .cockpit-chart-titlebar {
+        display: none !important;
+      }
+      .chart-controls-inline,
+      .chart-controls-absolute {
+        position: static;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 6px;
+        margin-left: auto;
+        max-width: 100%;
       }
     </style>
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
@@ -182,7 +270,8 @@
       href="https://fonts.googleapis.com/css2?family=Inter:wght@500;600;700&family=JetBrains+Mono:wght@400;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/static/css/master_layout.css" />
+    <link rel="stylesheet" href="/static/css/master_layout.css?v=opt-20260509" />
+    <link rel="stylesheet" href="/static/css/style.css?v=opt-20260509" />
     <!-- De Browser Spion: Vangt front-end errors en stuurt ze naar de portal backend -->
     <script>
       window.addEventListener('error', function(event) {
@@ -202,164 +291,122 @@
     </script>
   </head>
   <body class="cockpit-body">
-    <header class="cockpit-header" role="banner">
-      <div class="cockpit-header-lead">
-        <div class="cockpit-brand">
-          <span class="cockpit-logo" aria-hidden="true">◆</span>
-          <span>AI TRADING</span>
+    <main id="app" class="cockpit-main-stage cockpit-main-stage--ledger-flat-chrono cockpit-locked-viewport">
+      <header id="top-bar" class="cockpit-top-bar" role="banner" aria-label="Hoofdbalk">
+        <div class="cockpit-top-bar__brand-nav">
+          <div class="cockpit-brand">
+            <span class="cockpit-logo" aria-hidden="true">◆</span>
+            <span>AI TRADING</span>
+          </div>
+          <nav class="cockpit-nav-tabs cockpit-nav-tabs--bitvavo" aria-label="Hoofdnavigatie">
+            <button type="button" id="btn-terminal" class="cockpit-tab active">Terminal</button>
+            <button type="button" id="btn-aibrain" class="cockpit-tab">AI Brain</button>
+            <button type="button" id="btn-ledger" class="cockpit-tab">Ledger</button>
+            <button type="button" id="btn-logs" class="cockpit-tab">System Logs</button>
+            <button type="button" id="btn-sentiment" class="cockpit-tab">Sentiment</button>
+          </nav>
         </div>
-        <nav class="cockpit-nav-tabs" aria-label="Hoofdnavigatie">
-          <button type="button" id="btn-terminal" class="cockpit-tab active">Terminal</button>
-          <button type="button" id="btn-aibrain" class="cockpit-tab">AI Brain</button>
-          <button type="button" id="btn-ledger" class="cockpit-tab">Ledger</button>
-          <button type="button" id="btn-hardware" class="cockpit-tab">Hardware</button>
-        </nav>
-      </div>
-      <div class="cockpit-header-center">
-        <span id="headerPairDisplay" class="genesis-mono-strong" aria-live="polite">BTC-EUR</span>
-        <select id="marketSelect" class="cockpit-select" aria-label="Bitvavo-markt"></select>
-        <button type="button" id="refreshMarketsBtn" class="btn-outline btn-outline--icon" aria-label="Markten verversen">↻</button>
-        <span id="btc-price" class="cockpit-btc-price" aria-live="polite">BTC —</span>
+        <div class="cockpit-top-bar__center">
+          <div class="cockpit-top-bar__wallet" aria-label="Saldo en cash">
+            <div class="cockpit-status-live" title="Portal verbonden; worker-/activity-stream actief (zo niet: controleer /health).">
+              <span class="cockpit-status-live__dot" aria-hidden="true"></span>
+              <span class="cockpit-status-live__txt">AI LIVE</span>
+            </div>
+            <button
+              type="button"
+              class="cockpit-info-ic cockpit-info-ic--header"
+              aria-label="Uitleg saldo"
+              title="Paper-saldo (equity) en cash uit de vault-portefeuille; volgt de worker-/activity-sync."
+            >
+              <i class="cockpit-info-ic__glyph" aria-hidden="true">i</i>
+            </button>
+            <span class="cockpit-wallet-line">
+              <span class="cockpit-wallet-label">Saldo:</span><strong id="headerBalanceEuro" class="cockpit-wallet-amt">€—</strong>
+              <span class="cockpit-wallet-sep" aria-hidden="true">|</span>
+              <span class="cockpit-wallet-label">Cash:</span><strong id="headerCash" class="cockpit-wallet-amt">€—</strong>
+            </span>
+          </div>
+          <div class="cockpit-top-bar__market cockpit-asset-strip cockpit-asset-strip--rail" aria-label="Markt en valuta">
+            <span id="headerPairDisplay" class="cockpit-asset-pair genesis-mono-strong" aria-live="polite">BTC-EUR</span>
+            <select id="marketSelect" class="cockpit-select cockpit-select--minimal" aria-label="Bitvavo-markt"></select>
+            <button type="button" id="refreshMarketsBtn" class="cockpit-icon-btn" aria-label="Markten verversen" title="Markten opnieuw laden">↻</button>
+            <span id="btc-price" class="cockpit-asset-tick cockpit-btc-price" aria-live="polite">—</span>
+            <span
+              id="headerMarketPosLamp"
+              class="cockpit-pos-lamp cockpit-pos-lamp--off"
+              role="img"
+              aria-label="Geen open positie op geselecteerde markt"
+              title="Geen open positie op deze markt"
+            ></span>
+          </div>
+          <div class="cockpit-top-bar__grow">
+            <div class="cockpit-global-ticker-strip" id="globalEliteTickerStrip" aria-label="Elite-8 en marktscanner">
+              <div id="elite8AiStatusBar" class="elite8-ai-status-bar elite8-ai-status-bar--global" aria-label="Elite-8 AI signal status"></div>
+              <div id="scannerTickerBar" class="scanner-ticker-bar scanner-ticker-bar--global" aria-label="Dynamic scanner elite-8"></div>
+            </div>
+          </div>
+        </div>
+        <div class="cockpit-top-bar__actions">
+          <details class="cockpit-profile-dd">
+            <summary class="cockpit-profile" aria-label="Profielmenu">
+              <span class="cockpit-profile__avatar" aria-hidden="true">J</span>
+              <span class="cockpit-profile__name">Johan</span>
+            </summary>
+            <div class="cockpit-profile-menu" role="menu">
+              <span class="cockpit-profile-menu__meta">AI Trading cockpit</span>
+            </div>
+          </details>
+          <button type="button" id="stopBotBtn" class="cockpit-stop-bot" title="Noodstop — zelfde als /bot/panic (risk-off)">
+            STOP BOT
+          </button>
+        </div>
         <span id="headerEquity" hidden>-</span>
-        <span class="cockpit-bal">
-          Balans: <strong id="headerBalanceEuro">€—</strong>
-          <span class="hint-wrap cockpit-hint-lead" tabindex="0">
-            <span class="hint-icon">(i)</span>
-            <span class="hint-bubble">Paper-equity uit de vault-portefeuille; live Bitvavo-markt via dropdown.</span>
-          </span>
-        </span>
-        <span class="genesis-mono-strong cockpit-header-cash">Cash <span id="headerCash">—</span></span>
-      </div>
-      <div class="cockpit-hw" aria-label="Hardware-snapshot">
-        <span class="hint-wrap" tabindex="0">
-          <span class="hint-icon">(i)</span>
-          <span class="hint-bubble">Live CPU, RAM, GPU (nvidia-smi) en schijf; vernieuwt via WebSocket.</span>
-        </span>
-        <span id="headerStatCpu">🖥️ —%</span>
-        <span id="headerStatRam">🧠 —%</span>
-        <span id="headerStatGpu" class="cockpit-gpu-neon">🎮 —%</span>
-        <span id="headerStatDisk">💾 —%</span>
-      </div>
-      <div class="cockpit-actions">
-        <button type="button" id="paperBtn" class="btn-outline" title="Paper-run op geselecteerde markt">Paper</button>
-        <button type="button" id="pauseBtn" class="btn-outline btn-outline--warn">Pause</button>
-        <button type="button" id="resumeBtn" class="btn-outline">Resume</button>
-        <button type="button" id="panicBtn" class="btn-outline btn-outline--danger">Panic</button>
-        <span id="modeBanner" class="cockpit-mode mode-toggle" title="Modus">…</span>
-      </div>
-    </header>
+        <span id="modeBanner" hidden aria-hidden="true"></span>
+        <span id="headerStatCpu" hidden aria-hidden="true"></span>
+        <span id="headerStatRam" hidden aria-hidden="true"></span>
+        <span id="headerStatGpu" hidden aria-hidden="true"></span>
+        <span id="headerStatDisk" hidden aria-hidden="true"></span>
+      </header>
+    {% include "terminal.html" %}
 
-    <!-- Elite-8 + scanner: één strip voor alle tabs (Mission Control alignment) -->
-    <div class="cockpit-global-ticker-strip" id="globalEliteTickerStrip" aria-label="Elite-8 en marktscanner">
-      <div id="elite8AiStatusBar" class="elite8-ai-status-bar elite8-ai-status-bar--global" aria-label="Elite-8 AI signal status"></div>
-      <div id="scannerTickerBar" class="scanner-ticker-bar scanner-ticker-bar--global" aria-label="Dynamic scanner elite-8"></div>
-    </div>
-
-    <main class="cockpit-main-stage" id="cockpitMainStage">
-    <div id="tab-terminal" class="cockpit-shell cockpit-tab-root cockpit-tab-root--terminal tab-content active">
-      <div class="cockpit-terminal-workspace">
-        <div class="cockpit-terminal-grid">
-          <div class="cockpit-terminal-main-col">
-        <section class="cockpit-chart-panel panel-noir">
-          <span class="subtle-label">Price</span>
-          <div class="chart-controls-absolute">
-            <button type="button" onclick="setChartInterval('1m')">1m</button>
-            <button type="button" onclick="setChartInterval('5m')">5m</button>
-            <button type="button" onclick="setChartInterval('15m')">15m</button>
-            <button type="button" onclick="setChartInterval('60m')">60m</button>
-            <button type="button" id="toggleHeadlessBtn">Headless</button>
-            <button type="button" id="toggleChartFullscreenBtn">⛶</button>
-          </div>
-          <div class="cockpit-chart-host chart-wrap--genesis cockpit-chart-anchor" style="height: 100%;">
-            <div class="cockpit-chart-skeleton" id="priceChartSkeleton" aria-hidden="true"></div>
-            <div id="priceChart" style="height: 100%;"></div>
-          </div>
-          <pre id="prediction" class="cockpit-chart-meta" style="margin:0; font-size: 10px; color: #666; position: absolute; bottom: 8px; left: 12px; z-index: 10;">Laden…</pre>
-          <div class="cockpit-sr-only">
-            <span id="terminalFearGreed">-</span><span id="terminalFearGreedSub"></span>
-          </div>
-        </section>
-
-        <div class="cockpit-intelligence-ticker cockpit-ticker-tape panel-noir" id="intelligenceTickerPanel" aria-label="Marktintelligence">
-          <span class="marquee-label">Intelligence</span>
-          <div class="cockpit-ticker-marquee" id="intelligenceTickerMarquee" aria-label="Marktintelligence nieuws ticker" style="flex:1;">
-            <div id="intelligenceTickerNews" class="cockpit-ticker-marquee-track" aria-live="polite"></div>
-          </div>
-        </div>
-          </div>
-
-        <aside class="cockpit-ai-panel cockpit-reasoning-sidebar cockpit-terminal-rail">
-  
-  <section class="panel-noir" aria-label="Status">
-    <span class="subtle-label">Status</span>
-    <div class="portfolio-big neon-equity js-portfolio-equity">-</div>
-    <div id="sentiment-value" class="executive-allocation-body" style="color: #00d4ff;">0.000</div>
-    <div class="progress-bar js-sentiment-bar"></div>
-  </section>
-
-  <div class="panel-noir">
-    <span class="subtle-label">Market Stats</span>
-    <div class="metric" style="border-bottom-color: #2a2a2a;">
-        <span class="metric-label" style="font-size: 13px;">24h Change</span>
-        <span class="metric-value" id="market-24h-change" style="font-size: 13px;">--</span>
-    </div>
-    <div class="metric" style="border-bottom-color: #2a2a2a;">
-        <span class="metric-label" style="font-size: 13px;">4h Volatility</span>
-        <span class="metric-value" id="market-volatility" style="font-size: 13px;">--</span>
-    </div>
-    <div class="metric">
-        <span class="metric-label" style="font-size: 13px;">Scanner Reason</span>
-        <span class="metric-value" id="market-reason" style="font-size: 11px; text-align: right; max-width: 55%; color: #aaa;">--</span>
-    </div>
-  </div>
-
-  <div class="panel-noir">
-    <span class="subtle-label">Allocatie</span>
-    <div id="allocatie" class="executive-allocation-body">Laden...</div>
-  </div>
-
-  <div class="panel-noir">
-    <span class="subtle-label">Signal Mix</span>
-    <table class="trade-table trade-table--compact cockpit-signal-mix-table" style="width: 100%; margin-top: 5px;">
-      <tbody>
-        <tr>
-          <td style="color:#666; font-size: 11px;">Correlation</td>
-          <td id="js-corr-value" style="text-align:right; font-weight: bold;">0.00</td>
-        </tr>
-        <tr>
-          <td style="color:#666; font-size: 11px;">News weight</td>
-          <td id="js-news-weight" style="text-align:right; font-weight: bold;">0.00</td>
-        </tr>
-        <tr>
-          <td style="color:#666; font-size: 11px;">Price weight</td>
-          <td id="js-price-weight" style="text-align:right; font-weight: bold;">0.00</td>
-        </tr>
-      </tbody>
-    </table>
-  </div>
-  
-</aside>
-        </div>
-      </div>
-    </div>
-
-    <section id="tab-aibrain" class="brain-tab cockpit-tab-root cockpit-tab-root--brain tab-content hidden" aria-hidden="true" style="display: none;">
+    <section id="tab-aibrain" class="brain-tab cockpit-tab-root cockpit-tab-root--brain tab-content hidden" aria-hidden="true">
       <div class="brain-tab-inner genesis-tab-inner cockpit-pad">
         <header class="brain-tab-header">
           <h2 class="brain-tab-title">AI Brain Lab</h2>
           <p class="brain-tab-sub">Neural policy &amp; training telemetry — live via WebSocket (<code class="brain-tab-code">brain_stats</code>)</p>
         </header>
         
-        <div class="brain-top-row" style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px;">
+        <div class="brain-top-row gnq-grid-2col">
           <div class="panel-noir">
             <h2 class="cockpit-card-title card-title-with-hint">
-              Decision reasoning
+              Thinking Process
               <span class="hint-wrap" tabindex="0">
                 <span class="hint-icon">(i)</span>
-                <span class="hint-bubble">Wat de RL-agent nu doet en waarom (laatste paper-besluit).</span>
+                <span class="hint-bubble">Gestructureerde weergave van het RL-besluitproces: wat ziet de bot, waar twijfelt hij, wat is de uitkomst.</span>
               </span>
             </h2>
-            <div id="brainReasoningBox" class="brain-reasoning cockpit-reasoning-primary">Nog geen RL-besluit beschikbaar.</div>
+            <div class="brain-thinking-process" id="brainThinkingProcess">
+              <div class="brain-thinking-section brain-thinking-section--observations">
+                <span class="brain-thinking-label">Observations</span>
+                <div id="brainThinkingObservations" class="brain-thinking-content">—</div>
+              </div>
+              <div class="brain-thinking-section brain-thinking-section--conflict">
+                <span class="brain-thinking-label">Conflict</span>
+                <div id="brainThinkingConflict" class="brain-thinking-content">—</div>
+              </div>
+              <div class="brain-thinking-section brain-thinking-section--verdict">
+                <span class="brain-thinking-label">Final Verdict</span>
+                <div id="brainThinkingVerdict" class="brain-thinking-content">—</div>
+              </div>
+              <div class="brain-thinking-section brain-thinking-section--context">
+                <span class="brain-thinking-label">Context</span>
+                <div id="brainBuyBlockFactors" class="brain-thinking-content brain-context-factors">—</div>
+              </div>
+            </div>
+            <details class="brain-reasoning-details">
+              <summary>Volledige reasoning tekst</summary>
+              <div id="brainReasoningBox" class="brain-reasoning cockpit-reasoning-primary">Nog geen RL-besluit beschikbaar.</div>
+            </details>
             <p id="brainLastScanLine" class="cockpit-last-scan genesis-mono-strong" aria-live="polite">Laatste scan: —</p>
           </div>
           <div class="panel-noir">
@@ -370,29 +417,41 @@
                 <span class="hint-bubble">Signal Mix: verhouding tussen nieuws-/macro-signalen en prijsactie in de huidige besluitvorming.</span>
               </span>
             </h2>
-            <div class="mini-chart mini-chart--corr-inline"><canvas id="brainCorrelationChart"></canvas></div>
-            <table class="trade-table trade-table--compact cockpit-signal-mix-table cockpit-signal-mix-table--spaced">
+            <table class="trade-table trade-table--compact cockpit-signal-mix-table cockpit-signal-mix-table--spaced" style="width:100%;margin-top:8px;">
               <thead>
                 <tr>
-                  <th>Metric</th>
-                  <th class="cockpit-metric-value">Waarde</th>
+                  <th style="width:30%">Metric</th>
+                  <th>Waarde</th>
+                  <th style="width:45%">Gewicht</th>
                 </tr>
               </thead>
               <tbody>
                 <tr>
-                  <td>Correlation</td>
-                  <td class="cockpit-metric-value js-corr-value" id="weight-correlation">-</td>
+                  <td>Sentiment</td>
+                  <td class="js-sentiment-mix-val" style="font-variant-numeric:tabular-nums;white-space:nowrap;">—</td>
+                  <td><div class="smix-bar-wrap"><div class="smix-bar js-sentiment-mix-bar" style="width:50%;background:#39ff14;transition:width .4s,background .4s;"></div></div></td>
                 </tr>
                 <tr>
                   <td>News weight</td>
-                  <td class="cockpit-metric-value js-news-weight" id="weight-news">-</td>
+                  <td class="js-news-weight" id="weight-news" style="font-variant-numeric:tabular-nums;">—</td>
+                  <td><div class="smix-bar-wrap"><div class="smix-bar js-news-mix-bar" style="width:0%;background:#00f0ff;transition:width .4s;"></div></div></td>
                 </tr>
                 <tr>
                   <td>Price weight</td>
-                  <td class="cockpit-metric-value js-price-weight" id="weight-price">-</td>
+                  <td class="js-price-weight" id="weight-price" style="font-variant-numeric:tabular-nums;">—</td>
+                  <td><div class="smix-bar-wrap"><div class="smix-bar js-price-mix-bar" style="width:0%;background:#ff4dff;transition:width .4s;"></div></div></td>
+                </tr>
+                <tr>
+                  <td>Correlatie</td>
+                  <td class="js-corr-value" id="weight-correlation" style="font-variant-numeric:tabular-nums;">—</td>
+                  <td></td>
                 </tr>
               </tbody>
             </table>
+            <style>
+              .smix-bar-wrap{background:rgba(255,255,255,.07);border-radius:3px;height:8px;overflow:hidden;width:100%;}
+              .smix-bar{height:100%;border-radius:3px;}
+            </style>
           </div>
         </div>
 
@@ -429,63 +488,114 @@
                 <span class="brain-strategy-groups__chip brain-strategy-groups__chip--social">Sociaal</span>
                 <span class="brain-strategy-groups__chip brain-strategy-groups__chip--whale">Whale</span>
               </div>
-              <div class="brain-noir-card__chart brain-noir-card__chart--wide"><canvas id="brainTabFeatureChart" aria-label="Feature weights"></canvas></div>
+              <div class="brain-noir-card__chart brain-noir-card__chart--wide"><canvas id="brainTabFeatureChart" aria-label="Feature weights" style="cursor:pointer;" title="Klik op een balk voor uitleg"></canvas></div>
+              <div id="featureImpactBox" class="brain-feature-impact-box" aria-live="polite" style="display:none;"></div>
             </article>
             <article class="brain-noir-card dashboard-card">
               <h3 class="brain-noir-card__title card-title-with-hint">
-                Reward
+                Reward Error
                 <span class="hint-wrap" tabindex="0">
                   <span class="hint-icon">(i)</span>
-                  <span class="hint-bubble">Cumulative Reward: totale score van de huidige trainingssessie; hoger is beter.</span>
+                  <span class="hint-bubble">TD-fout: verschil tussen verwachte en werkelijke beloning (√value_loss). Daalt bij goed leren — kleinere TD-fout = bot schat rewards nauwkeuriger in.</span>
                 </span>
               </h3>
-              <p class="brain-noir-card__sub">Genormaliseerde reward (−1 … 1) — zelfde schaal als policy feedback</p>
-              <div class="brain-noir-card__chart"><canvas id="brainTabRewardChart" aria-label="Genormaliseerde cumulatieve reward"></canvas></div>
+              <p class="brain-noir-card__sub">√value_loss over trainingstappen — daalt = betere beloningsschatting</p>
+              <div class="brain-noir-card__chart"><canvas id="brainTabRewardErrorChart" aria-label="Reward error over tijd"></canvas></div>
             </article>
             <article class="brain-noir-card brain-noir-card--stats dashboard-card">
               <h3 class="brain-noir-card__title">Parameters</h3>
-              <p class="brain-noir-card__sub">Learning rate · entropy · epsilon</p>
+              <p class="brain-noir-card__sub">Learning rate · entropy · epsilon — tik op (i) voor uitleg per veld</p>
               <dl class="brain-noir-stats brain-noir-stats--xl">
                 <div class="brain-noir-stats__row">
-                  <dt>Learning rate <span class="hint-wrap" tabindex="0"><span class="hint-icon">(i)</span><span class="hint-bubble">De stapsnelheid van het leeralgoritme: hoe snel het model kennis bijwerkt.</span></span></dt>
+                  <dt>Learning rate <span class="hint-wrap" tabindex="0"><span class="hint-icon">(i)</span><span class="hint-bubble">Hoe groot elke gewichtsupdate is. Een lage waarde (bijv. 1e-5) betekent voorzichtig, langzamer leren en kleinere sprongen per train-chunk — minder risico op instabiliteit.</span></span></dt>
                   <dd><strong id="brainTabStatLR" class="brain-noir-stats__val brain-noir-stats__val--xl">—</strong></dd>
                 </div>
                 <div class="brain-noir-stats__row">
-                  <dt>Entropy <span class="hint-wrap" tabindex="0"><span class="hint-icon">(i)</span><span class="hint-bubble">Nieuwsgierigheid/onzekerheid van het model; lager = zekerder strategie.</span></span></dt>
-                  <dd><strong id="brainTabStatEntropy" class="brain-noir-stats__val brain-noir-stats__val--xl">—</strong></dd>
+                  <dt>Entropy <span class="hint-wrap" tabindex="0"><span class="hint-icon">(i)</span><span class="hint-bubble">Policy-entropy: hoe &apos;gespreid&apos; de actiekansen zijn. Lager = kortere/kantere strategie. Een streepje (—) betekent: in dit tick is geen verse entropy-waarde binnengekomen; geen probleem als de rest wél vult.</span></span></dt>
+                  <dd style="display:flex;align-items:center;gap:6px;"><strong id="brainTabStatEntropy" class="brain-noir-stats__val brain-noir-stats__val--xl">—</strong><canvas id="brainEntropySparkline" width="60" height="20" style="opacity:.85;"></canvas></dd>
                 </div>
                 <div class="brain-noir-stats__row">
-                  <dt>Epsilon (explore) <span class="hint-wrap" tabindex="0"><span class="hint-icon">(i)</span><span class="hint-bubble">Kans waarmee de bot een willekeurige trade doet om te leren.</span></span></dt>
+                  <dt>Epsilon (explore) <span class="hint-wrap" tabindex="0"><span class="hint-icon">(i)</span><span class="hint-bubble">Exploratie: welk deel van de tijd er extra toeval op de acties wordt gemengd (PPO/SB3) om nieuwe situaties te zien. Hangt samen met je RL_EXPLORATION_*-instellingen in de worker.</span></span></dt>
                   <dd><strong id="brainTabStatExplore" class="brain-noir-stats__val brain-noir-stats__val--xl">—</strong></dd>
                 </div>
                 <div class="brain-noir-stats__row">
-                  <dt>Discount factor <span class="hint-wrap" tabindex="0"><span class="hint-icon">(i)</span><span class="hint-bubble">Belang van toekomstige beloningen t.o.v. directe beloningen.</span></span></dt>
+                  <dt>Discount factor <span class="hint-wrap" tabindex="0"><span class="hint-icon">(i)</span><span class="hint-bubble">γ (gamma): hoe zwaar toekomstige beloningen meetellen t.o.v. directe. Richting 1,0 = het model let meer op lange termijn.</span></span></dt>
                   <dd><strong id="brainTabStatDiscount" class="brain-noir-stats__val">—</strong></dd>
                 </div>
                 <div class="brain-noir-stats__row">
-                  <dt>Batch size <span class="hint-wrap" tabindex="0"><span class="hint-icon">(i)</span><span class="hint-bubble">Aantal ervaringen dat tegelijk wordt verwerkt tijdens leren.</span></span></dt>
+                  <dt>Batch size <span class="hint-wrap" tabindex="0"><span class="hint-icon">(i)</span><span class="hint-bubble">Aantal ervaringen per gradient-update (typisch PPO/SB3). Samen met learning rate bepaalt dit hoe ruig of glad elke update is.</span></span></dt>
                   <dd><strong id="brainTabStatBatch" class="brain-noir-stats__val">—</strong></dd>
                 </div>
                 <div class="brain-noir-stats__row brain-noir-stats__row--muted">
-                  <dt>Global steps</dt>
+                  <dt>Global steps <span class="hint-wrap" tabindex="0"><span class="hint-icon">(i)</span><span class="hint-bubble">Totaal aantal omgevings-stappen (global_step_count): hoeveel train-stappen PPO al heeft gemaakt. Stijgt als er echte updates draaien. In NL-notatie is een punt vaak duizendtallen (bijv. 217.088 = tweehonderdzeventienduizend).</span></span></dt>
                   <dd><span id="brainTabStatSteps" class="brain-noir-stats__mono brain-noir-stats__mono--lg">—</span></dd>
                 </div>
                 <div class="brain-noir-stats__row brain-noir-stats__row--muted">
-                  <dt>RL Confidence</dt>
+                  <dt>RL Confidence <span class="hint-wrap" tabindex="0"><span class="hint-icon">(i)</span><span class="hint-bubble">Geschatte zekerheid van het beleid (meestal 0–1). Gaat over het netwerk, niet over hoeveel er vandaag getrade is.</span></span></dt>
                   <dd><span id="rl-confidence" class="brain-noir-stats__mono brain-noir-stats__mono--lg">—</span></dd>
                 </div>
                 <div class="brain-noir-stats__row brain-noir-stats__row--muted">
-                  <dt>Model Version</dt>
+                  <dt>Model Version <span class="hint-wrap" tabindex="0"><span class="hint-icon">(i)</span><span class="hint-bubble">Interne versie-label van het geladen model (build/checkpoint-tag). Geen marktprijs en geen garantie over winst.</span></span></dt>
                   <dd><span id="model-version" class="brain-noir-stats__mono brain-noir-stats__mono--lg">—</span></dd>
                 </div>
               </dl>
             </article>
           </div>
         </div>
+
+        <div class="brain-models-section" style="margin-top:var(--gnq-gap-md,16px);">
+          <h3 class="bv-card-label" style="margin:0 0 8px 0;">Prediction Error (TD-Error)</h3>
+          <p style="font-size:0.75rem;color:var(--gnq-text-muted,#64748b);margin:0 0 6px 0;">Value loss per PPO-update stap — daalt naarmate het model beter leert (x-as = globale trainingsstappen)</p>
+          <div style="height:120px;"><canvas id="brainTdErrorChart" aria-label="TD-Error over trainingsstappen"></canvas></div>
+        </div>
+
+        <div class="brain-models-section" style="margin-top:var(--gnq-gap-md,16px);">
+          <h3 class="bv-card-label" style="margin:0 0 8px 0;">Shadow Trades — Afgewezen door RiskManager</h3>
+          <p style="font-size:0.75rem;color:var(--gnq-text-muted,#64748b);margin:0 0 6px 0;">Signalen die de AI gaf maar die niet zijn uitgevoerd</p>
+          <div style="overflow-x:auto;max-height:200px;overflow-y:auto;">
+            <table style="width:100%;border-collapse:collapse;font-size:0.78rem;">
+              <thead>
+                <tr style="border-bottom:1px solid #1e293b;">
+                  <th style="text-align:left;padding:4px 8px;color:#94a3b8;">Tijd</th>
+                  <th style="text-align:left;padding:4px 8px;color:#94a3b8;">Markt</th>
+                  <th style="text-align:center;padding:4px 8px;color:#94a3b8;">Signaal</th>
+                  <th style="text-align:left;padding:4px 8px;color:#94a3b8;">Reden</th>
+                  <th style="text-align:right;padding:4px 8px;color:#94a3b8;">Spread bps</th>
+                  <th style="text-align:right;padding:4px 8px;color:#94a3b8;">Prijs</th>
+                </tr>
+              </thead>
+              <tbody id="brainShadowTradesBody">
+                <tr><td colspan="6" style="color:#475569;padding:8px;">Nog geen afgewezen signalen.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="brain-models-section" style="margin-top:var(--gnq-gap-md,16px);">
+          <h3 class="bv-card-label" style="margin:0 0 8px 0;">Model Status per Markt</h3>
+          <div style="overflow-x:auto;">
+            <table id="brainModelTable" class="gnq-table-header" style="width:100%;border-collapse:collapse;">
+              <thead>
+                <tr class="gnq-table-header">
+                  <th class="gnq-th-left">Markt <span class="hint-wrap" tabindex="0"><span class="hint-icon">(i)</span><span class="hint-bubble">Het handelspaar waarvoor dit model actief is, bijv. BTC-EUR.</span></span></th>
+                  <th class="gnq-th-center">Model <span class="hint-wrap" tabindex="0"><span class="hint-icon">(i)</span><span class="hint-bubble">Of het neurale netwerk momenteel geladen en actief is. ✓ = geladen; — = nog niet beschikbaar.</span></span></th>
+                  <th class="gnq-th-right">Oud (min) <span class="hint-wrap" tabindex="0"><span class="hint-icon">(i)</span><span class="hint-bubble">Model Freshness: aantal minuten geleden dat dit model voor het laatst getraind of bijgewerkt is. Lager = verser.</span></span></th>
+                  <th class="gnq-th-right">Replay <span class="hint-wrap" tabindex="0"><span class="hint-icon">(i)</span><span class="hint-bubble">Aantal opgeslagen ervaringen in de replay-buffer waarmee de AI leert. Meer = meer leervariatie.</span></span></th>
+                  <th class="gnq-th-right">BUY% <span class="hint-wrap" tabindex="0"><span class="hint-icon">(i)</span><span class="hint-bubble">Kans op een BUY-beslissing per de huidige policy-softmax. BUY + HOLD + SELL = 100%.</span></span></th>
+                  <th class="gnq-th-right">HOLD% <span class="hint-wrap" tabindex="0"><span class="hint-icon">(i)</span><span class="hint-bubble">Kans op HOLD (geen actie). Hoog HOLD = de bot ziet geen overtuigend signaal voor kopen of verkopen.</span></span></th>
+                  <th class="gnq-th-right">SELL% <span class="hint-wrap" tabindex="0"><span class="hint-icon">(i)</span><span class="hint-bubble">Kans op een SELL-beslissing. BUY + HOLD + SELL = 100%.</span></span></th>
+                </tr>
+              </thead>
+              <tbody id="brainModelTableBody">
+                <tr><td colspan="7" style="color:var(--gnq-text-muted);padding:8px;">Laden...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
     </section>
 
-    <section id="tab-ledger" class="brain-tab cockpit-tab-root cockpit-tab-root--ledger tab-content hidden" aria-hidden="true" style="display: none;">
+    <section id="tab-ledger" class="brain-tab cockpit-tab-root cockpit-tab-root--ledger tab-content hidden" aria-hidden="true">
       <div class="ledger-tab-shell genesis-tab-inner cockpit-pad">
         <div class="ledger-tab-split">
           <div class="ledger-charts-col">
@@ -546,7 +656,7 @@
       </div>
     </section>
 
-    <section id="tab-hardware" class="brain-tab hardware-tab cockpit-tab-root cockpit-tab-root--hardware tab-content hidden" aria-hidden="true" style="display: none;">
+    <section id="tab-hardware" class="brain-tab hardware-tab cockpit-tab-root cockpit-tab-root--hardware tab-content hidden" aria-hidden="true">
       <div class="genesis-tab-inner system-resources-inner cockpit-pad">
         <div class="panel genesis-card eq-card system-meters-card">
           <div class="ring-meters-row ring-meters-row--quad" aria-label="CPU RAM GPU DISK">
@@ -584,49 +694,75 @@
         <div class="eq-grid eq-grid--four system-logs-grid">
           <aside class="eq-col system-logs-meta">
             <div class="panel genesis-card eq-card">
-              <p class="genesis-line">System logs (verborgen tab — gebruik Hardware-knop in dev)</p>
+              <p class="genesis-line">Rechts: live logs (worker + portal). Leeg? Start worker en portal en zorg dat de logmap op de host schrijfbaar is (<code class="genesis-mono-strong">_logs_hub</code>).</p>
             </div>
           </aside>
           <div class="panel genesis-card eq-card system-logs-span">
-            <div id="systemLogConsole" class="system-log-console"></div>
+            <div class="hardware-log-stack">
+              <div class="hardware-log-block">
+                <h4 class="genesis-meta">System Log (live)</h4>
+                <div id="systemLogConsole" class="system-log-console"></div>
+              </div>
+              <div class="hardware-log-block">
+                <h4 class="genesis-meta">Crash Log (poll)</h4>
+                <div id="crashLogConsole" class="system-log-console"></div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
     </section>
 
-    </main>
+    <section id="tab-sentiment" class="brain-tab cockpit-tab-root tab-content hidden" aria-hidden="true" style="display:none;flex-direction:column;width:100%;height:100%;overflow:hidden;padding:1.5rem;gap:1.25rem;box-sizing:border-box;">
+      <header style="display:flex;align-items:center;gap:1rem;flex-shrink:0;">
+        <div>
+          <h2 style="margin:0;font-size:1.15rem;letter-spacing:.05em;font-weight:700;">Market Sentiment Intelligence</h2>
+          <span style="font-size:.7rem;opacity:.45;display:block;margin-top:.15rem;">FinBERT · news-container · TTL 15 min &nbsp;|&nbsp; Last update: <span id="sentimentLastUpdate">—</span></span>
+        </div>
+        <button type="button" id="sentimentRefreshBtn" class="btn-outline" style="margin-left:auto;font-size:.75rem;padding:.3rem .75rem;">⟳ Refresh</button>
+      </header>
 
-    <!-- Ledger Footer -->
-    <div id="liveLedgerFooter" class="ledger-footer is-collapsed">
-      <div class="ledger-footer-header" id="ledgerFooterToggle">
-        <span class="ledger-footer-title">Live Trade Ledger</span>
-        <span id="cockpitLedgerStatusText" class="ledger-footer-title" style="text-transform:none; font-weight:normal; color:#aaa;">Markten: laden… · Ledger: laden…</span>
-        <span id="ledgerFooterIcon" style="color: #888;">▲ Uitklappen</span>
+      <div id="sentiment-content" style="display:grid;grid-template-columns:65% 35%;gap:1.5rem;flex:1 1 0;min-height:0;overflow:hidden;">
+        <div style="overflow-x:auto;overflow-y:auto;border:1px solid rgba(255,255,255,.07);border-radius:6px;min-height:0;">
+          <table id="sentimentTable" style="width:100%;border-collapse:collapse;font-size:.77rem;">
+            <thead style="position:sticky;top:0;background:#000;z-index:1;">
+              <tr style="text-align:left;border-bottom:1px solid rgba(255,255,255,.12);">
+                <th style="padding:.35rem .6rem;opacity:.5;white-space:nowrap;font-weight:500;">Tijd (UTC)</th>
+                <th style="padding:.35rem .6rem;opacity:.5;font-weight:500;">Markt</th>
+                <th style="padding:.35rem .6rem;opacity:.5;font-weight:500;">Headline</th>
+                <th style="padding:.35rem .6rem;opacity:.5;font-weight:500;text-align:center;">Sentiment</th>
+              </tr>
+            </thead>
+            <tbody id="sentimentTableBody">
+              <tr><td colspan="4" style="padding:1.5rem;opacity:.35;text-align:center;">Laden…</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div id="sentimentSidebar" style="display:flex;flex-direction:column;gap:.6rem;overflow-y:auto;min-height:0;"></div>
       </div>
-      <div class="ledger-footer-content">
-        <table class="trade-table" id="cockpitLedgerTable">
-          <thead>
-            <tr>
-              <th>Open Tijd</th>
-              <th>Munt</th>
-              <th>Entry Prijs</th>
-              <th>Exit Prijs</th>
-              <th>Netto P/L €</th>
-              <th>Netto P/L %</th>
-              <th>Social/Whale Context</th>
-            </tr>
-          </thead>
-          <tbody id="cockpitLedgerBody"></tbody>
-        </table>
-      </div>
-    </div>
+
+      <p id="sentimentNoData" style="display:none;opacity:.4;font-size:.8rem;flex-shrink:0;">
+        Geen data — wacht op eerste news-worker cycle (~5 min na start).
+      </p>
+    </section>
+
+    </main>
 
     <div id="brainHintPortal" aria-hidden="true"></div>
 
     <div id="headerTradingActions" class="hidden"></div>
     <div id="headerSystemActions" class="hidden">
+      <label class="genesis-header-check" for="systemLogFilterSelect">Log filter</label>
+      <select id="systemLogFilterSelect" class="btn-outline system-log-filter-select" title="Toon alleen regels van dit type">
+        <option value="all">Alle regels</option>
+        <option value="error">Alleen fouten</option>
+        <option value="warn_plus">Fouten + waarschuwingen</option>
+        <option value="rl">RL-brain</option>
+      </select>
+      <input type="search" id="systemLogSearchInput" class="system-log-search-input" placeholder="Zoek in log…" autocomplete="off" title="Optioneel: extra tekstfilter (hoofdletterongevoelig)" />
       <button type="button" id="systemLogPauseBtn" class="btn-outline">Pause</button>
       <button type="button" id="systemLogClearBtn" class="btn-outline">Clear</button>
+      <button type="button" id="crashLogCopyBtn" class="btn-outline">Copy crash log</button>
       <button type="button" id="systemLogMuteBtn" class="btn-outline">Mute</button>
       <label class="genesis-header-check">
         <input id="systemLogAutoRefresh" type="checkbox" checked />
@@ -652,11 +788,15 @@
       src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"
     ></script>
     <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-    <script defer src="/static/js/chart_utils.js"></script>
-    <script defer src="/static/js/app_core.js"></script>
-    <script defer src="/static/js/module_terminal.js"></script>
-    <script defer src="/static/js/module_ledger.js"></script>
-    <script defer src="/static/js/module_brain.js"></script>
-    <script defer src="/static/js/main.js"></script>
+    <script defer src="/static/js/chart_utils.js?v=opt-20260509"></script>
+    <script defer src="/static/js/terminal_live_tail.js?v=opt-20260509"></script>
+    <script defer src="/static/js/app_core.js?v=opt-20260509"></script>
+    <script defer src="/static/js/module_terminal.js?v=opt-20260509"></script>
+    <script defer src="/static/js/module_ledger.js?v=opt-20260509"></script>
+    <script defer src="/static/js/module_brain.js?v=opt-20260509"></script>
+    <script defer src="/static/js/module_feeds.js?v=opt-20260509"></script>
+    <script defer src="/static/js/module_hardware.js?v=opt-20260509"></script>
+    <script defer src="/static/js/hint_portal.js?v=opt-20260511"></script>
+    <script defer src="/static/js/main.js?v=opt-20260509"></script>
   </body>
 </html>

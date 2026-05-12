@@ -3,5 +3,6 @@
   // Relatief pad: ./.vscode/settings.json
   // Functie: Projectspecifieke Cursor/VSCode instellingen zoals autosave.
     "files.autoSave": "afterDelay",
-    "files.autoSaveDelay": 1000
+    "files.autoSaveDelay": 1000,
+    "claudeCode.useTerminal": true
   }

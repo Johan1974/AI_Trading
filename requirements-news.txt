@@ -1,0 +1,8 @@
+torch --index-url https://download.pytorch.org/whl/cpu
+transformers==4.44.2
+tokenizers
+redis>=5.0
+requests>=2.31
+pandas>=2.0
+pydantic>=2.0
+feedparser>=6.0

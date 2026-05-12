@@ -4,13 +4,13 @@
 */
 
 :root {
-  --eq-bg: #000000;
-  --eq-text: #ffffff;
-  --eq-border: rgba(255, 255, 255, 0.1);
-  --eq-radius: 4px;
-  --eq-neon-blue: #00d1ff;
-  --eq-neon-green: #39ff14;
-  --eq-neon-red: #ff3131;
+  --eq-bg:         var(--gnq-bg-base);
+  --eq-text:       var(--gnq-text);
+  --eq-border:     var(--gnq-border-subtle);
+  --eq-radius:     4px;
+  --eq-neon-blue:  var(--gnq-cyan);
+  --eq-neon-green: var(--gnq-green);
+  --eq-neon-red:   var(--gnq-red);
   --eq-neon-orange: #ff7a00;
 }
 

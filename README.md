@@ -326,6 +326,59 @@ Mitigatie:
 - Gebruik kleine, snelle models voor prijssignalen (LightGBM/XGBoost als volgende stap).
 - Werk met micro-batches voor nieuws-inference om VRAM usage stabiel te houden.
 
+## Monitoring & Reporting
+
+### AUTO_BRIEFING.md
+`AUTO_BRIEFING.md` in de project-root wordt elk uur automatisch bijgewerkt via de
+`_rl_hourly_checkpoint_and_metrics_loop` background task (`app/trading_core.py:2366`).
+Dit is een asyncio-taak — geen OS-cron. De taak herstart automatisch bij elke container-restart.
+
+**Handmatig forceren:**
+```bash
+python3 scripts/generate_briefing.py
+```
+
+**Inhoud:** container-status, portfolio equity-integriteit, RL-metriken, anomaly detection, actieplan.
+
+### Dashboard
+De webportal draait op **poort 8000** en toont real-time:
+- Portfolio equity & open posities
+- Ledger (recente trades BUY/SELL)
+- Engine-status & brain (RL policy probs per markt)
+
+### Logs
+| Bestand | Inhoud |
+|---|---|
+| `_logs_hub/worker_execution.log` | Worker events, errors, engine cycles |
+| `_logs_hub/rl_hourly_metrics.jsonl` | Uurlijkse RL-samenvatting (chunks, reward, loss) |
+| `_logs_hub/system_state.json` | Laatste systeem-snapshot |
+| `_logs_hub/heartbeat.json` | Live bot-status, Redis-connectie, equity |
+
+**Loop-verificatie na restart:**
+```bash
+grep "RL-HOURLY.*bijgewerkt" _logs_hub/worker_execution.log | tail -3
+```
+
+## Incident Log
+
+### 2026-05-12 — Equity Jump + Balance Reset
+
+**Symptoom:** Dashboard toonde paper equity €993 terwijl de echte Bitvavo EUR-balans €292 was.
+
+**Root cause (geen rekenfout):** `PAPER_START_BALANCE_EUR=1000` was niet gekalibreerd op het werkelijke saldo. De paper equity (cash €492 + posities ~€501) was intern correct, maar week €701 af van de echte balans omdat het virtuele startbedrag niet overeenkwam.
+
+**Equity Jump €394→€993 om 07:16:** Bij container-restart laadde de worker Redis-gecachede posities en SQLite-cash uit verschillende snapshots, waardoor `_recompute_equity` optelde over dubbele state. Opgelost via handmatige state-reset.
+
+**Uitgevoerde acties:**
+1. `bot_status=panic_stop` + `PAPER_EXECUTION_PAUSE=1` — alle trading direct gestopt.
+2. `POST /api/v1/reset-paper {"starting_eur": 292}` — paper wallet gewist, cash=equity=€292.
+3. `PAPER_START_BALANCE_EUR=292`, `PAPER_RESET_BALANCE_EUR=292` in `docker-compose.env`.
+4. Worker-container opnieuw aangemaakt (`docker compose up -d worker`) om env-wijzigingen te activeren.
+
+**Dust-check:** Geen API-keys geconfigureerd → nooit live gehandeld → geen echte Bitvavo-crypto-holdings.
+
+---
+
 ## Roadmap (volgende iteraties)
 
 1. `available_at` timestamps toevoegen aan alle features/events.

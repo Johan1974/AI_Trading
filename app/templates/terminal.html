@@ -1,0 +1,336 @@
+{# Terminal: locked viewport; #dashboard 240|1fr|340; midden: chart/prediction fr + ledger 180px #}
+<div id="tab-terminal" class="cockpit-shell cockpit-tab-root cockpit-tab-root--terminal tab-content active bv-terminal">
+  <div
+    id="dashboard"
+    class="dashboard-container bv-terminal-inner hp-terminal-mod-grid cockpit-terminal-workspace tcc-command-grid"
+  >
+    <aside class="dashboard-col-left bv-dashboard-col bv-dashboard-col--rail tcc-rail-col gnq-bento-rail" aria-label="Status: balans, health, strategie">
+      <section class="tcc-rail-zone tcc-rail-zone--balance panel-noir" aria-label="Balance en cash">
+        <span class="bv-card-label">Balance &amp; Cash</span>
+        <article class="bv-card bv-card--stack panel-noir bv-balance-stats bv-balance-stats--tcc" aria-label="Balance stats">
+          <div id="hpDashProfitEquity" class="bv-balance-line bv-kpi-value js-portfolio-equity">—</div>
+          <div id="hpDashProfitCash" class="bv-balance-line bv-kpi-sub js-portfolio-cash">Cash —</div>
+          <div id="hpDashProfitPnl" class="bv-balance-line bv-kpi-sub">PnL —</div>
+          <div class="bv-balance-line bv-kpi-micro js-portfolio-stats-rest">—</div>
+          <div class="bv-balance-line bv-kpi-micro js-active-orders">—</div>
+          <div class="bv-reset-paper-wrap">
+            <button
+              type="button"
+              id="terminalReconcilePaperBtn"
+              class="bv-reset-paper-btn bv-reset-paper-btn--secondary"
+              title="Wis alleen open (spook)posities; Saldo = cash. Trade-ledger in DB blijft behouden."
+            >
+              Corrigeer saldo
+            </button>
+            <button type="button" id="terminalResetPaperBtn" class="bv-reset-paper-btn" title="Paper volledig resetten: startbedrag + ledger archiveren en wissen">
+              Reset Balance
+            </button>
+          </div>
+        </article>
+      </section>
+
+      <section class="tcc-rail-zone tcc-rail-zone--health panel-noir" aria-label="System health: hardware en engine">
+        <span class="bv-card-label">System Health</span>
+        <div class="tcc-health-stack">
+          <aside
+            class="hp-hw-mini-monitor bv-top-hw"
+            id="cockpitTerminalHwMini"
+            aria-live="polite"
+            title="Hardware: CPU-, RAM- en schijfbelasting plus GPU (util of temp) uit worker system_stats / WebSocket."
+          >
+            <div class="hp-hw-mini-monitor__inner">
+              <span class="hp-hw-mini-label">HW</span>
+              <span id="hpMiniWarnIcon" class="hp-hw-mini-warn" aria-hidden="true">●</span>
+              <span id="hpMiniHud" class="hp-hw-mini-hud" translate="no">—</span>
+            </div>
+          </aside>
+          <div id="terminalHealthStatusRow" class="terminal-health-status-row" aria-label="Systeemstatus">
+            <span class="terminal-health-status-item">
+              <span id="termDotAiEngine" class="terminal-health-dot is-loading" aria-hidden="true"></span>
+              <span id="termTxtAiEngine">AI Engine</span>
+            </span>
+            <span class="terminal-health-status-item">
+              <span id="termDotGpuStatus" class="terminal-health-dot is-loading" aria-hidden="true"></span>
+              <span id="termTxtGpuStatus">GPU</span>
+            </span>
+            <span class="terminal-health-status-item">
+              <span id="termDotLiveData" class="terminal-health-dot is-loading" aria-hidden="true"></span>
+              <span id="termTxtLiveData">Live Data</span>
+            </span>
+          </div>
+        </div>
+      </section>
+
+      <section class="tcc-rail-zone tcc-rail-zone--strategy panel-noir" aria-label="Strategy settings en context" id="strategySettingsSection">
+        <button
+          type="button"
+          class="bv-card-label bv-section-toggle"
+          id="strategySettingsToggle"
+          aria-expanded="true"
+          aria-controls="strategySettingsBody"
+          title="Inklappen / uitklappen"
+        >Strategy Settings <span class="bv-toggle-chevron" aria-hidden="true">▾</span></button>
+        <div id="strategySettingsBody" class="bv-section-body">
+        <div id="positionSizingWidget" class="bv-card bv-card--stack panel-noir hp-position-sizing-widget hp-position-sizing-widget--tcc" aria-label="Position sizing">
+          <div class="hp-position-sizing-tabs" role="tablist" aria-label="Sizing modus">
+            <button type="button" class="hp-position-sizing-tab is-active" role="tab" aria-selected="true" data-pos-tab="fixed" id="positionSizingTabFixed">Fixed (€)</button>
+            <button type="button" class="hp-position-sizing-tab" role="tab" aria-selected="false" data-pos-tab="pct" id="positionSizingTabPct">Percentage (%)</button>
+          </div>
+          <div class="hp-position-sizing-body">
+            <div class="hp-position-sizing-panel" data-pos-panel="fixed">
+              <label class="hp-position-sizing-label" for="positionSizingInputFixed">Orderbedrag (€)</label>
+              <input type="number" id="positionSizingInputFixed" class="hp-position-sizing-input" min="1" step="1" value="100" />
+              <p id="positionSizingOrderPreviewFixed" class="hp-position-sizing-feedback hp-position-sizing-order-preview" aria-live="polite"></p>
+            </div>
+            <div class="hp-position-sizing-panel" data-pos-panel="pct" style="display: none;">
+              <label class="hp-position-sizing-label" for="positionSizingInputPct">Percentage van equity (%)</label>
+              <input type="number" id="positionSizingInputPct" class="hp-position-sizing-input" min="0.1" step="0.1" value="10" />
+              <p id="positionSizingOrderPreviewPctTab" class="hp-position-sizing-feedback hp-position-sizing-order-preview" aria-live="polite"></p>
+            </div>
+            <button type="button" id="positionSizingUpdateBtn" class="hp-position-sizing-submit">Update Strategy</button>
+            <div class="hp-position-sizing-koopmeta" aria-label="Koopkracht">
+              <div class="bv-balance-line bv-kpi-micro">
+                <span class="bv-mute">Beschikbaar:</span> <span id="positionSizingCashAvailable">—</span>
+              </div>
+              <div class="bv-balance-line bv-kpi-micro">
+                <span class="bv-mute">Max. Koop:</span> <span id="positionSizingMaxBuys">—</span>
+              </div>
+            </div>
+            <p id="positionSizingFeedback" class="hp-position-sizing-feedback" aria-live="polite"></p>
+          </div>
+        </div>
+        <div class="tcc-rail-scroll">
+          <div class="bv-card bv-card--alloc-detail panel-noir bv-card--stack bv-card--tcc-nested">
+            <span class="bv-card-label">Current Exposure</span>
+            <div class="bv-alloc-badge-row">
+              <span id="hpDashAllocMainBadge" class="bv-alloc-main-badge" title="Exposure % voor geselecteerde markt (qty × prijs / equity)">—</span>
+            </div>
+            <p id="hpDashAllocSummary" class="bv-kpi-sub bv-alloc-summary">—</p>
+            <ul id="hpDashAllocChips" class="bv-chip-list" aria-label="Exposure per munt"></ul>
+            <span class="bv-card-label bv-alloc-detail-label">Detail</span>
+            <div id="executiveAllocationSnapshot" class="hp-alloc-detail"></div>
+            <div id="allocatie" class="executive-allocation-body hp-alloc-legacy">Laden...</div>
+          </div>
+          <section id="hpSentimentGaugeCard" class="bv-card bv-card--stack panel-noir bv-sentiment-card bv-card--tcc-nested" aria-label="AI Sentiment">
+            <span class="bv-card-label">AI Sentiment</span>
+            <div class="bv-sentiment-gauge-wrap">
+              <svg id="hpSentimentGaugeSvg" class="bv-sentiment-svg" viewBox="0 0 120 72" width="120" height="72" aria-hidden="true">
+                <path
+                  id="hpGaugeValueArc"
+                  d="M 12 60 A 48 48 0 0 1 108 60"
+                  fill="none"
+                  stroke="#333"
+                  stroke-width="2"
+                  pathLength="100"
+                  stroke-dasharray="100"
+                  stroke-dashoffset="50"
+                />
+              </svg>
+              <div id="hpGaugeLabel" class="bv-gauge-label">—</div>
+              <div id="hpGaugeConfidence" class="bv-gauge-conf js-sentiment-confidence">—</div>
+              <span id="sentiment-value" class="js-sentiment-value bv-sr-inline" aria-hidden="true">0</span>
+              <div class="progress-bar js-sentiment-bar bv-sentiment-bar" style="height:4px;width:50%"></div>
+            </div>
+          </section>
+          <div class="bv-card bv-card--stack panel-noir bv-market-stats bv-card--tcc-nested" aria-label="Market stats">
+            <span class="bv-card-label">Market Stats</span>
+            <div class="bv-market-row"><span class="bv-mute">24h</span> <span id="market-24h-change" class="bv-mono">--</span></div>
+            <div class="bv-market-row"><span class="bv-mute">Vol</span> <span id="market-volatility" class="bv-mono">--</span></div>
+            <div class="bv-market-row"><span class="bv-mute">AI Sent.</span> <span id="market-sentiment-score" class="bv-mono">--</span></div>
+            <div class="bv-market-reason" id="market-reason">--</div>
+            <div class="bv-fg-row"><span class="bv-mute">F&amp;G</span> <span id="terminalFearGreed" class="bv-mono">-</span> <span id="terminalFearGreedSub" class="bv-fg-sub"></span></div>
+          </div>
+        </div>
+        </div>{# /strategySettingsBody #}
+      </section>
+    </aside>
+
+    <main class="dashboard-col-main bv-dashboard-col bv-dashboard-col--main bv-dashboard-col--chart dashboard-col-main--stack tcc-market-col" aria-label="Markt: prijs, voorspelling, ledger">
+      <div class="dashboard-mid-split tcc-mid-split">
+        <div class="dashboard-mid-row dashboard-mid-row--primary tcc-mid-row--chart">
+          <section class="cockpit-chart-panel panel-noir bv-chart-panel bv-chart-panel--fill bv-chart-panel--flush bv-chart-panel--terminal-primary">
+            <div class="bv-chart-head">
+              <span class="bv-card-label">Price</span>
+              <div class="chart-controls-inline bv-chart-controls" id="chartTimeframeControls">
+                <button type="button" class="chart-timeframe-btn" data-timeframe="ai" onclick="setChartInterval('ai')">AI</button>
+                <button type="button" class="chart-timeframe-btn" data-timeframe="1m" onclick="setChartInterval('1m')">1m</button>
+                <button type="button" class="chart-timeframe-btn" data-timeframe="5m" onclick="setChartInterval('5m')">5m</button>
+                <button type="button" class="chart-timeframe-btn" data-timeframe="15m" onclick="setChartInterval('15m')">15m</button>
+                <button type="button" class="chart-timeframe-btn" data-timeframe="60m" onclick="setChartInterval('60m')">60m</button>
+                <span id="ai-accuracy-score" class="hp-ai-accuracy-score" title="Model accuracy">Acc: —</span>
+                <span id="hpLiveHitRate" class="hp-chart-hit-rate">Hit: —</span>
+                <span id="payloadFilterDebugBadge" class="bv-payload-filter-debug" title="Debug: welke market-update wordt geaccepteerd of gefilterd" aria-live="polite" translate="no">active=— | incoming=— | dropped=— | src=—</span>
+                <button type="button" id="toggleHeadlessBtn">Headless</button>
+                <button type="button" id="toggleChartFullscreenBtn">⛶</button>
+              </div>
+            </div>
+            <div class="bv-chart-ai-brain-strip" id="hpAiBrainPulseWrap" aria-live="polite" title="RL-confidence: groene gloed bij &gt; 0,50">
+              <span class="hp-ai-brain-icon" aria-hidden="true">
+                <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z" />
+                  <path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z" />
+                  <path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4" />
+                </svg>
+              </span>
+              <span class="hp-ai-brain-conf-readout" id="hpAiBrainConfReadout"></span>
+            </div>
+            <div class="bv-terminal-chart-stack">
+              <div class="cockpit-chart-host chart-wrap--genesis cockpit-chart-anchor bv-chart-host">
+                <div class="cockpit-chart-skeleton" id="priceChartSkeleton" aria-hidden="true"></div>
+                <div id="priceChart" class="bv-price-chart-root" role="img" aria-label="Prijsgrafiek"></div>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <div class="cockpit-intelligence-ticker cockpit-ticker-tape panel-noir bv-intel-tape" id="intelligenceTickerPanel" aria-label="Marktintelligence">
+          <span class="marquee-label">Intelligence</span>
+          <div class="cockpit-ticker-marquee" id="intelligenceTickerMarquee" aria-label="Nieuws ticker" style="flex:1;">
+            <div id="intelligenceTickerNews" class="cockpit-ticker-marquee-track" aria-live="polite"></div>
+          </div>
+        </div>
+
+        <footer id="liveLedgerFooter" class="dashboard-mid-row dashboard-mid-row--ledger dashboard-footer ledger-footer ledger-footer--terminal-grid bv-ledger tcc-ledger-row" aria-label="Trade ledger">
+          <div class="bv-ledger-header">
+            <span class="ledger-footer-title">Trade Ledger</span>
+            <span id="cockpitLedgerStatusText" class="ledger-footer-status">Markten: … · Ledger: …</span>
+          </div>
+          <div class="ledger-footer-toolbar bv-ledger-toolbar">
+            <div class="ledger-footer-tabs bv-ledger-tabs" role="tablist" aria-label="Ledger weergave">
+              <button type="button" class="ledger-footer-tab bv-ledger-tab is-active" role="tab" aria-selected="true" data-ledger-tab="active" id="ledgerTabActive">Active</button>
+              <button type="button" class="ledger-footer-tab bv-ledger-tab" role="tab" aria-selected="false" data-ledger-tab="history" id="ledgerTabHistory">Closed</button>
+              <button
+                type="button"
+                class="ledger-footer-tab bv-ledger-tab bv-ledger-tab--logs"
+                id="btnSystemLogsFromLedger"
+                title="System logs (live tail)"
+              >
+                System Logs
+              </button>
+            </div>
+          </div>
+          <div class="tcc-ledger-scroll-wrap ledger-footer-content bv-ledger-scroll">
+            <table class="trade-table trade-table--ledger-grid ledger-table--ledger-flat ledger-table--terminal-fixed" id="cockpitLedgerTable">
+              <colgroup>
+                <col class="ledger-col-width" style="width: 7%" />
+                <col class="ledger-col-width" style="width: 12%" />
+                <col class="ledger-col-width" style="width: 7%" />
+                <col class="ledger-col-width" style="width: 9%" />
+                <col class="ledger-col-width" style="width: 9%" />
+                <col class="ledger-col-width" style="width: 7%" />
+                <col class="ledger-col-width" style="width: 8%" />
+                <col class="ledger-col-width" style="width: 8%" />
+                <col class="ledger-col-width" style="width: 7%" />
+                <col class="ledger-col-width" style="width: 5%" />
+                <col class="ledger-col-width" style="width: 5%" />
+                <col class="ledger-col-width" style="width: 16%" />
+              </colgroup>
+              <thead>
+                <tr>
+                  <th>Munt</th>
+                  <th>Tijd</th>
+                  <th>Entry</th>
+                  <th title="Take profit: koers waarbij de bot sluit (vast % t.o.v. gewogen entry)">Target price</th>
+                  <th title="Stop loss: ondergrens op basis van % t.o.v. entry; trailing stop kan eerder sluiten bij stijgende koers (niet dezelfde kolom als Exit)">Stop loss</th>
+                  <th title="Gerealiseerde exitprijs (gesloten trades)">Exit</th>
+                  <th>Inleg (€)</th>
+                  <th>Winst (€)</th>
+                  <th>Status</th>
+                  <th>Duur</th>
+                  <th>P/L %</th>
+                  <th>Context</th>
+                </tr>
+              </thead>
+              <tbody id="cockpitLedgerBody"></tbody>
+            </table>
+          </div>
+        </footer>
+      </div>
+    </main>
+
+    <aside class="dashboard-col-right bv-dashboard-col bv-dashboard-col--ai tcc-intel-col" aria-label="Intelligence: confidence, policy, logs">
+      <div id="bvAiFeedCard" class="bv-card bv-ai-feed panel-noir bv-ai-feed--rail tcc-intel-stack">
+        <div class="tcc-intel-zone tcc-intel-zone--confidence panel-noir">
+          <span class="bv-card-label">Confidence</span>
+          <div id="hpDashAiStatus" class="bv-ai-status-line tcc-confidence-badge" translate="no">—</div>
+        </div>
+        <div class="tcc-intel-zone tcc-intel-zone--softmax panel-noir">
+          <span class="bv-card-label">Policy (softmax)</span>
+          <div class="hp-dash-ai-probs bv-ai-probs" aria-label="Policy softmax (BUY / HOLD / SELL)">
+            <div class="bv-ai-prob-row" role="group" aria-label="BUY kans">
+              <span class="hp-dash-prob-label">BUY</span>
+              <div class="bv-ai-prob-bar-wrap" aria-hidden="true"><div id="hpAiProbBuyBar" class="bv-ai-prob-bar bv-ai-prob-bar--buy" style="width:0%"></div></div>
+              <span id="hpAiProbBuy" class="hp-dash-prob-val">—</span>
+            </div>
+            <div class="bv-ai-prob-row" role="group" aria-label="HOLD kans">
+              <span class="hp-dash-prob-label">HOLD</span>
+              <div class="bv-ai-prob-bar-wrap" aria-hidden="true"><div id="hpAiProbHoldBar" class="bv-ai-prob-bar bv-ai-prob-bar--hold" style="width:0%"></div></div>
+              <span id="hpAiProbHold" class="hp-dash-prob-val">—</span>
+            </div>
+            <div class="bv-ai-prob-row" role="group" aria-label="SELL kans">
+              <span class="hp-dash-prob-label">SELL</span>
+              <div class="bv-ai-prob-bar-wrap" aria-hidden="true"><div id="hpAiProbSellBar" class="bv-ai-prob-bar bv-ai-prob-bar--sell" style="width:0%"></div></div>
+              <span id="hpAiProbSell" class="hp-dash-prob-val">—</span>
+            </div>
+          </div>
+          <div id="hpRlHeartbeatSlot" class="bv-ai-heartbeat-slot" aria-live="polite"></div>
+          <label class="bv-ai-infer-toggle" style="display:flex;align-items:center;gap:8px;font-size:11px;margin-top:8px;cursor:pointer;opacity:0.92;">
+            <input type="checkbox" id="rlInferenceGreedyToggle" title="Greedy policy (ε=0), geen willekeurige exploratie op de worker" />
+            <span>Live inference (ε=0, greedy)</span>
+          </label>
+          <div id="hpDashAiSignal" class="bv-ai-signal-line">—</div>
+        </div>
+        <div class="tcc-intel-zone tcc-intel-zone--logs panel-noir">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px;">
+            <span class="bv-card-label" style="margin:0;">Live AI Logs</span>
+            <button type="button" id="bvLogsFreezeBtn" class="btn-outline" style="font-size:11px;padding:2px 8px;" title="Pauzeer het scrollen van de log">Freeze</button>
+            <label style="font-size:11px;color:#94a3b8;display:flex;align-items:center;gap:4px;cursor:pointer;" title="Toon alleen regels waarbij de policy-waarschijnlijkheid meer dan 5% verandert">
+              <input type="checkbox" id="bvLogsSignificantOnly" style="accent-color:#00f8ff;" />
+              &gt;5% shift
+            </label>
+          </div>
+          <div class="bv-ai-trades-head" aria-hidden="true">
+            <span>Tijd</span>
+            <span>Bericht</span>
+            <span class="bv-ai-trades-head-side"></span>
+          </div>
+          <div class="bv-ai-trades-panel bv-ai-trades-panel--split tcc-intel-logs-panel">
+            <div id="bvAiThoughtFeed" class="bv-ai-trades-feed bv-ai-trades-feed--scroll-body" role="log" aria-live="polite"></div>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <div class="cockpit-sr-only" aria-hidden="true">
+      <table class="trade-table">
+        <tbody>
+          <tr><td></td><td id="js-corr-value" class="js-corr-value">0</td></tr>
+          <tr><td></td><td id="js-news-weight" class="js-news-weight">0</td></tr>
+          <tr><td></td><td id="js-price-weight" class="js-price-weight">0</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<section
+  id="tab-logs"
+  class="brain-tab cockpit-tab-root cockpit-tab-root--logs tab-content hidden"
+  aria-hidden="true"
+  style="display: none;"
+>
+  <div class="cockpit-log-tab-shell genesis-tab-inner cockpit-pad">
+    <header class="cockpit-log-tab-header">
+      <h2 class="cockpit-log-tab-title">System Logs</h2>
+      <p class="cockpit-log-tab-sub">Live tail (max. 100) — WebSocket + worker events. Anti-spam: dubbele regels worden samengevoegd.</p>
+    </header>
+    <div class="cockpit-log-toolbar cockpit-log-toolbar--filters" aria-label="Log filters">
+      <button type="button" class="cockpit-log-filter-btn is-active" data-cockpit-log-filter="all">ALL</button>
+      <button type="button" class="cockpit-log-filter-btn" data-cockpit-log-filter="signal">SIGNAL</button>
+      <button type="button" class="cockpit-log-filter-btn" data-cockpit-log-filter="error">ERROR</button>
+      <button type="button" class="cockpit-log-filter-btn" data-cockpit-log-filter="quiet">NO SPAM</button>
+      <span id="cockpitLogWsStatus" class="cockpit-log-ws-status cockpit-log-ws-status--off genesis-mono-strong" aria-live="polite">—</span>
+    </div>
+    <div id="cockpitLogConsole" class="cockpit-log-console cockpit-log-console--terminal" role="log" aria-live="polite"></div>
+  </div>
+</section>

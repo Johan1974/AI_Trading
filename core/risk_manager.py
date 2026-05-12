@@ -10,6 +10,8 @@ import os
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from core.trading_constraints_redis import read_trading_constraints
+
 Signal = Literal["BUY", "SELL", "HOLD"]
 
 
@@ -23,7 +25,7 @@ class RiskEngineConfig:
     take_profit_pct: float
 
 
-def load_risk_engine_config() -> RiskEngineConfig:
+def _risk_config_from_env() -> RiskEngineConfig:
     mode = os.getenv("RISK_SIZING_MODE", "fixed_eur").strip().lower()
     if mode not in ("fixed_eur", "equity_pct"):
         mode = "fixed_eur"
@@ -37,8 +39,39 @@ def load_risk_engine_config() -> RiskEngineConfig:
     )
 
 
-def risk_profile_dict(cfg: RiskEngineConfig | None = None) -> dict[str, float | str]:
-    c = cfg or load_risk_engine_config()
+def load_risk_engine_config() -> RiskEngineConfig:
+    """Env-baseline + optionele overrides uit Redis ``trading:constraints``."""
+    base = _risk_config_from_env()
+    d = read_trading_constraints()
+    if not d:
+        return base
+    mode = str(d.get("sizing_mode", base.sizing_mode)).strip().lower()
+    if mode not in ("fixed_eur", "equity_pct"):
+        mode = base.sizing_mode
+    be_raw, mx_raw = d.get("base_trade_eur"), d.get("max_trade_equity_pct")
+    try:
+        base_trade = float(be_raw) if be_raw is not None else base.base_trade_eur
+    except (TypeError, ValueError):
+        base_trade = base.base_trade_eur
+    try:
+        max_trade = float(mx_raw) if mx_raw is not None else base.max_trade_equity_pct
+    except (TypeError, ValueError):
+        max_trade = base.max_trade_equity_pct
+    return RiskEngineConfig(
+        sizing_mode=mode,
+        base_trade_eur=max(1.0, base_trade),
+        max_trade_equity_pct=max(0.05, min(100.0, max_trade)),
+        max_position_equity_pct=base.max_position_equity_pct,
+        stop_loss_pct=base.stop_loss_pct,
+        take_profit_pct=base.take_profit_pct,
+    )
+
+
+def risk_profile_dict(cfg: RiskEngineConfig | RiskManager | None = None) -> dict[str, float | str]:
+    if cfg is None or isinstance(cfg, RiskManager):
+        c = load_risk_engine_config()
+    else:
+        c = cfg
     return {
         "sizing_mode": c.sizing_mode,
         "base_trade_eur": c.base_trade_eur,
@@ -95,16 +128,101 @@ def weighted_avg_entry(wallet: dict[str, Any], market: str | None = None) -> flo
 
 
 def position_value_eur(wallet: dict[str, Any], price: float, market: str) -> float:
-    mku = (market or "").strip().upper()
+    mku = (market or "").strip().upper().replace("/", "-")
     pbm = wallet.get("position_by_market") if isinstance(wallet.get("position_by_market"), dict) else {}
     qty = float(pbm.get(mku, 0.0) or 0.0) if pbm else 0.0
+    if qty <= 1e-12 and pbm:
+        for k, q in pbm.items():
+            if str(k).strip().upper().replace("/", "-") == mku:
+                qty = float(q or 0.0)
+                break
     if qty <= 1e-12:
         qty = float(wallet.get("position_qty") or 0.0)
-        sym = str(wallet.get("position_symbol") or "")
-        if qty <= 0 or sym.upper() != mku:
+        sym = str(wallet.get("position_symbol") or "").strip().upper().replace("/", "-")
+        if qty <= 0 or sym != mku:
             return 0.0
     px = float(price)
     return max(0.0, qty * px)
+
+
+def iron_strict_allocation_enabled() -> bool:
+    return str(os.getenv("IRON_STRICT_ALLOCATION", "1")).strip().lower() in ("1", "true", "yes", "on")
+
+
+def paper_base_from_market(m: str) -> str:
+    mku = str(m or "").strip().upper().replace("/", "-")
+    return mku.split("-", 1)[0].strip() if "-" in mku else mku
+
+
+def _bases_with_open_qty(wallet: dict[str, Any]) -> set[str]:
+    bases: set[str] = set()
+    pbm = wallet.get("position_by_market") if isinstance(wallet.get("position_by_market"), dict) else {}
+    for mk, qv in pbm.items():
+        if float(qv or 0.0) > 1e-12:
+            bases.add(paper_base_from_market(str(mk)))
+    obm = wallet.get("open_lots_by_market") if isinstance(wallet.get("open_lots_by_market"), dict) else {}
+    for mk, lots in obm.items():
+        if not isinstance(lots, list):
+            continue
+        tq = sum(float(x.get("qty") or 0) for x in lots if isinstance(x, dict))
+        if tq > 1e-12:
+            bases.add(paper_base_from_market(str(mk)))
+    sym = str(wallet.get("position_symbol") or "").strip().upper().replace("/", "-")
+    if sym and float(wallet.get("position_qty") or 0.0) > 1e-12:
+        bases.add(paper_base_from_market(sym))
+    return bases
+
+
+def open_distinct_coin_count(wallet: dict[str, Any]) -> int:
+    return len(_bases_with_open_qty(wallet))
+
+
+def total_open_market_value_eur(wallet: dict[str, Any]) -> float:
+    """Som marktwaarde open posities (qty × prijs; last_prices_by_market, anders gewogen entry)."""
+    pbm = wallet.get("position_by_market") if isinstance(wallet.get("position_by_market"), dict) else {}
+    lp = wallet.get("last_prices_by_market") if isinstance(wallet.get("last_prices_by_market"), dict) else {}
+    total = 0.0
+    for mkt, qv in pbm.items():
+        q = float(qv or 0.0)
+        if q <= 1e-12:
+            continue
+        mku = str(mkt).strip().upper().replace("/", "-")
+        pxv = float(lp.get(mku, 0.0) or 0.0)
+        if pxv <= 0:
+            pxv = weighted_avg_entry(wallet, mku)
+        total += q * max(0.0, pxv)
+    return max(0.0, total)
+
+
+def paper_iron_lockdown_buy_ok(
+    wallet: dict[str, Any],
+    market: str,
+    price: float,
+    proposed_quote_eur: float,
+    fee_rate: float = 0.0015,
+) -> tuple[bool, str]:
+    """
+    Harde allocatie-/exposure-limieten voor paper BUY (risk_manager + PaperTradeManager).
+    """
+    if not iron_strict_allocation_enabled():
+        return True, "ok"
+    mku = str(market or "").strip().upper().replace("/", "-")
+    base = paper_base_from_market(mku)
+    max_trade = float(os.getenv("IRON_MAX_TRADE_EUR", "100"))
+    if float(proposed_quote_eur) > max_trade + 1e-6:
+        return False, "iron_max_trade_eur_exceeded"
+    max_coins = int(float(os.getenv("IRON_MAX_OPEN_COINS", "8")))
+    max_expo = float(os.getenv("IRON_MAX_TOTAL_EXPOSURE_EUR", "800"))
+    bases = _bases_with_open_qty(wallet)
+    cur_mv = total_open_market_value_eur(wallet)
+    if cur_mv > max_expo + 1e-6:
+        return False, "iron_total_exposure_cap_exceeded"
+    if base not in bases and len(bases) >= max_coins:
+        return False, "iron_max_open_coins_exceeded"
+    projected = cur_mv + max(0.0, float(proposed_quote_eur))
+    if projected > max_expo + 1e-6:
+        return False, "iron_projected_exposure_cap_exceeded"
+    return True, "ok"
 
 
 class RiskManager:
@@ -112,6 +230,9 @@ class RiskManager:
 
     def __init__(self, cfg: RiskEngineConfig | None = None) -> None:
         self.cfg = cfg or load_risk_engine_config()
+
+    def _sync_cfg(self) -> None:
+        self.cfg = load_risk_engine_config()
 
     def hard_exit_for_sl_tp(
         self,
@@ -121,6 +242,7 @@ class RiskManager:
         wallet: dict[str, Any],
         current_volatility_pct: float | None = None,
     ) -> tuple[bool, str | None]:
+        self._sync_cfg()
         mku = (market or "").strip().upper()
         qty = float((wallet.get("position_by_market") or {}).get(mku, 0.0) or 0.0) if isinstance(
             wallet.get("position_by_market"), dict
@@ -173,10 +295,36 @@ class RiskManager:
         proposed_quote_eur: float,
         fee_rate: float = 0.0015,
     ) -> tuple[bool, str]:
+        self._sync_cfg()
         if str(signal or "").upper() != "BUY":
             return True, "ok"
+        from core.trading_engine import (
+            has_active_paper_position_for_base_currency,
+            has_active_paper_position_for_ticker,
+        )
+
+        if has_active_paper_position_for_ticker(wallet, market):
+            return False, "duplicate_open_pair_guard"
+        if str(os.getenv("PAPER_ENFORCE_ONE_OPEN_TRADE_PER_BASE", "1")).strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        ) and has_active_paper_position_for_base_currency(wallet, market):
+            return False, "duplicate_open_base_currency_guard"
+        ok_iron, why_iron = paper_iron_lockdown_buy_ok(
+            wallet, market, float(price), proposed_quote_eur, fee_rate
+        )
+        if not ok_iron:
+            return False, why_iron
         px = float(price)
-        cap = max(0.0, float(equity)) * (self.cfg.max_position_equity_pct / 100.0)
+        anchor = float(
+            wallet.get("paper_anchor_equity_eur")
+            or wallet.get("starting_balance_eur")
+            or equity
+        )
+        anchor = max(1e-9, anchor)
+        cap = anchor * (self.cfg.max_position_equity_pct / 100.0)
         current = position_value_eur(wallet, price, market)
         projected = current + max(0.0, proposed_quote_eur)
         if projected > cap + 1e-6:
@@ -198,27 +346,47 @@ class RiskManager:
     ) -> tuple[float, float, str]:
         """
         Geeft (size_fraction, amount_quote_eur, note).
-        size_fraction = notional / equity (compatible met PaperTradeManager).
+        BUY: 10% van beschikbare cash; vloer €10 (Bitvavo-minimum), anders overgeslagen.
+        SELL: size_fraction = quote / live equity (afsluitfractie).
         """
+        self._sync_cfg()
         eq = max(1e-9, float(equity))
+        c = max(0.0, float(cash))
         sig = str(signal or "").upper()
         if sig not in {"BUY", "SELL"}:
             return 0.0, 0.0, "no_signal"
         px = float(price)
         if px <= 0:
             return 0.0, 0.0, "invalid_price"
-        max_trade_eur = eq * (self.cfg.max_trade_equity_pct / 100.0)
+        sizing_eq = max(1e-9, c) if sig == "BUY" else eq
+        max_trade_eur = sizing_eq * (self.cfg.max_trade_equity_pct / 100.0)
         if self.cfg.sizing_mode == "equity_pct":
             quote = max_trade_eur
         else:
             quote = min(self.cfg.base_trade_eur, max_trade_eur)
-        quote = max(0.0, min(quote, max_trade_eur, float(cash) * 0.995))
+        quote = max(0.0, min(quote, max_trade_eur))
+        if sig == "BUY" and iron_strict_allocation_enabled():
+            cap_iron = float(os.getenv("IRON_MAX_TRADE_EUR", "100"))
+            quote = min(quote, max(0.0, cap_iron))
         if sig == "SELL":
+            quote = min(quote, c * 0.995)
             pos_val = position_value_eur(wallet, px, market)
             if pos_val <= 0:
                 return 0.0, 0.0, "no_position_for_sell"
             quote = min(quote, pos_val)
         if quote <= 0:
             return 0.0, 0.0, "zero_notional"
-        frac = min(1.0, quote / eq)
+        if sig == "BUY" and quote < 10.0:
+            return 0.0, 0.0, "below_bitvavo_min_trade"
+        denom = max(1e-9, c) if sig == "BUY" else eq
+        frac = min(1.0, quote / denom)
         return frac, quote, f"mode={self.cfg.sizing_mode}"
+
+
+def sentiment_buy_threshold_offset(agg_sentiment: float) -> float:
+    """Verlaag buy_confidence_threshold met 0.05 bij sterk positief sentiment (> 0.6)."""
+    try:
+        s = float(agg_sentiment)
+    except (TypeError, ValueError):
+        return 0.0
+    return -0.05 if s > 0.6 else 0.0

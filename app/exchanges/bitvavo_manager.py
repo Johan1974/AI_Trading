@@ -93,7 +93,12 @@ class BitvavoRateLimitManager:
         return False
 
     def resolve_weight(self, method: str, path: str) -> int:
-        return self.endpoint_weights.get((method.upper(), path), self.default_request_weight)
+        method = method.upper()
+        normalized_path = path
+        if method == "GET" and path.startswith("/v2/") and path.endswith("/book"):
+            # Orderbook endpoint is market-specific (/v2/{market}/book), but has a shared weight.
+            normalized_path = "/v2/book"
+        return self.endpoint_weights.get((method, normalized_path), self.default_request_weight)
 
     def before_request(self, method: str, path: str) -> int:
         now_ms = self._now_ms()

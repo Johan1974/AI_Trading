@@ -1,5 +1,5 @@
 """
-BESTANDSNAAM: /home/johan/AI_Trading/core/scanner.py
+BESTANDSNAAM: core/scanner.py
 FUNCTIE: Dynamic Elite-8 scanner voor Bitvavo EUR pairs (Pillars + Movers).
 Dynamic Elite-8 scanner for Bitvavo EUR pairs.
 
@@ -91,6 +91,14 @@ FALLBACK_LARGE_CAP_BASES: frozenset[str] = frozenset(
 )
 
 EXCLUDED_BASES: frozenset[str] = frozenset({"USDT", "USDC", "DAI", "TUSD", "USDE", "EURC", "BUSD"})
+
+
+def _bitvavo_env_exclude_bases() -> set[str]:
+    """Zelfde env als ``app.services.market_scanner.bitvavo_exclude_bases`` (dynamic scanner vs portal)."""
+    raw = str(os.getenv("BITVAVO_EXCLUDE_BASES", "") or "").strip()
+    if not raw:
+        return set()
+    return {x.strip().upper() for x in raw.split(",") if x.strip()}
 
 
 def _base_from_market(market: str) -> str:
@@ -271,6 +279,8 @@ class DynamicVolatilityScanner:
                 continue
             symbol = str(market.get("market", "")).upper()
             if not symbol.endswith("-EUR") or str(market.get("status", "")) != "trading":
+                continue
+            if _base_from_market(symbol) in _bitvavo_env_exclude_bases():
                 continue
             tk = ticker_map.get(symbol, {})
             eur_pairs.append(

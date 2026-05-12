@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 import requests
 
-from core.preprocessor import forward_fill_dead_signal, normalize_rl_feature_frame
+from core.preprocessor import _safe_minmax, _safe_zscore_tanh, forward_fill_dead_signal, normalize_rl_feature_frame
 from app.rl.events import MAJOR_CRYPTO_EVENTS_UTC
 from app.rl.observation_audit import warn_if_news_sentiment_empty, warn_if_whale_source_likely_empty
 from app.services.fear_greed import FearGreedService
@@ -384,7 +384,20 @@ def build_rl_training_frame(
     candle_range = (df["high"] - df["low"]).replace(0.0, np.nan)
     directional_move = (df["close"] - df["open"]).fillna(0.0)
     raw_imb = (directional_move / candle_range).replace([np.inf, -np.inf], 0.0).fillna(0.0)
-    df["orderbook_imbalance"] = np.tanh(raw_imb * np.log1p(df["volume"].clip(lower=0.0)))
+    df["orderbook_imbalance_raw"] = (raw_imb * np.log1p(df["volume"].clip(lower=0.0))).clip(-5.0, 5.0).astype(float)
+    df["bid_ask_spread_raw"] = df["range_pct"].astype(float)
+
+    prev_close = df["close"].shift(1)
+    tr = pd.concat(
+        [
+            (df["high"] - df["low"]).abs(),
+            (df["high"] - prev_close).abs(),
+            (df["low"] - prev_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    df["atr_14"] = tr.rolling(14, min_periods=1).mean().fillna(0.0).astype(float)
+    df["atr_mean_24"] = df["atr_14"].rolling(24, min_periods=1).mean().fillna(0.0).astype(float)
 
     ema_fast = df["close"].ewm(span=12, adjust=False).mean()
     ema_slow = df["close"].ewm(span=26, adjust=False).mean()
@@ -401,7 +414,10 @@ def build_rl_training_frame(
         last_value=float(cache.get("whale_pressure", 0.0) or 0.0),
         treat_zero_as_dead=True,
     )
-    out = normalize_rl_feature_frame(df.reset_index(drop=True))
+    df = df.reset_index(drop=True)
+    out = normalize_rl_feature_frame(df)
+    for col in ("atr_14", "atr_mean_24"):
+        out[col] = df[col].astype(float)
     cache["sentiment_score"] = float(out["sentiment_score"].iloc[-1]) if not out.empty else float(cache["sentiment_score"])
     cache["whale_pressure"] = float(out["whale_pressure"].iloc[-1]) if not out.empty else float(cache["whale_pressure"])
     if metadata_out is not None:
@@ -429,7 +445,7 @@ def build_rl_training_frame(
             pass
     try:
         _save_parquet(
-            df=out,
+            df=out.drop(columns=["bid_ask_spread_raw", "orderbook_imbalance_raw"], errors="ignore"),
             path=_feature_file_path(
                 market=market,
                 start_dt=out["timestamp"].min().to_pydatetime(),
@@ -438,6 +454,27 @@ def build_rl_training_frame(
         )
     except Exception:
         pass
+    return out
+
+
+def patch_last_row_live_orderbook(df: pd.DataFrame, spread_bps: float, imbalance_signed: float) -> pd.DataFrame:
+    """
+    Vervangt microstructure op de laatste rij met live orderboek (zelfde normalisatie als het RL-frame).
+    Vereist kolommen ``bid_ask_spread_raw`` / ``orderbook_imbalance_raw`` zoals ``build_rl_training_frame`` levert.
+    """
+    if df.empty or "bid_ask_spread_raw" not in df.columns or "orderbook_imbalance_raw" not in df.columns:
+        return df
+    out = df.copy()
+    spread_frac = max(0.0, float(spread_bps)) / 10000.0
+    raw_s = pd.to_numeric(out["bid_ask_spread_raw"], errors="coerce").astype(float).copy()
+    raw_s.iloc[-1] = spread_frac
+    out.loc[out.index[-1], "bid_ask_spread"] = float(_safe_minmax(raw_s).iloc[-1])
+    raw_i = pd.to_numeric(out["orderbook_imbalance_raw"], errors="coerce").astype(float).copy()
+    imb = float(np.clip(float(imbalance_signed), -1.0, 1.0))
+    raw_i.iloc[-1] = imb
+    out.loc[out.index[-1], "orderbook_imbalance"] = float(_safe_zscore_tanh(raw_i).iloc[-1])
+    out.loc[out.index[-1], "bid_ask_spread_raw"] = spread_frac
+    out.loc[out.index[-1], "orderbook_imbalance_raw"] = imb
     return out
 
 

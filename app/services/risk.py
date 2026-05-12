@@ -1,8 +1,9 @@
 """
-BESTANDSNAAM: /home/johan/AI_Trading/app/services/risk.py
+BESTANDSNAAM: app/services/risk.py
 FUNCTIE: Past eenvoudige risk-regels toe op modeluitvoer (signaal, SL/TP en sizing).
 """
 
+import os
 from dataclasses import dataclass
 from typing import Literal
 
@@ -10,9 +11,12 @@ from core.risk_manager import risk_controls_for_close
 
 
 def signal_from_expected_return(expected_return_pct: float) -> Literal["BUY", "SELL", "HOLD"]:
-    if expected_return_pct > 1.0:
+    thr = float(os.getenv("EXPECTED_RETURN_SIGNAL_THRESHOLD_PCT", "1.0") or 1.0)
+    if not (thr == thr) or thr <= 0:
+        thr = 1.0
+    if expected_return_pct > thr:
         return "BUY"
-    if expected_return_pct < -1.0:
+    if expected_return_pct < -thr:
         return "SELL"
     return "HOLD"
 
@@ -32,12 +36,24 @@ class RiskDecision:
 class RiskManager:
     def __init__(
         self,
-        max_budget_fraction_per_trade: float = 0.03,
-        max_spread_bps_for_trading: float = 45.0,
+        max_budget_fraction_per_trade: float | None = None,
+        max_spread_bps_for_trading: float | None = None,
         emergency_negative_sentiment_threshold: float = -0.8,
     ) -> None:
-        self.max_budget_fraction_per_trade = max_budget_fraction_per_trade
-        self.max_spread_bps_for_trading = max_spread_bps_for_trading
+        mb = max_budget_fraction_per_trade
+        if mb is None:
+            try:
+                mb = float(os.getenv("RISK_MAX_BUDGET_FRACTION_PER_TRADE", "0.03") or 0.03)
+            except (TypeError, ValueError):
+                mb = 0.03
+        sp = max_spread_bps_for_trading
+        if sp is None:
+            try:
+                sp = float(os.getenv("RISK_MAX_SPREAD_BPS_FOR_TRADING", "45") or 45)
+            except (TypeError, ValueError):
+                sp = 45.0
+        self.max_budget_fraction_per_trade = mb
+        self.max_spread_bps_for_trading = sp
         self.emergency_negative_sentiment_threshold = emergency_negative_sentiment_threshold
 
     def evaluate(

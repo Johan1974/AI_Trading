@@ -1,7 +1,8 @@
 """
-BESTANDSNAAM: /home/johan/AI_Trading/core/reward_function.py
+BESTANDSNAAM: core/reward_function.py
 FUNCTIE: Gecentraliseerde RL-beloning: PnL-% t.o.v. vorige stap, exponentiële drawdown-straf (>2% onder HWM),
-         transactiewrijving, consistency-bonus (HOLD + whales + winstpositie), en optionele stop-loss-shock.
+         transactiewrijving, consistency-bonus (HOLD + whales + winstpositie), bonus bij winst veiligstellen (> drempel),
+         en optionele stop-loss-shock.
 """
 
 from __future__ import annotations
@@ -18,21 +19,24 @@ def _f(name: str, default: str) -> float:
 
 
 # Schaal: staprendement (fraction) → reward (ordergelijk aan eerdere EUR/alpha-mix).
-REWARD_PNL_SCALE = _f("RL_REWARD_PNL_SCALE", "400.0")
+REWARD_PNL_SCALE = _f("RL_REWARD_PNL_SCALE", "20.0")
 # Drawdown t.o.v. piek (0..1); pas straf toe boven deze drempel (default 2%).
-REWARD_DD_THRESHOLD = _f("RL_REWARD_DD_THRESHOLD", "0.02")
-REWARD_DD_EXP_K = _f("RL_REWARD_DD_EXP_K", "6.0")
-REWARD_DD_EXP_SCALE = _f("RL_REWARD_DD_EXP_SCALE", "1.25")
+REWARD_DD_THRESHOLD = _f("RL_REWARD_DD_THRESHOLD", "0.04")
+REWARD_DD_EXP_K = _f("RL_REWARD_DD_EXP_K", "3.0")
+REWARD_DD_EXP_SCALE = _f("RL_REWARD_DD_EXP_SCALE", "1.0")
 # Vaste straf per uitgevoerde trade (overtrading remmen).
-TRANSACTION_FRICTION = _f("RL_TRANSACTION_FRICTION", "0.06")
+TRANSACTION_FRICTION = _f("RL_TRANSACTION_FRICTION", "0.02")
 # Bonus: HOLD vasthouden terwijl whales sterk bullish zijn en positie in the green.
 CONSISTENCY_BONUS = _f("RL_CONSISTENCY_BONUS", "0.05")
 CONSISTENCY_WHALE_MIN = _f("RL_CONSISTENCY_WHALE_MIN", "0.5")
 # Harde straf wanneer gesimuleerde risk-stop wordt geraakt (align met RISK_STOP_LOSS_PCT in de env).
-STOP_LOSS_SHOCK = _f("RL_STOP_LOSS_SHOCK", "12.0")
+STOP_LOSS_SHOCK = _f("RL_STOP_LOSS_SHOCK", "3.0")
 # Straf per stap als een positie te lang open staat (stagnatie).
 STAGNATION_MAX_HOURS = _f("RL_STAGNATION_MAX_HOURS", "72.0")
 STAGNATION_PENALTY = _f("RL_STAGNATION_PENALTY", "0.02")
+# Bonus als de positie deze stap wordt gesloten met koerswinst t.o.v. entry ≥ drempel (bv. 2%) — stimuleert TP i.p.v. laten omdraaien.
+PROFIT_LOCK_THRESHOLD = _f("RL_PROFIT_LOCK_THRESHOLD", "0.02")
+PROFIT_LOCK_BONUS = _f("RL_PROFIT_LOCK_BONUS", "0.05")
 
 
 def compute_trading_step_reward(
@@ -49,6 +53,7 @@ def compute_trading_step_reward(
     current_price: float,
     forced_stop_loss: bool,
     position_hours: float = 0.0,
+    closed_trade_return_frac: float | None = None,
 ) -> float:
     """
     Beloning voor één omgevingsstap na uitvoering van de actie (en eventuele risk-forced exit).
@@ -59,6 +64,8 @@ def compute_trading_step_reward(
     - Consistency: bonus bij HOLD, whale_pressure > drempel, en positieve unrealized PnL.
     - Stop-loss shock: grote negatieve spike als risk-stop in de simulatie wordt getriggerd.
     - Stagnation: lichte straf per stap als de trade langer open staat dan STAGNATION_MAX_HOURS.
+    - Profit lock: extra bonus wanneer de positie in deze stap wordt gesloten en de rendement-frac
+      (exit vs entry) ≥ PROFIT_LOCK_THRESHOLD (aanmoedigt winst nemen boven de drempel).
     """
     _ = initial_balance_eur  # gereserveerd voor toekomstige normalisatie / logging
 
@@ -94,4 +101,13 @@ def compute_trading_step_reward(
         # Tijdelijke debug: print de straf naar de terminal (zonder de logs te overspoelen)
         # print(f"[REWARD DEBUG] Stagnatie straf! uren={position_hours:.1f}, penalty={stagnation:.2f}, totaal_reward={(pnl_reward + drawdown_penalty + friction + consistency + sl_shock + stagnation):.4f}")
 
-    return float(pnl_reward + drawdown_penalty + friction + consistency + sl_shock + stagnation)
+    profit_lock = 0.0
+    if closed_trade_return_frac is not None:
+        try:
+            r = float(closed_trade_return_frac)
+        except (TypeError, ValueError):
+            r = float("-inf")
+        if r >= PROFIT_LOCK_THRESHOLD:
+            profit_lock = PROFIT_LOCK_BONUS
+
+    return float(pnl_reward + drawdown_penalty + friction + consistency + sl_shock + stagnation + profit_lock)

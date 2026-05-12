@@ -76,7 +76,7 @@ window.ChartUtils = {
         }
         current.data = normalizedConfig.data;
         current.options = normalizedConfig.options;
-        current.update();
+        current.update("none");
         return current;
     },
 

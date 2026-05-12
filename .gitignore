@@ -25,8 +25,9 @@ assistant_focus.json
 # We negeren standaard ALLE .env bestanden...
 .env
 .env.*
+# Vault staat buiten de repo (../), maar dit vangt een per-ongeluk kopie bínnen de repo op.
 .trading_vault
-../.trading_vault
+*.vault
 
 # ...BEHALVE de docker-compose.env (deze mag wel naar Git)
 !docker-compose.env

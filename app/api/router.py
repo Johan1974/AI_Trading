@@ -12,6 +12,7 @@ router = APIRouter(tags=["meta"])
 
 @router.get("/health")
 def health() -> dict[str, str]:
+    """Liveness voor Docker/load balancers: alleen in-memory STATE, geen DB/redis round-trips."""
     return {
         "status": "ok",
         "mode": "live" if LIVE_MODE else "paper",

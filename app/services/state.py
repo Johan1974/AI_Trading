@@ -27,7 +27,9 @@ _BASE_STATE: dict[str, Any] = {
     "rl_last_state": {},
     "signal_markers": [],
     "paper_portfolio": initialize_portfolio(),
+    "trades": [],
     "events": [],
+    "cockpit_log_tail": [],
     "started_at": datetime.utcnow().isoformat(),
 }
 _CURRENT_TENANT: ContextVar[str] = ContextVar("current_tenant_id", default="default")
