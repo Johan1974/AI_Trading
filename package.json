@@ -1,0 +1,20 @@
+{
+  "name": "ai_trading",
+  "version": "1.0.0",
+  "description": "Deze repository bevat een modulaire AI trading bot met een FastAPI webportal.   De bot combineert prijsdata (OHLCV) met nieuws-sentiment en past basis risk controls toe.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Johan1974/AI_Trading.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/Johan1974/AI_Trading/issues"
+  },
+  "homepage": "https://github.com/Johan1974/AI_Trading#readme"
+}

@@ -1,5 +1,10 @@
 [
   {
+    "timestamp": "20260513T042823Z",
+    "reward_score": -249.770368,
+    "model_path": "artifacts/rl/ppo_XRP-EUR_20260513T042823Z.zip"
+  },
+  {
     "timestamp": "20260512T081909Z",
     "reward_score": -273.66058,
     "model_path": "artifacts/rl/ppo_XRP-EUR_20260512T081909Z.zip"
@@ -10,8 +15,13 @@
     "model_path": "artifacts/rl/ppo_XRP-EUR_20260512T071710Z.zip"
   },
   {
-    "timestamp": "20260510T210258Z",
-    "reward_score": -4822.248383,
-    "model_path": "artifacts/rl/ppo_XRP-EUR_20260510T210258Z.zip"
+    "timestamp": "20260513T094352Z",
+    "reward_score": -378.811012,
+    "model_path": "artifacts/rl/ppo_XRP-EUR_20260513T094352Z.zip"
+  },
+  {
+    "timestamp": "20260513T124739Z",
+    "reward_score": -453.05931,
+    "model_path": "artifacts/rl/ppo_XRP-EUR_20260513T124739Z.zip"
   }
 ]

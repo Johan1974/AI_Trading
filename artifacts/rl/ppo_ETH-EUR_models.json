@@ -1,5 +1,10 @@
 [
   {
+    "timestamp": "20260513T144653Z",
+    "reward_score": -352.020561,
+    "model_path": "artifacts/rl/ppo_ETH-EUR_20260513T144653Z.zip"
+  },
+  {
     "timestamp": "20260510T210134Z",
     "reward_score": -1134.551437,
     "model_path": "artifacts/rl/ppo_ETH-EUR_20260510T210134Z.zip"

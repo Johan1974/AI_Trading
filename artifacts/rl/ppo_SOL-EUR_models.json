@@ -1,5 +1,10 @@
 [
   {
+    "timestamp": "20260513T093305Z",
+    "reward_score": -156.356628,
+    "model_path": "artifacts/rl/ppo_SOL-EUR_20260513T093305Z.zip"
+  },
+  {
     "timestamp": "20260512T212636Z",
     "reward_score": -244.9827,
     "model_path": "artifacts/rl/ppo_SOL-EUR_20260512T212636Z.zip"
@@ -13,5 +18,10 @@
     "timestamp": "20260512T210722Z",
     "reward_score": -477.391812,
     "model_path": "artifacts/rl/ppo_SOL-EUR_20260512T210722Z.zip"
+  },
+  {
+    "timestamp": "20260513T093819Z",
+    "reward_score": -624.511038,
+    "model_path": "artifacts/rl/ppo_SOL-EUR_20260513T093819Z.zip"
   }
 ]

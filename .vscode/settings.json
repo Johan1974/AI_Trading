@@ -1,8 +1,11 @@
 {
-  // Bestand: .vscode/settings.json
-  // Relatief pad: ./.vscode/settings.json
-  // Functie: Projectspecifieke Cursor/VSCode instellingen zoals autosave.
     "files.autoSave": "afterDelay",
     "files.autoSaveDelay": 1000,
-    "claudeCode.useTerminal": true
-  }
+    "cline.modelId": "MyAssistant:latest",
+    "cline.ollamaModelContextWindow": 32768,
+    "cline.yoloMode": false, 
+    "cline.autoApproveRead": true,
+    "cline.autoApproveEdit": true,
+    "cline.autoApproveExecute": true,
+    "cline.customInstructions": "Werk in Act-Mode. Begin elke beurt met een tool-call. Als je vastloopt, lees dan de .clinerules opnieuw. Gebruik ALTIJD Nederlands."
+}

@@ -11,6 +11,7 @@ data/
 artifacts/rl/*.zip
 artifacts/rl/*.pth
 artifacts/rl/*.onnx
+artifacts/rl/*.gz
 *.db
 *.sqlite
 

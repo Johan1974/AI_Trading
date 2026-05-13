@@ -1,5 +1,5 @@
-# Bestand: docker-compose.yml (Final Audit-First Edition)
-# Gebruikt: docker-compose.env (Publiek) + ../.trading_vault (Secrets)
+# Bestand: docker-compose.yml (Janitor-Standalone Edition)
+# Gebruik uitsluitend: docker compose up -d
 
 x-ai-trading-volumes: &ai-trading-volumes
   - ./storage:/app/storage
@@ -12,7 +12,6 @@ x-ai-trading-volumes: &ai-trading-volumes
   - ./scripts:/app/scripts
   - /etc/localtime:/etc/localtime:ro
   - /etc/timezone:/etc/timezone:ro
-  - /:/hostfs:ro
   - /var/run/docker.sock:/var/run/docker.sock
 
 services:
@@ -39,15 +38,9 @@ services:
     healthcheck:
       test: ["CMD", "python3", "-c", "import redis,os;r=redis.Redis.from_url(os.getenv('REDIS_URL','redis://redis:6379'));r.ping()"]
       interval: 30s
-      timeout: 10s
-      retries: 4
       start_period: 120s
     environment:
-      AI_TRADING_PROCESS: worker
       TZ: Europe/Amsterdam
-      GENESIS_REQUIRE_GPU: ${GENESIS_REQUIRE_GPU:-1}
-      # Training is uitbesteed aan de trainer-container; worker doet alleen inference + paper trades.
-      RL_BACKGROUND_TRAIN: "0"
 
   trainer:
     container_name: ai-trading-trainer
@@ -67,12 +60,7 @@ services:
     volumes: *ai-trading-volumes
     command: python -m app.trainer_entry
     environment:
-      AI_TRADING_PROCESS: trainer
       TZ: Europe/Amsterdam
-      # Trainer draait op CPU; GPU is exclusief voor FinBERT-inferentie in de Worker.
-      RL_PPO_DEVICE: cpu
-      RL_BACKGROUND_TRAIN: "1"
-      GENESIS_REQUIRE_GPU: "0"
 
   portal:
     container_name: ai-trading-portal
@@ -90,29 +78,10 @@ services:
       - ai_trading_net
     depends_on:
       redis: { condition: service_healthy }
-      worker: { condition: service_started }
-    # /health + /activity/ping: alleen STATE (geen DB, geen volledige /activity-payload).
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "python",
-          "-c",
-          "import urllib.request as u; u.urlopen('http://127.0.0.1:8000/health', timeout=8); u.urlopen('http://127.0.0.1:8000/activity/ping', timeout=8)",
-        ]
-      interval: 20s
-      timeout: 25s
-      retries: 5
-      start_period: 120s
     volumes: *ai-trading-volumes
-    command:
-      - /bin/sh
-      - -c
-      - exec python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers $${UVICORN_WORKERS:-2}
+    command: python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
     environment:
-      AI_TRADING_PROCESS: portal
       TZ: Europe/Amsterdam
-      PORTAL_GENESIS_REQUIRE_GPU: 0
 
   redis:
     image: redis:7-alpine
@@ -124,17 +93,59 @@ services:
       - redis_data:/data
     environment:
       - TZ=Europe/Amsterdam
-    # Geen bind mount naar _logs_hub: voorkomt root-owned redis.log op de host.
-    # Logs: docker logs ai-trading-redis (stdout; --logfile '').
     command: >
       /bin/sh -c "apk add --no-cache tzdata &&
       cp /usr/share/zoneinfo/Europe/Amsterdam /etc/localtime &&
-      redis-server --appendonly yes --appendfsync everysec --save 60 1 --save 300 10 --logfile ''"
+      redis-server --appendonly yes --save 60 1 --logfile ''"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
 
-  news:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ai-trading-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    networks:
+      - ai_trading_net
+    volumes:
+      - ollama_models:/root/.ollama
+      - /usr/share/zoneinfo:/usr/share/zoneinfo:ro
+      - /usr/share/zoneinfo/Europe/Amsterdam:/etc/localtime:ro
+    deploy:
+      resources:
+        reservations:
+          devices: [{driver: nvidia, count: 1, capabilities: [gpu]}]
+    environment:
+      - TZ=Europe/Amsterdam
+      - OLLAMA_KEEP_ALIVE=24h
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+
+  janitor:
+    image: python:3.12-slim
+    container_name: ai-trading-janitor
+    restart: unless-stopped
+    networks:
+      - ai_trading_net
+    depends_on:
+      ollama: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    volumes:
+      - ./ollama_janitor:/app/ollama_janitor:ro
+      - ./_logs_hub:/app/logs:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      TZ: Europe/Amsterdam
+      OLLAMA_HOST: http://ai-trading-ollama:11434
+      VRAM_LIMIT_BYTES: "8053063680"
+      JANITOR_INTERVAL: "30"
+    working_dir: /app
+    command: python3 ollama_janitor/janitor.py
+
+  news: 
     container_name: ai-trading-news
     build:
       context: .
@@ -155,144 +166,6 @@ services:
       FINBERT_USE_CUDA: "0"
       TRANSFORMERS_CACHE: /app/data/hf_cache
 
-  validator:
-    build:
-      context: .
-      dockerfile: Dockerfile.dashboard-validator
-    image: ai-trading-validator:latest
-    profiles: ["manual"]
-    container_name: ai-trading-validator
-    # AFGEDWONGEN: Root-permissies voor Docker socket manipulatie
-    user: root
-    shm_size: '2gb'
-    restart: always
-    env_file:
-      - docker-compose.env
-      - ../.trading_vault
-    networks:
-      - ai_trading_net
-    environment:
-      # chown van /app/logs naar host-eigenaar na validator-schrijfsels (compose: echo $UID / id -g).
-      LOGS_HUB_HOST_UID: ${LOGS_HUB_HOST_UID:-1000}
-      LOGS_HUB_HOST_GID: ${LOGS_HUB_HOST_GID:-1000}
-      API_URL: http://portal:8000
-      TZ: Europe/Amsterdam
-      PYTHONUNBUFFERED: "1"
-      DEBUG_MODE: "true"
-    volumes:
-      - ./app:/app
-      - ./_logs_hub:/app/logs
-      - ./scripts:/app/scripts:ro
-      - ./core:/app/core
-      - ./requirements-validator.txt:/requirements-validator.txt:ro
-      # Zelfde als worker/portal: host-/etc/localtime (niet alleen zoneinfo-bestand) voorkomt UTC/CEST-afwijking t.o.v. andere containers
-      - /etc/localtime:/etc/localtime:ro
-      - /etc/timezone:/etc/timezone:ro
-      - /var/run/docker.sock:/var/run/docker.sock
-    command: >
-      sh -c "pip install -r /requirements-validator.txt && playwright install chromium && 
-             python -u /app/tests/run_ui_tests.py"
-    depends_on:
-      portal: { condition: service_healthy }
-
-
-
-  optimizer:
-    build:
-      context: .
-      dockerfile: Dockerfile.optimizer
-    image: ai-trading-optimizer:latest
-    container_name: ai-trading-optimizer
-    restart: unless-stopped
-    networks:
-      - ai_trading_net
-    depends_on:
-      redis:  { condition: service_healthy }
-      ollama: { condition: service_healthy }
-    volumes:
-      - ./data:/app/data
-      - /var/run/docker.sock:/var/run/docker.sock
-    environment:
-      TZ: Europe/Amsterdam
-      REDIS_URL: redis://redis:6379/0
-      OLLAMA_HOST: http://ollama:11434
-      OLLAMA_MODEL: qwen2.5-coder:7b
-      OVERRIDES_FILE: /app/data/optimizer_overrides.json
-      REPORT_FILE: /app/data/optimization_report.txt
-      OPTIMIZER_POLL_SEC: "300"
-      VRAM_TOTAL_BYTES: "8589934592"
-      VRAM_HEADROOM_BYTES: "1073741824"
-
-  ollama:
-    image: ollama/ollama:latest
-    container_name: ai-trading-ollama
-    restart: unless-stopped
-    ports:
-      - "11434:11434"
-    networks:
-      - ai_trading_net
-    volumes:
-      - ollama_models:/root/.ollama
-    deploy:
-      resources:
-        reservations:
-          devices: [{driver: nvidia, count: 1, capabilities: [gpu]}]
-    environment:
-      TZ: Europe/Amsterdam
-    healthcheck:
-      test: ["CMD", "ollama", "list"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 60s
-
-  ollama-janitor:
-    image: python:3.12-slim
-    container_name: ai-trading-ollama-janitor
-    restart: unless-stopped
-    networks:
-      - ai_trading_net
-    depends_on:
-      ollama: { condition: service_healthy }
-    environment:
-      TZ: Europe/Amsterdam
-      OLLAMA_HOST: http://ollama:11434
-      VRAM_LIMIT_BYTES: "8053063680"
-      JANITOR_INTERVAL: "30"
-    command:
-      - python3
-      - -c
-      - |
-        import urllib.request, json, time, os
-        HOST = os.getenv("OLLAMA_HOST", "http://ollama:11434")
-        LIMIT = int(os.getenv("VRAM_LIMIT_BYTES", "8053063680"))
-        INTERVAL = int(os.getenv("JANITOR_INTERVAL", "30"))
-        def call(path, data=None):
-            req = urllib.request.Request(
-                HOST + path,
-                data=json.dumps(data).encode() if data else None,
-                headers={"Content-Type": "application/json"} if data else {},
-            )
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                return json.loads(resp.read())
-        print(f"[janitor] start — limit {LIMIT//1024**2}MB VRAM, poll {INTERVAL}s", flush=True)
-        while True:
-            time.sleep(INTERVAL)
-            try:
-                models = (call("/api/ps") or {}).get("models") or []
-                total = sum(int(m.get("size_vram") or 0) for m in models)
-                if total > LIMIT:
-                    for m in sorted(models, key=lambda x: x.get("expires_at", "")):
-                        name = m["name"]
-                        call("/api/generate", {"model": name, "keep_alive": 0})
-                        freed = int(m.get("size_vram") or 0)
-                        total -= freed
-                        print(f"[janitor] unloaded {name} ({freed//1024**2}MB) → {total//1024**2}MB remain", flush=True)
-                        if total <= LIMIT:
-                            break
-            except Exception as exc:
-                print(f"[janitor] {exc}", flush=True)
-
 networks:
   ai_trading_net:
     driver: bridge
@@ -300,4 +173,3 @@ networks:
 volumes:
   redis_data:
   ollama_models:
-  
